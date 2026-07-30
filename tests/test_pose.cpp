@@ -11,6 +11,7 @@ private slots:
         QCOMPARE(wrap180(90.0), 90.0);
         QCOMPARE(wrap180(-90.0), -90.0);
         QCOMPARE(wrap180(180.0), 180.0);
+        QCOMPARE(wrap180(-180.0), 180.0);
     }
 
     void wrap180_crossesBoundary()
@@ -27,15 +28,22 @@ private slots:
         QCOMPARE(wrap180(720.0), 0.0);
         QCOMPARE(wrap180(725.0), 5.0);
         QCOMPARE(wrap180(-725.0), -5.0);
+        QCOMPARE(wrap180(540.0), 180.0);
     }
 
     void poseSub_wrapsRotationOnly()
     {
-        Pose target{10.0, 0.0, 0.0, 179.0, 0.0, 0.0};
-        Pose actual{0.0, 0.0, 0.0, -179.0, 0.0, 0.0};
+        Pose target{10.0, 20.0, 30.0, 179.0, 5.0, -170.0};
+        Pose actual{1.0, 2.0, 3.0, -179.0, -5.0, 170.0};
         const Pose d = poseSub(target, actual);
-        QCOMPARE(d.x, 10.0);        // 位置直接相减，不 wrap
-        QCOMPARE(d.a, -2.0);        // 姿态走近路
+        // 位置分量：直接相减，不做角度归一化
+        QCOMPARE(d.x, 9.0);
+        QCOMPARE(d.y, 18.0);
+        QCOMPARE(d.z, 27.0);
+        // 姿态分量：取最短角路径
+        QCOMPARE(d.a, -2.0);    // 179 - (-179) = 358 -> -2
+        QCOMPARE(d.b, 10.0);    // 5 - (-5) = 10, 无需归一化
+        QCOMPARE(d.c, 20.0);    // -170 - 170 = -340 -> 20
     }
 };
 
