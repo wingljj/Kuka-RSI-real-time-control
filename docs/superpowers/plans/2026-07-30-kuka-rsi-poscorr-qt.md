@@ -850,9 +850,13 @@ RobFrame RsiCodec::parseRob(const QByteArray &datagram)
         }
     }
 
-    if (xml.hasError())
+    if (xml.hasError() && !(haveRist && haveIpoc))
         return out;                 // valid 仍为 false
 
+    // 只要 RIst 与 IPOC 都已成功读到就接受该帧。真实 KRC datagram 可能带
+    // 尾部填充（NUL 或空白），QXmlStreamReader 会报 "extra content at end of
+    // document"；若因此一律拒绝，将是每帧都失败的全盘故障而非间歇故障。
+    // 反之若 XML 在 IPOC 之前就损坏，haveRist/haveIpoc 自然为 false，仍会拒绝。
     out.valid = haveRist && haveIpoc;
     return out;
 }
@@ -874,7 +878,12 @@ QByteArray RsiCodec::buildSen(const Pose &korr, quint64 ipoc,
                             korr.a, korr.b, korr.c};
     for (int i = 0; i < 6; ++i) {
         s += keys[i];
-        s += QByteArray::number(vals[i], 'f', 4);
+        // 非有限值守卫：NaN 会输出 "nan"、Inf 输出 "inf"，都不是 4 位小数，
+        // KRC 的 RKorr 解析不了，等同丢包并停机。而上游基于比较的限幅会
+        // 传播 NaN 而非限界它，所以这道防线必须在此层——它是 wire 格式的
+        // 保证者。替换为 0.0 表示"本周期无修正"，是正确的降级行为。
+        const double v = std::isfinite(vals[i]) ? vals[i] : 0.0;
+        s += QByteArray::number(v, 'f', 4);
         s += '"';
     }
 
