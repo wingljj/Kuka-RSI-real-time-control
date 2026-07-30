@@ -1,0 +1,90 @@
+#include <QtTest>
+#include <QTemporaryFile>
+#include "core/AppConfig.h"
+
+class TestAppConfig : public QObject
+{
+    Q_OBJECT
+private slots:
+    void defaults_matchSpec()
+    {
+        const AppConfig c = AppConfig::defaults();
+        QCOMPARE(c.kpPos, 0.30);
+        QCOMPARE(c.kpRot, 0.30);
+        QCOMPARE(c.vmaxPosMmS, 50.0);
+        QCOMPARE(c.vmaxRotDegS, 10.0);
+        QCOMPARE(c.accumLimitPosMm, 30.0);
+        QCOMPARE(c.accumLimitRotDeg, 15.0);
+        QCOMPARE(c.watchdogMissLimit, 3);
+    }
+
+    void load_readsAllFields()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({
+          "network": { "listen_ip": "10.0.0.5", "listen_port": 12345 },
+          "rsi": { "cycle_ms": 4.0, "sen_type": "MyType",
+                   "watchdog_miss_limit": 7 },
+          "control": { "kp_pos": 0.1, "kp_rot": 0.2,
+                       "vmax_pos_mm_s": 11.0, "vmax_rot_deg_s": 22.0,
+                       "accum_limit_pos_mm": 33.0,
+                       "accum_limit_rot_deg": 44.0 },
+          "ui": { "refresh_ms": 50, "chart_window_s": 60 }
+        })");
+        f.flush();
+
+        AppConfig c;
+        QString err;
+        QVERIFY2(AppConfig::loadFromFile(f.fileName(), &c, &err),
+                 qPrintable(err));
+        QCOMPARE(c.listenIp, QString("10.0.0.5"));
+        QCOMPARE(c.listenPort, quint16(12345));
+        QCOMPARE(c.cycleMs, 4.0);
+        QCOMPARE(c.senType, QString("MyType"));
+        QCOMPARE(c.watchdogMissLimit, 7);
+        QCOMPARE(c.kpPos, 0.1);
+        QCOMPARE(c.accumLimitRotDeg, 44.0);
+        QCOMPARE(c.refreshMs, 50);
+        QCOMPARE(c.chartWindowS, 60);
+    }
+
+    void load_missingFieldKeepsDefault()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({ "control": { "kp_pos": 0.9 } })");
+        f.flush();
+
+        AppConfig c;
+        QString err;
+        QVERIFY(AppConfig::loadFromFile(f.fileName(), &c, &err));
+        QCOMPARE(c.kpPos, 0.9);                        // 覆盖
+        QCOMPARE(c.vmaxPosMmS, 50.0);                  // 保留默认
+        QCOMPARE(c.listenIp, QString("192.168.44.1")); // 保留默认
+    }
+
+    void load_malformedJsonReportsError()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write("{ this is not json ");
+        f.flush();
+
+        AppConfig c;
+        QString err;
+        QVERIFY(!AppConfig::loadFromFile(f.fileName(), &c, &err));
+        QVERIFY(!err.isEmpty());
+    }
+
+    void load_missingFileReportsError()
+    {
+        AppConfig c;
+        QString err;
+        QVERIFY(!AppConfig::loadFromFile("Z:/nonexistent.json", &c, &err));
+        QVERIFY(!err.isEmpty());
+    }
+};
+
+QTEST_MAIN(TestAppConfig)
+#include "test_app_config.moc"

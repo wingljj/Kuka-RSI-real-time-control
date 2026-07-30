@@ -1,0 +1,23 @@
+{
+  "network": {
+    "listen_ip":   "192.168.44.1",
+    "listen_port": 59152
+  },
+  "rsi": {
+    "cycle_ms":            12.0,
+    "sen_type":            "ImFree",
+    "watchdog_miss_limit": 3
+  },
+  "control": {
+    "kp_pos":              0.30,
+    "kp_rot":              0.30,
+    "vmax_pos_mm_s":       50.0,
+    "vmax_rot_deg_s":      10.0,
+    "accum_limit_pos_mm":  30.0,
+    "accum_limit_rot_deg": 15.0
+  },
+  "ui": {
+    "refresh_ms":     33,
+    "chart_window_s": 20
+  }
+}
