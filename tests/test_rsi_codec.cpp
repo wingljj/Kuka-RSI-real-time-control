@@ -1,6 +1,8 @@
 #include <QtTest>
 #include "core/RsiCodec.h"
 
+#include <limits>
+
 class TestRsiCodec : public QObject
 {
     Q_OBJECT
@@ -58,6 +60,10 @@ private slots:
         QVERIFY(s.contains("<Sen Type=\"ImFree\">"));
         QVERIFY(s.contains("<IPOC>987654321</IPOC>"));
         QVERIFY(s.contains("</Sen>"));
+
+        const QByteArray big = RsiCodec::buildSen(
+            Pose{}, std::numeric_limits<quint64>::max(), "ImFree");
+        QVERIFY(big.contains("<IPOC>18446744073709551615</IPOC>"));
     }
 
     void buildSen_roundTripsThroughParser()
@@ -75,6 +81,41 @@ private slots:
         const QByteArray s = RsiCodec::buildSen(Pose{}, 1, "ImFree");
         QVERIFY(s.contains("X=\"0.0000\""));
         QVERIFY(s.contains("<IPOC>1</IPOC>"));
+    }
+
+    void buildSen_nonFiniteBecomesZero()
+    {
+        Pose k{};
+        k.x = std::numeric_limits<double>::quiet_NaN();
+        k.y = std::numeric_limits<double>::infinity();
+        k.z = -std::numeric_limits<double>::infinity();
+        k.a = 1.5;
+        const QByteArray s = RsiCodec::buildSen(k, 7, "ImFree");
+        // 非有限分量必须降级为 0.0000，且绝不出现 nan/inf 字样
+        QVERIFY(s.contains("X=\"0.0000\""));
+        QVERIFY(s.contains("Y=\"0.0000\""));
+        QVERIFY(s.contains("Z=\"0.0000\""));
+        QVERIFY(s.contains("A=\"1.5000\""));
+        QVERIFY(!s.contains("nan"));
+        QVERIFY(!s.contains("inf"));
+        QVERIFY(s.contains("<IPOC>7</IPOC>"));
+    }
+
+    void parseRob_toleratesTrailingPadding()
+    {
+        QByteArray d =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1250.5\" Y=\"-10.25\" Z=\"1000.0\" "
+                  "A=\"1.5\" B=\"90.0\" C=\"-45.5\"/>"
+            "<IPOC>555</IPOC>"
+            "</Rob>";
+        d.append('\0');
+        d.append("\0\0", 2);
+        const RobFrame f = RsiCodec::parseRob(d);
+        // 尾部填充不得导致整帧被拒——那会是每帧都失败的全盘故障
+        QVERIFY(f.valid);
+        QCOMPARE(f.rist.x, 1250.5);
+        QCOMPARE(f.ipoc, quint64(555));
     }
 };
 
