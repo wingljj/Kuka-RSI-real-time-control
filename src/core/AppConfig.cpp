@@ -57,8 +57,11 @@ bool AppConfig::loadFromFile(const QString &path, AppConfig *out,
 
     const QJsonObject net = root.value("network").toObject();
     readString(net, "listen_ip", &out->listenIp);
-    if (net.contains("listen_port"))
-        out->listenPort = quint16(net.value("listen_port").toInt());
+    if (net.value("listen_port").isDouble()) {
+        const int p = net.value("listen_port").toInt(-1);
+        if (p > 0 && p <= 65535)
+            out->listenPort = quint16(p);
+    }
 
     const QJsonObject rsi = root.value("rsi").toObject();
     readDouble(rsi, "cycle_ms", &out->cycleMs);

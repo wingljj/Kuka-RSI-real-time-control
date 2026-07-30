@@ -84,6 +84,68 @@ private slots:
         QVERIFY(!AppConfig::loadFromFile("Z:/nonexistent.json", &c, &err));
         QVERIFY(!err.isEmpty());
     }
+
+    void load_wrongTypeKeepsDefault()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({
+          "network": { "listen_ip": 12345, "listen_port": "59152" },
+          "rsi":     { "watchdog_miss_limit": "7" },
+          "control": { "kp_pos": "0.9" },
+          "ui":      { "refresh_ms": null }
+        })");
+        f.flush();
+
+        AppConfig c;
+        QString err;
+        QVERIFY2(AppConfig::loadFromFile(f.fileName(), &c, &err), qPrintable(err));
+        // 类型不符的字段必须保留默认值，而不是被静默写成 0 或空
+        QCOMPARE(c.listenIp, QString("192.168.44.1"));
+        QCOMPARE(c.listenPort, quint16(59152));
+        QCOMPARE(c.watchdogMissLimit, 3);
+        QCOMPARE(c.kpPos, 0.30);
+        QCOMPARE(c.refreshMs, 33);
+    }
+
+    void load_outOfRangePortKeepsDefault()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({ "network": { "listen_port": 70000 } })");
+        f.flush();
+
+        AppConfig c;
+        QString err;
+        QVERIFY2(AppConfig::loadFromFile(f.fileName(), &c, &err), qPrintable(err));
+        QCOMPARE(c.listenPort, quint16(59152));   // 不得被 quint16 截断成 4464
+    }
+
+    void load_nonObjectRootIsError()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write("[1,2,3]");
+        f.flush();
+
+        AppConfig c;
+        QString err;
+        QVERIFY(!AppConfig::loadFromFile(f.fileName(), &c, &err));
+        QVERIFY(!err.isEmpty());
+    }
+
+    void load_successClearsError()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({ "control": { "kp_pos": 0.5 } })");
+        f.flush();
+
+        AppConfig c;
+        QString err = "stale text from a previous call";
+        QVERIFY(AppConfig::loadFromFile(f.fileName(), &c, &err));
+        QVERIFY(err.isEmpty());
+    }
 };
 
 QTEST_MAIN(TestAppConfig)

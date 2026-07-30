@@ -27,10 +27,13 @@
 ## 工具链路径（命令中逐字使用）
 
 ```bash
+# 被 CMake 消费的路径用 Windows 形式；要放进 PATH 的必须用 POSIX 形式 ——
+# MSYS/Git-Bash 按 ':' 切分 PATH，"D:/Software/..." 会被撕成 "D" 和
+# "/Software/..." 两个无效项，导致 Ninja 找不到、g++ 误解析到其他安装。
 QTDIR="D:/Software/QT/content/6.5.3/mingw_64"
-MINGW="D:/Software/QT/content/Tools/mingw1120_64/bin"
-NINJA="D:/Software/QT/content/Tools/Ninja"
 CMAKE="D:/Software/QT/content/Tools/CMake_64/bin/cmake.exe"
+MINGW="/d/Software/QT/content/Tools/mingw1120_64/bin"
+NINJA="/d/Software/QT/content/Tools/Ninja"
 ```
 
 配置与构建（后续任务反复使用，记作 **BUILD 命令**）：
@@ -593,8 +596,14 @@ bool AppConfig::loadFromFile(const QString &path, AppConfig *out,
 
     const QJsonObject net = root.value("network").toObject();
     readString(net, "listen_ip", &out->listenIp);
-    if (net.contains("listen_port"))
-        out->listenPort = quint16(net.value("listen_port").toInt());
+    // 与其余字段一致地做类型守卫：无守卫时 "59152"(带引号) 或 null 都会
+    // 让 toInt() 返回 0，端口 0 会绑到 OS 分配的临时端口，KRC 永远连不上，
+    // 且表现为静默失败而非配置报错。范围检查挡住 quint16 截断。
+    if (net.value("listen_port").isDouble()) {
+        const int p = net.value("listen_port").toInt(-1);
+        if (p > 0 && p <= 65535)
+            out->listenPort = quint16(p);
+    }
 
     const QJsonObject rsi = root.value("rsi").toObject();
     readDouble(rsi, "cycle_ms", &out->cycleMs);
