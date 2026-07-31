@@ -10,22 +10,45 @@ double clampAbs(double v, double limit)
     return std::clamp(v, -limit, limit);
 }
 
+bool poseIsFinite(const Pose &p)
+{
+    return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)
+        && std::isfinite(p.a) && std::isfinite(p.b) && std::isfinite(p.c);
+}
+
 } // namespace
 
 void PoseController::configure(const AppConfig &cfg)
 {
     m_cfg = cfg;
-    const double cycleS = cfg.cycleMs / 1000.0;
-    m_stepLimitPos = cfg.vmaxPosMmS * cycleS;
-    m_stepLimitRot = cfg.vmaxRotDegS * cycleS;
+    // 不信任配置：AppConfig 不做范围校验，负的 vmax 会让 clampAbs 收到
+    // lo > hi——形式上是 UB，libstdc++ 上会返回 hi，于是机器人朝远离目标
+    // 的方向走。取绝对值挡住这一类。
+    const double cycleS = std::fabs(cfg.cycleMs) / 1000.0;
+    m_stepLimitPos = std::fabs(cfg.vmaxPosMmS) * cycleS;
+    m_stepLimitRot = std::fabs(cfg.vmaxRotDegS) * cycleS;
+
+    // 非正周期会让步长上限为 0，表现为静默不动而 state() 仍报 Tracking。
+    // 宁可显式故障，也不要装作在跟踪。
+    if (!(cfg.cycleMs > 0.0)) {
+        m_state = TrackState::Fault;
+        m_faultReason = QStringLiteral("invalid cycleMs %1; must be > 0")
+                            .arg(cfg.cycleMs);
+    }
 }
 
 void PoseController::resetToActual(const Pose &actual)
 {
     m_target = actual;
-    m_accum  = Pose{};
     m_state  = TrackState::Idle;
     m_faultReason.clear();
+    // m_accum 刻意保留，理由见头文件注释
+}
+
+void PoseController::beginSession(const Pose &actual)
+{
+    resetToActual(actual);
+    m_accum = Pose{};
 }
 
 void PoseController::setTracking(bool on)
@@ -43,6 +66,16 @@ Pose PoseController::step(const Pose &actual)
 {
     if (m_state != TrackState::Tracking)
         return Pose{};
+
+    // 非有限值守卫：clampAbs 基于比较，会传播 NaN 而非限界它。一旦累积量
+    // 变成 NaN，此后 NaN > limit 恒为 false，第 2 层限值将永久失效，而
+    // state() 仍报 Tracking——界面会显示一个"健康"的控制器。
+    if (!poseIsFinite(actual) || !poseIsFinite(m_target)) {
+        m_state = TrackState::Fault;
+        m_faultReason = QStringLiteral(
+            "non-finite pose component in actual or target");
+        return Pose{};
+    }
 
     // 误差：位置直接相减，姿态取最短角路径
     const Pose err = poseSub(m_target, actual);
@@ -62,16 +95,20 @@ Pose PoseController::step(const Pose &actual)
         m_accum.a + d.a, m_accum.b + d.b, m_accum.c + d.c,
     };
 
-    const double posMax = std::max({std::fabs(next.x), std::fabs(next.y),
-                                    std::fabs(next.z)});
+    // 位置用欧几里得范数：逐轴判限会让三轴同时到限时的合成位移达到
+    // √3 × limit（30mm → 51.96mm），越过 POSCORR 的 ~50mm 硬限，使第 2 层
+    // 形同虚设、第一个停机的反而是第 4 层 RSI 错误停机。
+    const double posNorm = std::hypot(next.x, next.y, next.z);
+    // 姿态保持逐轴最大值：A/B/C 是欧拉角，三者的欧氏范数没有物理意义，
+    // 而 POSCORR 的姿态限值本身也是按轴给出的。
     const double rotMax = std::max({std::fabs(next.a), std::fabs(next.b),
                                     std::fabs(next.c)});
 
-    if (posMax > m_cfg.accumLimitPosMm) {
+    if (posNorm > m_cfg.accumLimitPosMm) {
         m_state = TrackState::Fault;
         m_faultReason = QStringLiteral(
-            "accumulated translation %1 mm exceeds limit %2 mm")
-            .arg(posMax, 0, 'f', 3)
+            "accumulated translation norm %1 mm exceeds limit %2 mm")
+            .arg(posNorm, 0, 'f', 3)
             .arg(m_cfg.accumLimitPosMm, 0, 'f', 3);
         return Pose{};
     }

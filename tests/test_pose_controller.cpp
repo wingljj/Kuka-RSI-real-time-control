@@ -1,4 +1,6 @@
 #include <QtTest>
+#include <cmath>
+#include <limits>
 #include "core/PoseController.h"
 
 namespace {
@@ -26,7 +28,7 @@ private slots:
     {
         PoseController pc;
         pc.configure(testCfg());
-        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});   // 巨大误差
         const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
         QCOMPARE(d.x, 0.0);                        // 未使能 → 不动
@@ -37,7 +39,7 @@ private slots:
     {
         PoseController pc;
         pc.configure(testCfg());
-        pc.resetToActual(Pose{10, 20, 30, 1, 2, 3});
+        pc.beginSession(Pose{10, 20, 30, 1, 2, 3});
         pc.setTracking(true);
         const Pose d = pc.step(Pose{10, 20, 30, 1, 2, 3});
         QCOMPARE(d.x, 0.0);
@@ -48,7 +50,7 @@ private slots:
     {
         PoseController pc;
         pc.configure(testCfg());
-        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
@@ -60,7 +62,7 @@ private slots:
     {
         PoseController pc;
         pc.configure(testCfg());
-        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0, 0, 0, 90, 0, 0});
         const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
@@ -75,7 +77,7 @@ private slots:
         AppConfig c = testCfg();
         c.kpPos = 0.5;
         pc.configure(c);
-        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0.4, 0, 0, 0, 0, 0});
         const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
@@ -87,7 +89,7 @@ private slots:
     {
         PoseController pc;
         pc.configure(testCfg());
-        pc.resetToActual(Pose{0, 0, 0, -179, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, -179, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0, 0, 0, 179, 0, 0});
         const Pose d = pc.step(Pose{0, 0, 0, -179, 0, 0});
@@ -100,7 +102,7 @@ private slots:
     {
         PoseController pc;
         pc.configure(testCfg());
-        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         Pose actual{0, 0, 0, 0, 0, 0};
@@ -117,7 +119,7 @@ private slots:
         AppConfig c = testCfg();
         c.accumLimitPosMm = 1.0;     // 两步就越限
         pc.configure(c);
-        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
 
@@ -140,7 +142,7 @@ private slots:
         c.accumLimitRotDeg = 0.2;    // 姿态先越限
         c.accumLimitPosMm  = 1000.0; // 位置不越限
         pc.configure(c);
-        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0, 0, 0, 90, 0, 0});
 
@@ -152,13 +154,13 @@ private slots:
         QCOMPARE(pc.state(), TrackState::Fault);
     }
 
-    void resetToActual_clearsFaultAndAccum()
+    void resetToActual_clearsFaultAndTargetButKeepsAccum()
     {
         PoseController pc;
         AppConfig c = testCfg();
         c.accumLimitPosMm = 1.0;
         pc.configure(c);
-        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         Pose actual{0, 0, 0, 0, 0, 0};
@@ -166,10 +168,123 @@ private slots:
             actual.x += pc.step(actual).x;
         QCOMPARE(pc.state(), TrackState::Fault);
 
+        // 归零前的累积量必须非零，否则本用例无从证明「保留」
+        const double accumBefore = pc.accumulated().x;
+        QVERIFY(qAbs(accumBefore) > 1e-9);
+
         pc.resetToActual(Pose{7, 8, 9, 0, 0, 0});
         QCOMPARE(pc.state(), TrackState::Idle);
-        QCOMPARE(pc.accumulated().x, 0.0);
+        QVERIFY(pc.faultReason().isEmpty());
         QCOMPARE(pc.target().x, 7.0);      // 目标 = 实际，误差归零
+        // 【关键】KRC 侧已施加的修正不会消失，累积量必须原样保留
+        QCOMPARE(pc.accumulated().x, accumBefore);
+    }
+
+    void beginSession_clearsAccum()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.accumLimitPosMm = 1.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        Pose actual{0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 5; ++i)
+            actual.x += pc.step(actual).x;
+        QCOMPARE(pc.state(), TrackState::Fault);
+        QVERIFY(qAbs(pc.accumulated().x) > 1e-9);
+
+        // 仅 RSI 会话重启才可清零累积量
+        pc.beginSession(Pose{7, 8, 9, 0, 0, 0});
+        QCOMPARE(pc.state(), TrackState::Idle);
+        QVERIFY(pc.faultReason().isEmpty());
+        QCOMPARE(pc.target().x, 7.0);
+        QCOMPARE(pc.accumulated().x, 0.0);
+    }
+
+    void faultCannotBeReEnabledWithoutReset()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.accumLimitPosMm = 1.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        Pose actual{0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 5; ++i)
+            actual.x += pc.step(actual).x;
+        QCOMPARE(pc.state(), TrackState::Fault);
+
+        // 锁存的核心保证：不经 resetToActual 不得重新使能
+        pc.setTracking(true);
+        QCOMPARE(pc.state(), TrackState::Fault);
+        QCOMPARE(pc.step(actual).x, 0.0);
+    }
+
+    void nonFinitePoseEntersFault()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        Pose bad{0, 0, 0, 0, 0, 0};
+        bad.x = std::numeric_limits<double>::quiet_NaN();
+        const Pose d = pc.step(bad);
+        QCOMPARE(d.x, 0.0);
+        QCOMPARE(pc.state(), TrackState::Fault);
+        QVERIFY(!pc.faultReason().isEmpty());
+        // 累积量绝不能被 NaN 污染，否则第 2 层永久失效
+        QVERIFY(std::isfinite(pc.accumulated().x));
+    }
+
+    void diagonalAccumUsesEuclideanNorm()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.accumLimitPosMm = 1.0;      // 范数上限 1mm
+        c.vmaxPosMmS      = 1000.0;   // 放开单周期限幅，便于快速累积
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        // 三轴各 0.7mm：逐轴判限会放过（0.7 < 1），欧氏范数 1.21 必须拦下
+        pc.setTarget(Pose{0.7, 0.7, 0.7, 0, 0, 0});
+        pc.step(Pose{0, 0, 0, 0, 0, 0});
+        QCOMPARE(pc.state(), TrackState::Fault);
+        QVERIFY(pc.faultReason().contains("norm"));
+    }
+
+    void negativeVmaxDoesNotInvertDirection()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.vmaxPosMmS = -50.0;         // 恶意/误填的负限速
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        // 必须朝目标走，绝不能因 clamp(lo>hi) 反向
+        QVERIFY(d.x > 0.0);
+        QVERIFY(qAbs(d.x - 0.6) < 1e-9);
+    }
+
+    void allSixComponentsClampIndependently()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        // 六个分量都给足够大的误差，全部应被各自的步长上限限住
+        pc.setTarget(Pose{100, 100, 100, 90, 90, 90});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        QVERIFY(qAbs(d.x - 0.6) < 1e-9);
+        QVERIFY(qAbs(d.y - 0.6) < 1e-9);
+        QVERIFY(qAbs(d.z - 0.6) < 1e-9);
+        QVERIFY(qAbs(d.a - 0.12) < 1e-9);
+        QVERIFY(qAbs(d.b - 0.12) < 1e-9);
+        QVERIFY(qAbs(d.c - 0.12) < 1e-9);
     }
 };
 

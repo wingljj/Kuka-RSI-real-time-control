@@ -14,9 +14,16 @@ public:
     void setTarget(const Pose &t) { m_target = t; }
     Pose target() const { return m_target; }
 
-    // 目标置为实际、累积清零、状态回 Idle。
-    // 用于「收到首帧」与「停止跟踪」两处，保证误差瞬时归零。
+    // 误差归零：目标置为实际、状态回 Idle、清除故障原因。
+    // 【刻意保留累积修正量】——RELATIVE 模式下 KRC 侧已施加的修正不会因
+    // 主机侧归零而消失。若在此清零，反复「停止跟踪→归零→使能」就能不断
+    // 领取新的累积预算，把总修正一路推过 POSCORR 的 ~50mm 硬限，而界面上
+    // 第 2 层始终显示一个很小的累积值。用于会话内的「停止跟踪」「归零」。
     void resetToActual(const Pose &actual);
+
+    // RSI 会话开始：在 resetToActual 之上额外清零累积修正量。
+    // 仅当 KRL 程序重新启动、KRC 侧修正确实已回零时才可调用。
+    void beginSession(const Pose &actual);
 
     void setTracking(bool on);
 
