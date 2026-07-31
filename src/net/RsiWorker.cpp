@@ -144,16 +144,17 @@ void RsiWorker::onDatagram()
                     ipocOk = false;
                 }
             } else {
-                // 只有确实静默过至少一个看门狗周期，才算真正的 RSI 会话重启，
+                // 只有确实静默过至少一个会话间隔，才算真正的 RSI 会话重启，
                 // 才可以清零累积量。快速的 stop()→start() 不算：KRC 侧已施加
                 // 的修正仍然存在，清零等于凭空多发一份预算，反复几次就能把
                 // 总修正推过 POSCORR 的 ~50mm 硬限，而界面上第 2 层始终显示
                 // 一个很小的累积值。
-                const int wdIntervalMs =
-                    m_watchdog ? m_watchdog->interval() : 0;
+                // 用独立的会话间隔阈值，而不是看门狗间隔。看门狗只负责
+                // "连接丢失"的显示，阈值必须小；会话判定则必须大于 KRC 的
+                // Timeout，否则会在 KRC 仍认为会话连续时移动安全锚点。
                 const bool genuineSessionStart =
                     !m_sinceLastFrame.isValid()
-                    || m_sinceLastFrame.elapsed() >= wdIntervalMs;
+                    || m_sinceLastFrame.elapsed() >= qint64(m_cfg.sessionGapMs);
                 if (genuineSessionStart)
                     m_ctl.beginSession(f.rist);
                 else

@@ -49,6 +49,28 @@ private slots:
         QCOMPARE(c.chartWindowS, 60);
     }
 
+    void load_readsSessionGapMs()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({ "rsi": { "session_gap_ms": 3500.0 } })");
+        f.flush();
+
+        AppConfig c;
+        QString err;
+        QVERIFY2(AppConfig::loadFromFile(f.fileName(), &c, &err), qPrintable(err));
+        QCOMPARE(c.sessionGapMs, 3500.0);
+    }
+
+    void defaults_sessionGapExceedsKrcTimeout()
+    {
+        // KRC 的 ETHERNET Timeout 计划值为 100 个 IPO 周期；12ms 周期下 1200ms。
+        // 会话判定阈值必须显著高于它，否则主机会在 KRC 仍认为会话连续时
+        // 移动安全锚点，凭空发放一份新的修正预算。
+        const AppConfig c = AppConfig::defaults();
+        QVERIFY(c.sessionGapMs > 100.0 * c.cycleMs);
+    }
+
     void load_missingFieldKeepsDefault()
     {
         QTemporaryFile f;
@@ -91,7 +113,8 @@ private slots:
         QVERIFY(f.open());
         f.write(R"({
           "network": { "listen_ip": 12345, "listen_port": "59152" },
-          "rsi":     { "watchdog_miss_limit": "7" },
+          "rsi":     { "watchdog_miss_limit": "7",
+                       "session_gap_ms": "3500" },
           "control": { "kp_pos": "0.9" },
           "ui":      { "refresh_ms": null }
         })");
@@ -104,6 +127,7 @@ private slots:
         QCOMPARE(c.listenIp, QString("192.168.44.1"));
         QCOMPARE(c.listenPort, quint16(59152));
         QCOMPARE(c.watchdogMissLimit, 3);
+        QCOMPARE(c.sessionGapMs, 2000.0);
         QCOMPARE(c.kpPos, 0.30);
         QCOMPARE(c.refreshMs, 33);
     }

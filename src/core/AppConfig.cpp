@@ -65,6 +65,7 @@ bool AppConfig::loadFromFile(const QString &path, AppConfig *out,
 
     const QJsonObject rsi = root.value("rsi").toObject();
     readDouble(rsi, "cycle_ms", &out->cycleMs);
+    readDouble(rsi, "session_gap_ms", &out->sessionGapMs);
     readString(rsi, "sen_type", &out->senType);
     readInt(rsi, "watchdog_miss_limit", &out->watchdogMissLimit);
 

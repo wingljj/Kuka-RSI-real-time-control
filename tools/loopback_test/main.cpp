@@ -56,12 +56,26 @@ int main(int argc, char **argv)
     QCommandLineOption oRestart("restart-at-ms",
                                 "stop()+start() N ms after launch (0=off)",
                                 "ms", "0");
-    p.addOptions({oPort, oSecs, oTrack, oRestart});
+    // 用来构造一段真实的通信间隙。默认 0 = 立刻 start()，即原来的
+    // "快速 stop()→start()"（间隙 < 1ms）。给一个正值就能落进
+    // "看门狗间隔 < 间隙 < 会话间隔" 这个区间，正是本次要验证的窗口。
+    QCommandLineOption oStopFor("stop-for-ms",
+                                "with --restart-at-ms: hold the socket closed "
+                                "N ms before start() (0=immediate)",
+                                "ms", "0");
+    // 会话判定阈值可覆盖，用于对照旧行为（旧代码用的是看门狗间隔 240ms）。
+    QCommandLineOption oGap("session-gap-ms",
+                            "override AppConfig::sessionGapMs", "ms", "");
+    p.addOptions({oPort, oSecs, oTrack, oRestart, oStopFor, oGap});
     p.process(app);
 
     AppConfig cfg = AppConfig::defaults();
     cfg.listenIp   = "127.0.0.1";
     cfg.listenPort = quint16(p.value(oPort).toUShort());
+    if (!p.value(oGap).isEmpty())
+        cfg.sessionGapMs = p.value(oGap).toDouble();
+    std::printf("session_gap_ms=%.1f\n", cfg.sessionGapMs);
+    std::fflush(stdout);
 
     // 刻意用 static：SampleRing 约 96KB，放在 main() 的栈上虽仍在 Windows
     // 默认 1MB 栈内，但没有必要占用那份余量。
@@ -120,19 +134,33 @@ int main(int argc, char **argv)
     commThread.start();
 
     const int restartAtMs = p.value(oRestart).toInt();
+    const int stopForMs   = p.value(oStopFor).toInt();
     if (restartAtMs > 0) {
-        QTimer::singleShot(restartAtMs, &app, [worker] {
+        QTimer::singleShot(restartAtMs, &app, [worker, stopForMs] {
             // 快照必须早于 stop()：stop() 会发布一份空的 StatusSnapshot，
             // 那会抹掉 accum 的可见值（控制器内部的 m_accum 不受影响）。
             dumpSnapshot("[before-restart]", state.snapshot());
-            std::printf("restart: invoking stop() then start() (queued)\n");
+            std::printf("restart: invoking stop(), then start() after %d ms\n",
+                        stopForMs);
             std::fflush(stdout);
             QMetaObject::invokeMethod(worker, "stop", Qt::QueuedConnection);
-            QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection);
+            if (stopForMs > 0) {
+                // singleShot 的 context 是 worker → 定时器在通信线程里跑，
+                // start() 直接在那条线程上执行，socket 亲和性与首个 start()
+                // 一致。
+                QTimer::singleShot(stopForMs, worker, [worker] {
+                    std::printf("gap over: invoking start()\n");
+                    std::fflush(stdout);
+                    worker->start();
+                });
+            } else {
+                QMetaObject::invokeMethod(worker, "start",
+                                          Qt::QueuedConnection);
+            }
         });
         // 重启后 stop() 发布的空快照要等下一帧才被真实数据覆盖，
         // 因此隔 1s 再采一次。
-        QTimer::singleShot(restartAtMs + 1000, &app, [] {
+        QTimer::singleShot(restartAtMs + stopForMs + 1000, &app, [] {
             dumpSnapshot("[after-restart]", state.snapshot());
         });
     }
