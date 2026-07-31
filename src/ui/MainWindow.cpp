@@ -239,15 +239,19 @@ void MainWindow::onStopListening()
 
 QWidget *MainWindow::buildTargetPanel()
 {
-    auto *box = new QGroupBox("目标位姿 (BASE)", this);
+    auto *box = new QGroupBox("目标位姿 (BASE)　／　当前位姿", this);
     auto *grid = new QGridLayout(box);
 
+    grid->addWidget(new QLabel("目标", box),     0, 2, Qt::AlignHCenter);
+    grid->addWidget(new QLabel("当前实际", box), 0, 3, Qt::AlignHCenter);
+
     for (int i = 0; i < 6; ++i) {
-        grid->addWidget(new QLabel(kAxisName[i], box), i, 0);
+        const int r = i + 1;
+        grid->addWidget(new QLabel(kAxisName[i], box), r, 0);
 
         auto *sl = new QSlider(Qt::Horizontal, box);
         sl->setRange(int(axisMin(i) * 10.0), int(axisMax(i) * 10.0));
-        grid->addWidget(sl, i, 1);
+        grid->addWidget(sl, r, 1);
         m_targetSlider[i] = sl;
 
         auto *sp = new QDoubleSpinBox(box);
@@ -256,8 +260,16 @@ QWidget *MainWindow::buildTargetPanel()
         sp->setSingleStep(0.5);
         sp->setSuffix(axisUnit(i));
         sp->setKeyboardTracking(false);
-        grid->addWidget(sp, i, 2);
+        grid->addWidget(sp, r, 2);
         m_targetSpin[i] = sp;
+
+        // 当前实际值紧贴目标值右侧，操作时最需要并排看的就是这一对
+        auto *live = new QLabel("--", box);
+        live->setMinimumWidth(95);
+        live->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        live->setStyleSheet("color: #0057b8; font-weight: bold;");
+        grid->addWidget(live, r, 3);
+        m_liveLabel[i] = live;
 
         // 滑块与数值框联动（滑块用 0.1 单位整数）
         connect(sl, &QSlider::valueChanged, this, [this, i](int v) {
@@ -375,9 +387,12 @@ void MainWindow::onRefresh()
     const double acc[6] = {s.accum.x, s.accum.y, s.accum.z,
                            s.accum.a, s.accum.b, s.accum.c};
     for (int i = 0; i < 6; ++i) {
-        m_actualLabel[i]->setText(QString::number(act[i], 'f', 3));
+        const QString cur = QString::number(act[i], 'f', 3);
+        m_actualLabel[i]->setText(cur);
         m_errorLabel[i]->setText(QString::number(err[i], 'f', 3));
         m_accumLabel[i]->setText(QString::number(acc[i], 'f', 3));
+        // 目标输入框旁边那一列
+        m_liveLabel[i]->setText(cur);
     }
 
     // 三态而不是两态：「已绑定但一帧未收」和「根本没绑上」对操作员是两件

@@ -1,4 +1,23 @@
 {
+  "_comment_safety": [
+    "accum_limit_pos_mm / accum_limit_rot_deg 是第 2 层安全限值：主机侧对",
+    "『当前实际位姿相对本次 RSI 会话锚点的位移』判限。",
+    "",
+    "当前的 1000mm / 100 度是【模拟器调试用】的放开值。krc_simulator 不实现",
+    "任何 RSI 侧限值，所以在它上面可以随便走。",
+    "",
+    "*** 接真机前必须调回 ***  KRC 侧的梯度是：",
+    "    Limit 对象      +-35 mm / +-35 度",
+    "    POSCORR         +-40 mm / 40 度",
+    "    POSCORRMON      45 mm / 45 度",
+    "主机侧必须小于其中最小的那个，否则第 2 层永远不会先触发，第一个拦下你的",
+    "会是 RSI 自己 —— 表现为机器人直接报错停机，而不是界面上一条可控的故障。",
+    "真机建议值：accum_limit_pos_mm 30、accum_limit_rot_deg 15；",
+    "首次联机更保守：10 和 5。",
+    "",
+    "另外 POSCORR 的用途是叠加在当前位姿上的小幅实时修正（几十毫米量级），",
+    "不是把机器人从 A 点搬到 B 点。大范围运动请用 KRL 的 PTP / LIN。"
+  ],
   "network": {
     "listen_ip":   "192.168.44.1",
     "listen_port": 59152
@@ -14,11 +33,11 @@
     "kp_rot":              0.30,
     "vmax_pos_mm_s":       50.0,
     "vmax_rot_deg_s":      10.0,
-    "accum_limit_pos_mm":  30.0,
-    "accum_limit_rot_deg": 15.0
+    "accum_limit_pos_mm":  1000.0,
+    "accum_limit_rot_deg": 100.0
   },
   "ui": {
-    "refresh_ms":     33,
+    "refresh_ms":     20,
     "chart_window_s": 20
   }
 }
