@@ -71,8 +71,14 @@ void ErrorChart::updateFrom(const SampleRing &ring)
         return;
     }
 
-    const double tEnd = m_buf[n - 1].tSec;
-    const double tStart = std::max(0.0, tEnd - double(m_windowSeconds));
+    const double tEnd    = m_buf[n - 1].tSec;
+    const double tOldest = m_buf[0].tSec;
+    // 轴起点取「名义窗口起点」与「实际最老样本」中较晚的那个。
+    // 绘制点数上限 kMaxDrawPoints 在高频周期下会比 chartWindowS 先耗尽
+    // （1200 点 × 12ms = 14.4s < 20s 窗口），若仍按名义窗口画轴，左侧会留出
+    // 一段永久空白，读起来像"前面的数据丢了"。轴不该承诺它没有的数据。
+    const double tStart  = std::max(std::max(0.0, tEnd - double(m_windowSeconds)),
+                                    tOldest);
 
     QList<QPointF> pos, rot;
     pos.reserve(n);
