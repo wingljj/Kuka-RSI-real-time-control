@@ -13,3 +13,7 @@ add_test(NAME test_rsi_codec COMMAND test_rsi_codec)
 add_executable(test_pose_controller test_pose_controller.cpp)
 target_link_libraries(test_pose_controller PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_pose_controller COMMAND test_pose_controller)
+
+add_executable(test_shared_state test_shared_state.cpp)
+target_link_libraries(test_shared_state PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_shared_state COMMAND test_shared_state)
