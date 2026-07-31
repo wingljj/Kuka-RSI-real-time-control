@@ -10,3 +10,4 @@ build-release/
 # 会话中的临时诊断截图与日志
 _*.png
 _*.log
+ref/
