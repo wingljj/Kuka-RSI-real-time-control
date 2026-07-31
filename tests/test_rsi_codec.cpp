@@ -1,7 +1,10 @@
 #include <QtTest>
 #include "core/RsiCodec.h"
 
+#include <QXmlStreamReader>
+
 #include <limits>
+
 
 class TestRsiCodec : public QObject
 {
@@ -116,6 +119,54 @@ private slots:
         QVERIFY(f.valid);
         QCOMPARE(f.rist.x, 1250.5);
         QCOMPARE(f.ipoc, quint64(555));
+
+        // 证明这条用例真的走了"reader 报错但仍接受"的路径，而非因为
+        // QXmlStreamReader 对尾部 NUL 根本不报错而空洞通过
+        QXmlStreamReader probe(d);
+        while (!probe.atEnd())
+            probe.readNext();
+        QVERIFY(probe.hasError());
+    }
+
+    void parseRob_rejectsTruncatedIpoc()
+    {
+        // 截断发生在 IPOC 数字中间：readElementText() 会返回部分数字，
+        // 若不检查 reader 状态就会回显一个错误的 IPOC——等同丢包。
+        const QByteArray d =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1\" Y=\"2\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
+            "<IPOC>5551";
+        const RobFrame f = RsiCodec::parseRob(d);
+        QVERIFY(!f.valid);
+    }
+
+    void parseRob_rejectsPartialIpocFollowedByMarkup()
+    {
+        // 在 Qt 6.5.3 上，只有当部分数字后面还跟着一个 '<' 时
+        // readElementText() 才会真正吐出"已累积的部分字符"（"5551"）并同时
+        // 置位 PrematureEndOfDocumentError。这两条输入才是修复前真正能
+        // 产生错误 IPOC 回显的形状，故必须单独覆盖，否则回归测试是空洞的。
+        const QByteArray d1 =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1\" Y=\"2\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
+            "<IPOC>5551<";
+        const QByteArray d2 =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1\" Y=\"2\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
+            "<IPOC>5551</IPOC";
+        QVERIFY(!RsiCodec::parseRob(d1).valid);
+        QVERIFY(!RsiCodec::parseRob(d2).valid);
+    }
+
+    void parseRob_rejectsDamageBeforeIpoc()
+    {
+        // RIst 完整但 IPOC 开标签本身被截断
+        const QByteArray d =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1\" Y=\"2\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
+            "<IPO";
+        const RobFrame f = RsiCodec::parseRob(d);
+        QVERIFY(!f.valid);
     }
 };
 

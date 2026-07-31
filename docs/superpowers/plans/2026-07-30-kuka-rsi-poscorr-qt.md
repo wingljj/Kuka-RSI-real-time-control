@@ -799,6 +799,7 @@ public:
 #include "core/RsiCodec.h"
 
 #include <QXmlStreamReader>
+#include <cmath>
 
 namespace {
 
@@ -841,22 +842,28 @@ RobFrame RsiCodec::parseRob(const QByteArray &datagram)
         } else if (name == QLatin1String("RSol")) {
             readPoseAttrs(xml.attributes(), &out.rsol);  // 可选
         } else if (name == QLatin1String("IPOC")) {
-            bool ok = false;
-            const quint64 v = xml.readElementText().toULongLong(&ok);
-            if (ok) {
-                out.ipoc = v;
-                haveIpoc = true;
+            const QString t = xml.readElementText();
+            // readElementText() 在文档提前结束时会返回"已累积的部分字符"而非
+            // 报废，所以必须在此检查 reader 状态：被截断的 <IPOC>5551 会解析出
+            // 数值 5551（真实值可能是 5551234）并被误判为有效，而 IPOC 字节精确
+            // 是硬契约——回错等同丢包。现实触发场景是接收缓冲区过小导致
+            // readDatagram 静默截断，而 IPOC 恰位于 RSI 报文末尾。
+            if (!xml.hasError()) {
+                bool ok = false;
+                const quint64 v = t.toULongLong(&ok);
+                if (ok) {
+                    out.ipoc = v;
+                    haveIpoc = true;
+                }
             }
         }
     }
 
-    if (xml.hasError() && !(haveRist && haveIpoc))
-        return out;                 // valid 仍为 false
-
-    // 只要 RIst 与 IPOC 都已成功读到就接受该帧。真实 KRC datagram 可能带
-    // 尾部填充（NUL 或空白），QXmlStreamReader 会报 "extra content at end of
-    // document"；若因此一律拒绝，将是每帧都失败的全盘故障而非间歇故障。
-    // 反之若 XML 在 IPOC 之前就损坏，haveRist/haveIpoc 自然为 false，仍会拒绝。
+    // 尾部填充容忍：真实 KRC datagram 可能带尾部 NUL 或空白，
+    // QXmlStreamReader 会就此报错；若因任何 reader 错误一律拒绝，将是每帧
+    // 都失败的全盘故障而非间歇故障。此处只依据"两个必需元素是否都完整读到"
+    // 判定——IPOC 的截断已在上面的 hasError 守卫处挡掉，RIst 的属性在
+    // StartElement 时就已完整解析（否则不会 emit），故二者均可信。
     out.valid = haveRist && haveIpoc;
     return out;
 }
