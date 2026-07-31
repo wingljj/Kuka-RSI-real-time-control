@@ -5,18 +5,28 @@
   Format: RsiContext SchemaVersion 2.0.0 (.rsix single file).
   RSI_CREATE("PoseTrack", ...) appends .rsix itself and finds this file.
 
-  PROVENANCE This file is a deliberate near-clone of a known-good PosCorr
-  context: ROS_RSI_CONTEXT.rsix (RSIVisual iiQWorks.AppBuilder). Every
-  attribute style here - IsPublic on the PosCorr limits, IsRuntime on
-  RefCorrSys and both PosCorrMon parameters, SignalName on every Input, the
-  ObjId naming - is copied from that file rather than derived. Two earlier
-  attempts failed RSI_CREATE because the attributes were reasoned out from
-  blueprints instead of copied from a file known to load.
+  THE IsRuntime RULE, and why three attempts failed on it
 
-  Differences from that reference, and only these:
-    - ConfigFile points at PoseTrack_ethernet.xml
-    - no Stop object (PoseTrack_ethernet.xml declares 6 receive channels, so
-      there is no Out7 for a Stop object to read)
+  A parameter carries IsRuntime="false" in the instance file if and only if
+  rsiToolbox.xml declares IsRuntime="false" on that parameter. The complete set
+  of such parameters is: IIRFILTER Type/Name/Order/Cutoff, DELAY DelayTime,
+  ETHERNET ConfigFile, POSCORR RefCorrSys, MONITOR IP/Channel.
+
+  Confirmed against both machine-generated files available here - RSIAngle.rsix
+  (RSIVisual WorkVisual plugin, RSI 4.0 B2647) and kuka_rsi_driver's KR_C5
+  ros_rsi.rsix (RSI 5.0 B485). In both, Ethernet ConfigFile and Monitor
+  IP/Channel carry the attribute while AxisCorrMon MaxA1..MaxE6 do not -
+  matching the toolbox declarations exactly.
+
+  So PosCorrMon MaxTrans/MaxRotAngle must NOT carry it, and RefCorrSys MUST.
+  Getting either half wrong fails RSI_CREATE:
+      both present  -> "general error: PosCorrMon_1: MaxTrans"
+      both absent   -> "invalid parameter"    (that one is RefCorrSys)
+
+  Do not take ROS_RSI_CONTEXT.rsix as a model even though it is a real PosCorr
+  context - its header says "base file adapted", it was hand-edited, and it has
+  IsRuntime on PosCorrMon plus IsPublic and SignalName attributes that appear in
+  neither machine-generated file. Prefer generated files over adapted ones.
 
   Topology:
       ETHERNET1.Out0 -> Limit_X -> PosCorr_1.CorrX
@@ -25,29 +35,28 @@
       ETHERNET1.Out3 -> Limit_A -> PosCorr_1.CorrA
       ETHERNET1.Out4 -> Limit_B -> PosCorr_1.CorrB
       ETHERNET1.Out5 -> Limit_C -> PosCorr_1.CorrC
-      PosCorrMon_1 (no inputs; watches total translation / rotation, stops)
+      PosCorrMon_1 (no inputs; watches accumulated total, stops)
 
   ParamId is the 0-based sequential position of the parameter within its own
-  type space for that object, verified empirically: the RSI 5.0 AxisCorr in
-  kuka_rsi_driver has UpperLimA1 at ParamId=6 while rsiToolbox.xml lists it at
-  Index=13, because legacy numbering reserves 13-18 for the upper limits and
-  7-12 for external axes. POSCORR's toolbox indices are contiguous 1..14, so
-  ParamId = Index - 1. RefCorrSys is an EnumParameter and therefore has its own
-  index space, which is why it is ParamId=0 alongside LowerLimX at ParamId=0.
+  type space for that object. Verified: RSI 4.0 and 5.0 both put AxisCorr
+  UpperLimA1 at ParamId=6 while rsiToolbox.xml lists Index=13, because legacy
+  numbering reserves 7-12 for external axes. POSCORR's toolbox indices are
+  contiguous 1..14, so ParamId = Index - 1. RefCorrSys is an EnumParameter with
+  its own index space, hence ParamId=0 alongside LowerLimX at ParamId=0.
 
-  LIMIT VALUES These are the reference's own proven values, on purpose. Getting
-  RSI_CREATE to succeed once matters more than the final envelope, and raising
-  them afterwards is a monotone experiment instead of an N-way guess.
+  LIMIT LAYERS - note they do not all measure the same quantity:
+      Limit objects   clamp the PER-CYCLE increment       +/-20 mm, +/-20 deg
+      PosCorr         clamps ACCUMULATED, per axis        +/-25 mm, 25 deg
+      PosCorrMon      stops on ACCUMULATED total          45 mm, 45 deg
+  PosCorr is per-axis, so three axes at 25 mm give a Euclidean total of 43.3 mm,
+  which must stay below PosCorrMon's 45 mm - otherwise the outer layer fires
+  before the inner one and the gradient is inverted. That constraint is why
+  PosCorr is 25 and not 40 here.
 
-  Note what each layer actually measures - they are not the same quantity:
-      Limit objects   clamp the PER-CYCLE increment          +/-5 mm, +/-5 deg
-      PosCorr         clamps the ACCUMULATED correction      +/-5 mm, 5 deg
-      PosCorrMon      stops on accumulated total             6 mm, 6 deg
-  The host per-cycle increment is at most kp * vmax * cycle = 0.012 mm, so the
-  Limit objects never bind in normal operation; they exist to bound a garbage
-  frame. PosCorr is the real ceiling: the robot will hard-stop once total
-  correction reaches 5 mm. Raise LowerLim/UpperLim/MaxRotAngle here, and
-  PosCorrMon above them, after the first successful run.
+  The host's per-cycle increment is at most kp * vmax * cycle = 0.012 mm, so the
+  Limit objects never bind in normal operation; they exist to bound one garbage
+  frame. Values of this magnitude are known to be accepted: an earlier attempt
+  used 35/40/45 and RSI_CREATE's complaint was about RefCorrSys, not any limit.
 -->
 <RsiContext xsi:schemaLocation="RsiContext RsiContext.xsd" SchemaVersion="2.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="RsiContext">
    <RsiObjects xmlns="RsiDriver">
@@ -69,61 +78,61 @@
 
       <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_X">
          <Inputs>
-            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="0" SignalName="ETHERNET1|Out1" />
+            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="0" />
          </Inputs>
          <Parameters>
-            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-5" />
-            <Parameter Name="UpperLimit" ParamId="1" ParamValue="5" />
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-20" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="20" />
          </Parameters>
       </RsiObject>
 
       <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_Y">
          <Inputs>
-            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="1" SignalName="ETHERNET1|Out2" />
+            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="1" />
          </Inputs>
          <Parameters>
-            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-5" />
-            <Parameter Name="UpperLimit" ParamId="1" ParamValue="5" />
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-20" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="20" />
          </Parameters>
       </RsiObject>
 
       <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_Z">
          <Inputs>
-            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="2" SignalName="ETHERNET1|Out3" />
+            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="2" />
          </Inputs>
          <Parameters>
-            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-5" />
-            <Parameter Name="UpperLimit" ParamId="1" ParamValue="5" />
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-20" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="20" />
          </Parameters>
       </RsiObject>
 
       <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_A">
          <Inputs>
-            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="3" SignalName="ETHERNET1|Out4" />
+            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="3" />
          </Inputs>
          <Parameters>
-            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-5" />
-            <Parameter Name="UpperLimit" ParamId="1" ParamValue="5" />
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-20" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="20" />
          </Parameters>
       </RsiObject>
 
       <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_B">
          <Inputs>
-            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="4" SignalName="ETHERNET1|Out5" />
+            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="4" />
          </Inputs>
          <Parameters>
-            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-5" />
-            <Parameter Name="UpperLimit" ParamId="1" ParamValue="5" />
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-20" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="20" />
          </Parameters>
       </RsiObject>
 
       <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_C">
          <Inputs>
-            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="5" SignalName="ETHERNET1|Out6" />
+            <Input InIdx="0" OutObjId="ETHERNET1" OutIdx="5" />
          </Inputs>
          <Parameters>
-            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-5" />
-            <Parameter Name="UpperLimit" ParamId="1" ParamValue="5" />
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-20" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="20" />
          </Parameters>
       </RsiObject>
 
@@ -131,40 +140,44 @@
          <Inputs>
             <!-- InIdx 0..5 are CorrX CorrY CorrZ CorrA CorrB CorrC, in the order
                  the RSIInPorts are declared in rsiToolbox.xml. -->
-            <Input InIdx="0" OutObjId="Limit_X" OutIdx="0" SignalName="Limit_X|Out1" />
-            <Input InIdx="1" OutObjId="Limit_Y" OutIdx="0" SignalName="Limit_Y|Out1" />
-            <Input InIdx="2" OutObjId="Limit_Z" OutIdx="0" SignalName="Limit_Z|Out1" />
-            <Input InIdx="3" OutObjId="Limit_A" OutIdx="0" SignalName="Limit_A|Out1" />
-            <Input InIdx="4" OutObjId="Limit_B" OutIdx="0" SignalName="Limit_B|Out1" />
-            <Input InIdx="5" OutObjId="Limit_C" OutIdx="0" SignalName="Limit_C|Out1" />
+            <Input InIdx="0" OutObjId="Limit_X" OutIdx="0" />
+            <Input InIdx="1" OutObjId="Limit_Y" OutIdx="0" />
+            <Input InIdx="2" OutObjId="Limit_Z" OutIdx="0" />
+            <Input InIdx="3" OutObjId="Limit_A" OutIdx="0" />
+            <Input InIdx="4" OutObjId="Limit_B" OutIdx="0" />
+            <Input InIdx="5" OutObjId="Limit_C" OutIdx="0" />
          </Inputs>
          <Parameters>
-            <Parameter IsPublic="true" Name="LowerLimX" ParamId="0" ParamValue="-5" />
-            <Parameter IsPublic="true" Name="LowerLimY" ParamId="1" ParamValue="-5" />
-            <Parameter IsPublic="true" Name="LowerLimZ" ParamId="2" ParamValue="-5" />
-            <Parameter IsPublic="true" Name="UpperLimX" ParamId="3" ParamValue="5" />
-            <Parameter IsPublic="true" Name="UpperLimY" ParamId="4" ParamValue="5" />
-            <Parameter IsPublic="true" Name="UpperLimZ" ParamId="5" ParamValue="5" />
+            <Parameter Name="LowerLimX" ParamId="0" ParamValue="-25" />
+            <Parameter Name="LowerLimY" ParamId="1" ParamValue="-25" />
+            <Parameter Name="LowerLimZ" ParamId="2" ParamValue="-25" />
+            <Parameter Name="UpperLimX" ParamId="3" ParamValue="25" />
+            <Parameter Name="UpperLimY" ParamId="4" ParamValue="25" />
+            <Parameter Name="UpperLimZ" ParamId="5" ParamValue="25" />
             <!-- MaxRotAngle is a SINGLE total-angle limit, not one per axis. -->
-            <Parameter IsPublic="true" Name="MaxRotAngle" ParamId="6" ParamValue="5" />
+            <Parameter Name="MaxRotAngle" ParamId="6" ParamValue="25" />
             <!-- RefCorrSys is an EnumParameter (EnumType TrafoCosysType) that
-                 serialises as a NUMBER, not the string "Base". 1 = Base, which
-                 is what the reference file writes for a BASE-frame correction.
-                 The blueprint marks it CanBeSetAtRuntime="false", and the
-                 corresponding instance attribute is IsRuntime="false". -->
+                 serialises as a NUMBER, not the string "Base". 1 = Base.
+                 It is one of the few parameters that MUST carry IsRuntime -
+                 see the rule at the top of this file. -->
             <Parameter IsRuntime="false" Name="RefCorrSys" ParamId="0" ParamValue="1" />
          </Parameters>
       </RsiObject>
 
       <RsiObject ObjTypeId="81" ObjType="PosCorrMon" ObjId="PosCorrMon_1">
          <Parameters>
-            <!-- MaxTrans is total translation - a single Euclidean norm, not a
+            <!-- No IsRuntime here: rsiToolbox.xml does not declare it on these
+                 two, and neither machine-generated reference file writes it on
+                 the equivalent AxisCorrMon parameters. Adding it is what
+                 produced "general error: PosCorrMon_1: MaxTrans".
+
+                 MaxTrans is total translation - a single Euclidean norm, not a
                  per-axis figure. That is why the host safety ledger uses hypot:
                  two layers can only be compared if they measure the same thing.
                  Rotation stays per-axis on the host, since Euler angles have no
                  meaningful Euclidean norm. -->
-            <Parameter IsRuntime="false" Name="MaxTrans" ParamId="0" ParamValue="6" />
-            <Parameter IsRuntime="false" Name="MaxRotAngle" ParamId="1" ParamValue="6" />
+            <Parameter Name="MaxTrans" ParamId="0" ParamValue="45" />
+            <Parameter Name="MaxRotAngle" ParamId="1" ParamValue="45" />
          </Parameters>
       </RsiObject>
 

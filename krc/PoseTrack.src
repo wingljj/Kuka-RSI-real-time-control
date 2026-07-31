@@ -43,12 +43,12 @@ DEF PoseTrack( )
 ;     -> confirm the host shows zero error on all six components
 ;     -> only then tick "enable tracking" -> nudge X by 2 mm
 ;
-;  CORRECTION CEILING PosCorr_1 is currently set to +/-5 mm and 5 deg, and
-;     PosCorrMon_1 stops at 6 mm / 6 deg. These are the values of the
-;     reference context this file was cloned from, kept deliberately for the
-;     first run. The robot WILL hard-stop once the accumulated correction
-;     reaches 5 mm, so keep the first target nudges small. Raise the limits
-;     in PoseTrack.rsix once a run has succeeded, PosCorrMon above PosCorr.
+;  CORRECTION CEILING PosCorr_1 allows +/-25 mm per axis and 25 deg of
+;     accumulated correction; PosCorrMon_1 stops at a total of 45 mm / 45 deg.
+;     Per-axis 25 mm on three axes is a Euclidean total of 43.3 mm, which stays
+;     under 45 - keep that relationship if you raise either one, or the outer
+;     monitor fires before the inner limit and the gradient is inverted.
+;     Keep the first target nudges to a couple of millimetres anyway.
 ; =============================================================================
 
 DECL INT ret

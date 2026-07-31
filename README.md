@@ -84,14 +84,15 @@ KRC ──UDP──> 上位机
 |---|---|---|
 | 1 单周期增量 | 上位机 `kp × 误差`，夹到 `vmax × cycle` | 0.1 × 10mm/s × 12ms |
 | 2 锚定位移 | 上位机 `‖RIst − RIst₀‖` | 可配 |
-| 3 单周期限幅 | `PoseTrack.rsix` 的 `Limit` 对象 | ±5 mm / ±5° |
-| 4 POSCORR 累积 | `LowerLim/UpperLim`、`MaxRotAngle` | ±5 mm / 5° |
-| 5 POSCORRMON | `MaxTrans`、`MaxRotAngle` | 6 mm / 6° |
+| 3 单周期限幅 | `PoseTrack.rsix` 的 `Limit` 对象 | ±20 mm / ±20° |
+| 4 POSCORR 累积（分量） | `LowerLim/UpperLim`、`MaxRotAngle` | ±25 mm / 25° |
+| 5 POSCORRMON 累积（总量） | `MaxTrans`、`MaxRotAngle` | 45 mm / 45° |
 
 三层里只有 4、5 是**累积**量；`Limit` 限的是**单周期增量**，两者不是同一个量。
 上位机单周期增量最大 0.012 mm，所以 `Limit` 正常不会触发，它的作用是兜住一帧垃圾数据。
-真正的天花板是 POSCORR 的 ±5 mm —— 累积修正到 5 mm 机器人就硬停。
-这三个值取自被克隆的那份已验证 RSI 上下文，刻意保留用于首次联机；跑通后再逐级放大。
+真正的天花板是 POSCORR 的 ±25 mm（分量）与 POSCORRMON 的 45 mm（总量）。
+两者必须保持这个关系：三轴各 25 mm 的欧氏总量是 43.3 mm，仍低于 45 —— 
+否则外层监视会先于内层限值触发，梯度就反了。
 
 第 2 层刻意用**实际位姿相对会话锚点的位移**，而非命令增量之和 ——
 两者原点不同，只有前者与 POSCORR 共享原点因而可比较。
