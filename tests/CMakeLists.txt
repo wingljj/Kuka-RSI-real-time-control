@@ -9,3 +9,7 @@ add_test(NAME test_app_config COMMAND test_app_config)
 add_executable(test_rsi_codec test_rsi_codec.cpp)
 target_link_libraries(test_rsi_codec PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_rsi_codec COMMAND test_rsi_codec)
+
+add_executable(test_pose_controller test_pose_controller.cpp)
+target_link_libraries(test_pose_controller PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_pose_controller COMMAND test_pose_controller)
