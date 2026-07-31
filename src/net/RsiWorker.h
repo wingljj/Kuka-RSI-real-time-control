@@ -16,6 +16,14 @@ public:
     RsiWorker(const AppConfig &cfg, SharedState *state, SampleRing *ring,
               QObject *parent = nullptr);
 
+    // 【连接方式契约】以下所有槽与信号都必须以 Qt::QueuedConnection 连接。
+    // 不支持直连：
+    //  - applyTarget/setTracking/applyConfig 会改写 m_ctl / m_cfg，而通信线程
+    //    正在 step() 与 buildSen() 中读取它们。applyConfig 尤其危险：AppConfig
+    //    含两个 QString，直连会在通信线程读 senType 的同时改写其引用计数，
+    //    那是堆损坏而不仅是脏读。
+    //  - 直连的 bindFailed/listening/firstFrameReceived 槽若调用 stop()，会在
+    //    onDatagram() 的循环体中途把 m_sock/m_watchdog 置空。
 public slots:
     void start();
     void stop();
@@ -55,6 +63,9 @@ private:
 
     QElapsedTimer m_sessionTimer;   // 曲线时间轴
     QElapsedTimer m_cycleTimer;     // 实测周期
+    QElapsedTimer m_sinceLastFrame;   // 最后一次收到有效帧的时刻
     bool          m_cycleTimerValid = false;
     double        m_measuredCycleMs = 0.0;
+
+    Pose m_lastActual;   // 最近一帧的实际位姿，供 resetToActual() 槽使用
 };

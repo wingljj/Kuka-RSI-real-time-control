@@ -46,6 +46,12 @@ void RsiWorker::start()
     m_missed          = 0;
     m_maxReplyUs      = 0.0;
     m_cycleTimerValid = false;
+    m_lastIpoc        = 0;
+    m_measuredCycleMs = 0.0;
+    // 注意：m_sinceLastFrame 只在 start() 失效化，stop() 里刻意不动它——
+    // 它必须跨越一次 teardown 存活，下个 start() 才能分辨"真正的会话重启"
+    // 与"快速的 stop()→start()"。
+    m_sinceLastFrame.invalidate();
 
     emit listening();
 }
@@ -79,15 +85,27 @@ void RsiWorker::applyConfig(AppConfig cfg)
 
 void RsiWorker::resetToActual()
 {
-    m_ctl.resetToActual(m_state->snapshot().actual);
+    // 用通信线程自己缓存的最近一帧实际位姿，避免为了取 6 个 double 而拷贝
+    // 整个 StatusSnapshot（内含 QString），也避免在尚无发布时退化成原点。
+    m_ctl.resetToActual(m_lastActual);
 }
 
 void RsiWorker::onWatchdog()
 {
-    // 长时间无包：视为 RSI 已停止，退回未连接
     if (!m_haveFirstFrame)
         return;
-    m_haveFirstFrame = false;
+    if (!m_watchdog)
+        return;
+    // 用流逝时间判定静默，而不是每帧重启定时器：QTimer::start() 在已激活的
+    // 定时器上会 delete/new 一个 WinTimerInfo 并做一对 KillTimer/SetTimer
+    // 系统调用，那是每周期一次的堆分配，违反"实时路径无动态内存分配"。
+    if (m_sinceLastFrame.isValid()
+        && m_sinceLastFrame.elapsed() < m_watchdog->interval())
+        return;
+
+    m_haveFirstFrame  = false;
+    m_cycleTimerValid = false;   // 否则下个会话的首帧会把整段静默当作周期发布
+    m_missed          = 0;       // 丢包计数是突发保护，不是终身计数
     m_ring->clear();
     StatusSnapshot s = m_state->snapshot();
     s.connected = false;
@@ -107,21 +125,39 @@ void RsiWorker::onDatagram()
         const RobFrame f = RsiCodec::parseRob(dg.data());
 
         // ── 无论解析成败，都必须回包 ──
-        quint64 echoIpoc = f.valid ? f.ipoc : m_lastIpoc;
+        // codec 独立解析 IPOC，并在其不可信时留在默认值 0（见 RsiCodec 里的
+        // hasError 守卫），所以 0 是可靠哨兵。只要 IPOC 本身解析成功就必须
+        // 原样回显——哪怕 RIst 损坏导致整帧 invalid。回一个陈旧 IPOC 等同
+        // 丢包，而那正是"任何分支都必须回包"这条约束要避免的后果。
+        const quint64 echoIpoc = f.ipoc ? f.ipoc : m_lastIpoc;
         Pose    delta;   // 默认零增量
+        bool    wasFirstFrame = false;
 
         if (f.valid) {
+            bool ipocOk = true;
             if (m_haveFirstFrame) {
                 // IPOC 应单调递增；否则计一次丢包
-                if (f.ipoc <= m_lastIpoc)
+                if (f.ipoc <= m_lastIpoc) {
                     ++m_missed;
+                    ipocOk = false;
+                }
             } else {
-                // 首帧 = RSI 会话开始：目标置为实际且累积清零，机器人原地不动。
-                // 必须用 beginSession 而非 resetToActual——后者刻意保留累积量，
-                // 因为 RELATIVE 模式下 KRC 侧已施加的修正不会因主机归零而消失。
-                m_ctl.beginSession(f.rist);
+                // 只有确实静默过至少一个看门狗周期，才算真正的 RSI 会话重启，
+                // 才可以清零累积量。快速的 stop()→start() 不算：KRC 侧已施加
+                // 的修正仍然存在，清零等于凭空多发一份预算，反复几次就能把
+                // 总修正推过 POSCORR 的 ~50mm 硬限，而界面上第 2 层始终显示
+                // 一个很小的累积值。
+                const int wdIntervalMs =
+                    m_watchdog ? m_watchdog->interval() : 0;
+                const bool genuineSessionStart =
+                    !m_sinceLastFrame.isValid()
+                    || m_sinceLastFrame.elapsed() >= wdIntervalMs;
+                if (genuineSessionStart)
+                    m_ctl.beginSession(f.rist);
+                else
+                    m_ctl.resetToActual(f.rist);
                 m_haveFirstFrame = true;
-                emit firstFrameReceived();
+                wasFirstFrame    = true;
             }
 
             if (m_cycleTimerValid) {
@@ -131,7 +167,12 @@ void RsiWorker::onDatagram()
             m_cycleTimerValid = true;
 
             m_lastIpoc = f.ipoc;
+            m_sinceLastFrame.restart();
+            m_lastActual = f.rist;
             ++m_frameCount;
+
+            if (ipocOk)
+                m_missed = 0;       // 连续丢包计数：只有正常帧才清零
 
             delta = m_ctl.step(f.rist);
         } else {
@@ -144,6 +185,9 @@ void RsiWorker::onDatagram()
 
         const double replyUs = replyTimer.nsecsElapsed() / 1000.0;
         m_maxReplyUs = std::max(m_maxReplyUs, replyUs);
+
+        if (wasFirstFrame)
+            emit firstFrameReceived();
 
         if (m_missed >= m_cfg.watchdogMissLimit &&
             m_ctl.state() == TrackState::Tracking) {
@@ -162,8 +206,6 @@ void RsiWorker::onDatagram()
                                       std::fabs(err.c)});
             m_ring->push(cs);
         }
-
-        m_watchdog->start();   // 收到包就重置看门狗
     }
 }
 
