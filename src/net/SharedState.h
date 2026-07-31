@@ -2,7 +2,9 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QString>
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include "core/PoseController.h"
 #include "core/Pose.h"
 
@@ -26,6 +28,11 @@ struct StatusSnapshot
 class SharedState
 {
 public:
+    // 注意：m_snap = s 会销毁前一个 m_snap.faultReason。稳态下 faultReason 是
+    // 默认构造的 QString（内部指针为空），赋值与析构都不碰堆；但若某一帧它
+    // 非空，comm 线程上的引用计数递减可能归零并触发 free()。因此 faultReason
+    // 只允许在状态发生转换时赋值，绝不可每周期构造新字符串——那会让本该
+    // 无分配的实时路径每帧都进堆。
     void publish(const StatusSnapshot &s)
     {
         QMutexLocker lock(&m_mutex);
@@ -68,11 +75,23 @@ public:
     // 按时间先后写入 dst，返回实际写入数量。
     int copyOut(ChartSample *dst, int maxCount) const
     {
+        if (!dst || maxCount <= 0)
+            return 0;                   // 负数会让下面的 % 触发有符号溢出
         QMutexLocker lock(&m_mutex);
         const int n = std::min(m_size, maxCount);
         const int start = (m_head - n + kCapacity) % kCapacity;
-        for (int i = 0; i < n; ++i)
-            dst[i] = m_buf[(start + i) % kCapacity];
+        // 用两段连续 memcpy 代替逐元素取模循环。持锁时长直接决定 comm 线程
+        // push() 的最坏等待：GUI 线程是普通优先级且 QMutex 无优先级继承，
+        // 若它在持锁期间被 OS 抢占，push() 会一直停到它被重新调度——最多
+        // 一个时间片（默认定时器精度下约 10–15ms），超过 4–12ms 的 RSI 周期，
+        // 于是迟到回复→丢包→停机。缩短持锁窗口是直接的风险削减。
+        // ChartSample 是三个 double，trivially copyable，memcpy 安全。
+        const int first = std::min(n, kCapacity - start);
+        std::memcpy(dst, &m_buf[start],
+                    size_t(first) * sizeof(ChartSample));
+        if (n > first)
+            std::memcpy(dst + first, &m_buf[0],
+                        size_t(n - first) * sizeof(ChartSample));
         return n;
     }
 

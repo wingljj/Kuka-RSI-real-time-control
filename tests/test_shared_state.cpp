@@ -120,6 +120,45 @@ private slots:
         QCOMPARE(out.frameCount, quint64(999));
         QVERIFY(out.connected);
     }
+
+    void ring_rejectsNonPositiveMaxCount()
+    {
+        SampleRing r;
+        for (int i = 0; i < 10; ++i)
+            r.push(ChartSample{double(i), 0.0, 0.0});
+        std::vector<ChartSample> out(8);
+        // 负数或零必须直接返回 0，而不是返回负数或触发有符号溢出
+        QCOMPARE(r.copyOut(out.data(), 0), 0);
+        QCOMPARE(r.copyOut(out.data(), -1), 0);
+        QCOMPARE(r.copyOut(nullptr, 8), 0);
+    }
+
+    void ring_wrapBoundaryExactSplit()
+    {
+        // 让 start 恰好落在末尾，迫使 memcpy 走两段路径且第二段长度为 n-1
+        SampleRing r;
+        const int total = SampleRing::kCapacity + 1;   // m_head == 1
+        for (int i = 0; i < total; ++i)
+            r.push(ChartSample{double(i), 0.0, 0.0});
+        std::vector<ChartSample> out(SampleRing::kCapacity);
+        QCOMPARE(r.copyOut(out.data(), SampleRing::kCapacity),
+                 SampleRing::kCapacity);
+        QCOMPARE(out.front().tSec, 1.0);
+        QCOMPARE(out.back().tSec, double(total - 1));
+        for (int i = 1; i < SampleRing::kCapacity; ++i)
+            QVERIFY(out[i].tSec > out[i - 1].tSec);
+    }
+
+    void ring_singleElementAfterWrap()
+    {
+        SampleRing r;
+        for (int i = 0; i < SampleRing::kCapacity + 5; ++i)
+            r.push(ChartSample{double(i), 0.0, 0.0});
+        std::vector<ChartSample> out(1);
+        QCOMPARE(r.copyOut(out.data(), 1), 1);
+        // 只要一个点时必须是最新的那个
+        QCOMPARE(out[0].tSec, double(SampleRing::kCapacity + 4));
+    }
 };
 
 QTEST_MAIN(TestSharedState)
