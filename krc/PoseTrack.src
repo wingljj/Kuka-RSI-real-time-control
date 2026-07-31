@@ -6,7 +6,7 @@ DEF PoseTrack( )
 
 ; =============================================================================
 ;  RSI POSCORR realtime pose tracking
-;    Reference frame : BASE   (set in PoseTrack.rsix, POSCORR1.RefCorrSys = 1)
+;    Reference frame : BASE   (set in PoseTrack.rsix, PosCorr_1.RefCorrSys = 1)
 ;    Correction mode : RELATIVE
 ;    Host            : rsi_host.exe listening on 192.168.44.1:59152
 ;
@@ -42,6 +42,13 @@ DEF PoseTrack( )
 ;     -> start this program, do the BCO (the robot must not move)
 ;     -> confirm the host shows zero error on all six components
 ;     -> only then tick "enable tracking" -> nudge X by 2 mm
+;
+;  CORRECTION CEILING PosCorr_1 is currently set to +/-5 mm and 5 deg, and
+;     PosCorrMon_1 stops at 6 mm / 6 deg. These are the values of the
+;     reference context this file was cloned from, kept deliberately for the
+;     first run. The robot WILL hard-stop once the accumulated correction
+;     reaches 5 mm, so keep the first target nudges small. Raise the limits
+;     in PoseTrack.rsix once a run has succeeded, PosCorrMon above PosCorr.
 ; =============================================================================
 
 DECL INT ret
