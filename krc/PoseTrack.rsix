@@ -122,28 +122,41 @@
             <Input InIdx="5" OutObjId="Limit_C" OutIdx="0" />
          </Inputs>
          <Parameters>
-            <Parameter IsPublic="true" Name="LowerLimX" ParamId="0" ParamValue="-40" />
-            <Parameter IsPublic="true" Name="LowerLimY" ParamId="1" ParamValue="-40" />
-            <Parameter IsPublic="true" Name="LowerLimZ" ParamId="2" ParamValue="-40" />
-            <Parameter IsPublic="true" Name="UpperLimX" ParamId="3" ParamValue="40" />
-            <Parameter IsPublic="true" Name="UpperLimY" ParamId="4" ParamValue="40" />
-            <Parameter IsPublic="true" Name="UpperLimZ" ParamId="5" ParamValue="40" />
+            <Parameter Name="LowerLimX" ParamId="0" ParamValue="-40" />
+            <Parameter Name="LowerLimY" ParamId="1" ParamValue="-40" />
+            <Parameter Name="LowerLimZ" ParamId="2" ParamValue="-40" />
+            <Parameter Name="UpperLimX" ParamId="3" ParamValue="40" />
+            <Parameter Name="UpperLimY" ParamId="4" ParamValue="40" />
+            <Parameter Name="UpperLimZ" ParamId="5" ParamValue="40" />
             <!-- MaxRotAngle is a SINGLE total-angle limit, not one per axis. -->
-            <Parameter IsPublic="true" Name="MaxRotAngle" ParamId="6" ParamValue="40" />
+            <Parameter Name="MaxRotAngle" ParamId="6" ParamValue="40" />
             <!-- RefCorrSys is a TrafoCosysType enum serialised as a NUMBER:
                  World=0  Base=1  RobRoot=2  Tool=3  TTS=4
-                 We want BASE, hence 1. The string "Base" is rejected. -->
-            <Parameter IsRuntime="false" Name="RefCorrSys" ParamId="0" ParamValue="1" />
+                 We want BASE, hence 1. The string "Base" is rejected.
+
+                 No IsRuntime attribute: in the whole RSI 5.0 reference file
+                 (kuka_rsi_driver KR_C5, RSIVisual-generated) exactly one
+                 parameter carries it - Ethernet's ConfigFile. Every enum
+                 parameter there (GearTorque TorqueSource, Status Type) is bare
+                 Name/ParamId/ParamValue with a numeric value. -->
+            <Parameter Name="RefCorrSys" ParamId="0" ParamValue="1" />
          </Parameters>
       </RsiObject>
 
-      <RsiObject ObjTypeId="81" ObjType="PosCorrMon" ObjId="POSCORRMON1">
+      <RsiObject ObjTypeId="81" ObjType="PosCorrMon" ObjId="PosCorrMon_1">
          <Parameters>
             <!-- MaxTrans is total translation (not per-axis), i.e. a Euclidean
                  norm. That is why the host layer 2 uses hypot: the two layers
-                 only compare if they measure the same quantity. -->
-            <Parameter IsRuntime="false" Name="MaxTrans" ParamId="0" ParamValue="45" />
-            <Parameter IsRuntime="false" Name="MaxRotAngle" ParamId="1" ParamValue="45" />
+                 only compare if they measure the same quantity.
+
+                 No IsRuntime attribute here. The blueprint marks these
+                 CanBeSetAtRuntime="false", but that describes the parameter -
+                 it is not something the instance file declares. RSI 5.0 rejects
+                 the object with "general error: PosCorrMon_1: MaxTrans" if the
+                 attribute is present. The RSIVisual-generated AxisCorrMon in
+                 kuka_rsi_driver (RSI 5.0 B485) carries no IsRuntime either. -->
+            <Parameter Name="MaxTrans" ParamId="0" ParamValue="45" />
+            <Parameter Name="MaxRotAngle" ParamId="1" ParamValue="45" />
          </Parameters>
       </RsiObject>
 
