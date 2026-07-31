@@ -2,9 +2,11 @@
 #include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QMainWindow>
 #include <QSlider>
+#include <QSpinBox>
 #include <QThread>
 #include <QTimer>
 #include <array>
@@ -27,11 +29,19 @@ private slots:
     void onZeroToActual();
     void onTrackingToggled(bool on);
     void onStopTracking();
+    void onStartListening();
+    void onStopListening();
 
 private:
     QWidget *buildTargetPanel();
     QWidget *buildReadoutPanel();
     QWidget *buildParamPanel();
+    QWidget *buildConnPanel();
+
+    // 依据当前是否已绑定，切换监听按钮与地址输入的可用状态。
+    // 地址与端口只在未绑定时可编辑——运行中改它们毫无意义，而且会让界面
+    // 显示的地址与实际绑定的地址不符。
+    void updateConnControls();
 
     AppConfig    m_cfg;
     SharedState  m_state;
@@ -55,6 +65,17 @@ private:
     // 两段式使能：连接不等于运动，操作员确认数值后才勾选。
     QCheckBox *m_trackCheck = nullptr;
     QLabel    *m_safetyNote = nullptr;
+
+    // 连接配置与手动监听控制。没有这些的话 bindFailed 是个死局：
+    // 弹一次对话框之后应用永久停在未连接，只能改 JSON 再重启。
+    QLineEdit  *m_ipEdit    = nullptr;
+    QSpinBox   *m_portSpin  = nullptr;
+    QPushButton *m_listenBtn = nullptr;
+    QPushButton *m_unlistenBtn = nullptr;
+
+    // 是否已成功绑定。区别于 StatusSnapshot::connected（那表示已收到帧）：
+    // 「已绑定但一帧未收」和「根本没绑上」对操作员是两件完全不同的事。
+    bool m_listening = false;
 
     bool m_suppressTargetSignal = false;
 };

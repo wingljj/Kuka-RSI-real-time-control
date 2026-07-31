@@ -1,9 +1,13 @@
 #include "ui/MainWindow.h"
 
+#include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
 #include <QVBoxLayout>
 #include <QMessageBox>
 #include <cmath>
@@ -31,20 +35,14 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     auto *central = new QWidget(this);
     auto *outer = new QVBoxLayout(central);
     outer->addWidget(m_statusLabel);
+    outer->addWidget(buildConnPanel());
 
-    auto *row = new QHBoxLayout;
-    auto *left = new QVBoxLayout;
-    left->addWidget(buildTargetPanel());
-    left->addWidget(buildParamPanel());
-    left->addStretch();
-    row->addLayout(left, 1);
-    auto *right = new QVBoxLayout;
-    m_chart = new ErrorChart(m_cfg.chartWindowS, this);
-    right->addWidget(m_chart, 2);
-    right->addWidget(buildReadoutPanel(), 1);
-    row->addLayout(right, 1);
-    outer->addLayout(row);
-
+    // 按钮栏紧随状态栏，并且刻意放在下面那个滚动区之外。
+    // 它原先位于整个布局的最底部，而目标面板、控制参数、曲线、读数四者的
+    // minimumSizeHint 之和会把窗口撑到 900px 以上——于是在 1440 高的屏幕上
+    // 按钮栏被直接推出屏幕，操作员既看不到也点不到「使能跟踪」「停止跟踪」，
+    // 以及那条说明"软停止不是急停"的提示。安全关键控件的可见性不能依赖
+    // "窗口恰好够大"：把它们放在不可压缩的位置，结构上就不可能被截断。
     auto *bar = new QHBoxLayout;
 
     auto *zeroBtn = new QPushButton("归零到当前位姿", this);
@@ -77,6 +75,28 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 
     outer->addLayout(bar);
 
+    // 可压缩的内容放进滚动区：窗口再小也能滚到，而顶部的状态栏与控制栏始终
+    // 可见。这样"看得到状态、按得到停止"就不再是一个取决于屏幕尺寸的巧合。
+    auto *row = new QHBoxLayout;
+    auto *left = new QVBoxLayout;
+    left->addWidget(buildTargetPanel());
+    left->addWidget(buildParamPanel());
+    left->addStretch();
+    row->addLayout(left, 1);
+    auto *right = new QVBoxLayout;
+    m_chart = new ErrorChart(m_cfg.chartWindowS, this);
+    right->addWidget(m_chart, 2);
+    right->addWidget(buildReadoutPanel(), 1);
+    row->addLayout(right, 1);
+
+    auto *scrollInner = new QWidget;
+    scrollInner->setLayout(row);
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidget(scrollInner);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    outer->addWidget(scroll, 1);
+
     setCentralWidget(central);
 
     // 通信线程
@@ -92,8 +112,18 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
             m_worker, &QObject::deleteLater);
     // 两个 lambda 都显式传 this 作为 context：否则它们会在发射线程（通信线程）
     // 上执行，而它们都要碰窗口部件。
+    connect(m_worker, &RsiWorker::listening,
+            this, [this] {
+                m_listening = true;
+                updateConnControls();
+            });
     connect(m_worker, &RsiWorker::bindFailed,
             this, [this](const QString &why) {
+                // 绑定失败不再是死局：回到未绑定态，地址与端口重新可改、
+                // 「开始监听」重新可用。端口被占用是最常见的现场情形
+                //（例如上一次的模拟器还挂着），不该逼操作员改 JSON 重启。
+                m_listening = false;
+                updateConnControls();
                 QMessageBox::critical(this, "监听失败", why);
             });
     connect(m_worker, &RsiWorker::firstFrameReceived,
@@ -115,7 +145,14 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     connect(m_refresh, &QTimer::timeout, this, &MainWindow::onRefresh);
     m_refresh->start();
 
-    resize(980, 620);
+    // 初始尺寸夹到工作区之内。滚动区已经保证按钮栏不会被挤出屏幕，但一个
+    // 开局就比屏幕还高的窗口仍然会让操作员第一眼看不到读数，得先去拖窗口。
+    const QRect wa = QGuiApplication::primaryScreen()->availableGeometry();
+    resize(qMin(1180, wa.width() - 80), qMin(760, wa.height() - 80));
+
+    // 初始按未绑定渲染。线程启动会自动尝试用配置文件里的地址绑定，成功后
+    // listening() 会把状态翻过来；失败则停在这个状态，地址可改、可重试。
+    updateConnControls();
 }
 
 MainWindow::~MainWindow()
@@ -128,6 +165,76 @@ MainWindow::~MainWindow()
         m_commThread->quit();
         m_commThread->wait(2000);
     }
+}
+
+QWidget *MainWindow::buildConnPanel()
+{
+    auto *w = new QWidget(this);
+    auto *lay = new QHBoxLayout(w);
+    lay->setContentsMargins(0, 0, 0, 0);
+
+    lay->addWidget(new QLabel("监听地址", w));
+    m_ipEdit = new QLineEdit(m_cfg.listenIp, w);
+    m_ipEdit->setMaximumWidth(150);
+    lay->addWidget(m_ipEdit);
+
+    lay->addWidget(new QLabel(":", w));
+    m_portSpin = new QSpinBox(w);
+    m_portSpin->setRange(1, 65535);
+    m_portSpin->setValue(int(m_cfg.listenPort));
+    m_portSpin->setMaximumWidth(95);
+    lay->addWidget(m_portSpin);
+
+    m_listenBtn = new QPushButton("开始监听", w);
+    connect(m_listenBtn, &QPushButton::clicked,
+            this, &MainWindow::onStartListening);
+    lay->addWidget(m_listenBtn);
+
+    m_unlistenBtn = new QPushButton("停止监听", w);
+    connect(m_unlistenBtn, &QPushButton::clicked,
+            this, &MainWindow::onStopListening);
+    lay->addWidget(m_unlistenBtn);
+
+    lay->addStretch();
+    return w;
+}
+
+void MainWindow::updateConnControls()
+{
+    // 地址与端口只在未绑定时可编辑。运行中改它们不会生效，只会让界面显示的
+    // 地址与实际绑定的地址不符——那比不给改更糟。
+    if (m_ipEdit)      m_ipEdit->setEnabled(!m_listening);
+    if (m_portSpin)    m_portSpin->setEnabled(!m_listening);
+    if (m_listenBtn)   m_listenBtn->setEnabled(!m_listening);
+    if (m_unlistenBtn) m_unlistenBtn->setEnabled(m_listening);
+}
+
+void MainWindow::onStartListening()
+{
+    if (!m_worker || m_listening)
+        return;
+    m_cfg.listenIp   = m_ipEdit->text().trimmed();
+    m_cfg.listenPort = quint16(m_portSpin->value());
+    // 先把新地址推给通信线程，再让它绑定。两者都走同一条队列，投递顺序
+    // 因此有保证——不必担心 start() 抢在 applyConfig() 之前拿到旧地址。
+    QMetaObject::invokeMethod(m_worker, "applyConfig",
+                              Qt::QueuedConnection, Q_ARG(AppConfig, m_cfg));
+    QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
+    // 不在此处置 m_listening：只有 RsiWorker 真正 bind 成功后发出的
+    // listening() 才算数，否则界面会先宣称监听中、随后又弹绑定失败。
+}
+
+void MainWindow::onStopListening()
+{
+    if (!m_worker)
+        return;
+    QMetaObject::invokeMethod(m_worker, "stop", Qt::QueuedConnection);
+    m_listening = false;
+    // socket 一关就不可能再有回包，跟踪也就无从谈起。让勾选框如实反映这点，
+    // 而不是留一个打着勾的控件覆盖一台已经断开的机器。
+    if (m_trackCheck)
+        m_trackCheck->setChecked(false);
+    updateConnControls();
 }
 
 QWidget *MainWindow::buildTargetPanel()
@@ -273,7 +380,17 @@ void MainWindow::onRefresh()
         m_accumLabel[i]->setText(QString::number(acc[i], 'f', 3));
     }
 
-    QString st = s.connected ? "● 已连接" : "○ 未连接";
+    // 三态而不是两态：「已绑定但一帧未收」和「根本没绑上」对操作员是两件
+    // 完全不同的事——前者该去看 KRC 那边的 KRL 程序有没有跑起来、地址端口
+    // 对不对；后者是本机的绑定就失败了，多半端口被占。原先合并成「未连接」
+    // 会把人指向错误的排查方向。
+    QString st;
+    if (s.connected)
+        st = "● 已连接";
+    else if (m_listening)
+        st = "◐ 监听中（等待 KRC 发帧）";
+    else
+        st = "○ 未监听";
     if (s.state == TrackState::Tracking)
         st += "  跟踪中";
     else if (s.state == TrackState::Fault)
