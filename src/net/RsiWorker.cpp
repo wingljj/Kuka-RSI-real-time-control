@@ -188,9 +188,6 @@ void RsiWorker::onDatagram()
         const double replyUs = replyTimer.nsecsElapsed() / 1000.0;
         m_maxReplyUs = std::max(m_maxReplyUs, replyUs);
 
-        if (wasFirstFrame)
-            emit firstFrameReceived();
-
         if (m_missed >= m_cfg.watchdogMissLimit &&
             m_ctl.state() == TrackState::Tracking) {
             m_ctl.setTracking(false);
@@ -207,6 +204,13 @@ void RsiWorker::onDatagram()
             cs.rotErrNorm = std::max({std::fabs(err.a), std::fabs(err.b),
                                       std::fabs(err.c)});
             m_ring->push(cs);
+
+            // 必须在 publishSnapshot 之后才发这个信号：GUI 的处理器会读
+            // snapshot() 来同步目标位姿，若先发信号它读到的还是本帧之前的
+            // 快照（首帧时即全零）。今天只是显示错，但一旦「使能跟踪」
+            // 依赖这个目标值，就会变成带着错误目标启动跟踪。
+            if (wasFirstFrame)
+                emit firstFrameReceived();
         }
     }
 }
