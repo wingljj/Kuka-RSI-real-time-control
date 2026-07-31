@@ -31,3 +31,4 @@ target_link_libraries(rsi_host PRIVATE
 enable_testing()
 add_subdirectory(tests)
 add_subdirectory(tools/krc_simulator)
+add_subdirectory(tools/loopback_test)
