@@ -130,8 +130,11 @@ private slots:
 
     void parseRob_rejectsTruncatedIpoc()
     {
-        // 截断发生在 IPOC 数字中间：readElementText() 会返回部分数字，
-        // 若不检查 reader 状态就会回显一个错误的 IPOC——等同丢包。
+        // 纯粹截断在数字末尾：实测 Qt 6.5.3 下 readElementText() 返回空串，
+        // 故本形状在加守卫前后都被拒绝——它并不能区分守卫是否存在。
+        // 保留它是为了盯住版本漂移：若将来某个 Qt 在纯 EOF 处也吐出部分
+        // 数字，本用例会立刻失败。守卫的真正回归锚点是下面的
+        // parseRob_rejectsPartialIpocFollowedByMarkup。
         const QByteArray d =
             "<Rob Type=\"KUKA\">"
             "<RIst X=\"1\" Y=\"2\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
