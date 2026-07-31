@@ -110,7 +110,12 @@ private slots:
             const Pose d = pc.step(actual);
             actual.x += d.x;               // 模拟机器人跟随
         }
-        QVERIFY(qAbs(pc.accumulated().x - 1.8) < 1e-9);  // 3 * 0.6
+        // 命令和仍是三步之和
+        QVERIFY(qAbs(pc.commandedSum().x - 1.8) < 1e-9);  // 3 * 0.6
+        // 锚点位移按每周期开始时的 actual 度量，故天然滞后一个周期：
+        // 第 3 步开始时机器人只走了 2 * 0.6。这个滞后是有意的——只有
+        // 控制器真正回传了新的 RIst，第 2 层才认这笔修正。
+        QVERIFY(qAbs(pc.accumulated().x - 1.2) < 1e-9);   // 2 * 0.6
     }
 
     void accumOverLimit_entersFaultAndStopsMoving()
@@ -132,7 +137,8 @@ private slots:
         QVERIFY(!pc.faultReason().isEmpty());
         // Fault 后必须返回零增量
         QCOMPARE(pc.step(actual).x, 0.0);
-        QVERIFY(qAbs(pc.accumulated().x) <= 1.0 + 1e-9);
+        // 锚点位移滞后一个周期，故越限时最多超出一个单周期步长（0.6mm）才被拦下
+        QVERIFY(qAbs(pc.accumulated().x) <= 1.0 + 0.6 + 1e-9);
     }
 
     void rotationAccumHasOwnLimit()
@@ -178,6 +184,13 @@ private slots:
         QCOMPARE(pc.target().x, 7.0);      // 目标 = 实际，误差归零
         // 【关键】KRC 侧已施加的修正不会消失，累积量必须原样保留
         QCOMPARE(pc.accumulated().x, accumBefore);
+
+        // 【关键之二】会话锚点也必须原样保留：再走一个周期，位移仍以
+        // 原锚点（0）度量，而不是以 resetToActual 传入的 {7,8,9} 度量。
+        pc.setTracking(true);
+        pc.step(actual);
+        QCOMPARE(pc.accumulated().x, accumBefore);
+        QVERIFY(qAbs(pc.accumulated().x - actual.x) < 1e-9);
     }
 
     void beginSession_clearsAccum()
@@ -248,11 +261,26 @@ private slots:
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
-        // 三轴各 0.7mm：逐轴判限会放过（0.7 < 1），欧氏范数 1.21 必须拦下
+        // 三轴各 0.7mm：逐轴判限会放过（0.7 < 1），欧氏范数 1.21 必须拦下。
+        // 位移以控制器回传的 actual 度量，所以必须把运动喂回 actual。
         pc.setTarget(Pose{0.7, 0.7, 0.7, 0, 0, 0});
-        pc.step(Pose{0, 0, 0, 0, 0, 0});
+        Pose actual{0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 10 && pc.state() == TrackState::Tracking; ++i) {
+            const Pose d = pc.step(actual);
+            actual.x += d.x;
+            actual.y += d.y;
+            actual.z += d.z;
+        }
         QCOMPARE(pc.state(), TrackState::Fault);
-        QVERIFY(pc.faultReason().contains("norm"));
+        // 被拦下的那一刻，逐轴都还在限内，只有欧氏范数越限——这正是本用例
+        // 要钉住的性质（逐轴判限会放过它，合成位移就能顶穿 POSCORR 的硬限）。
+        QVERIFY(qAbs(pc.displacement().x) < 1.0);
+        QVERIFY(qAbs(pc.displacement().y) < 1.0);
+        QVERIFY(qAbs(pc.displacement().z) < 1.0);
+        QVERIFY(std::hypot(pc.displacement().x,
+                           pc.displacement().y,
+                           pc.displacement().z) > 1.0);
+        QVERIFY(pc.faultReason().contains("displacement from session anchor"));
     }
 
     void negativeVmaxDoesNotInvertDirection()
@@ -360,7 +388,50 @@ private slots:
         for (int i = 0; i < 1000; ++i)
             pc.step(Pose{0, 0, 0, 0, 0, 0});
         // 每周期 1e-6 会被 buildSen 量化成 0.0000，机器人不动，
-        // 所以账本也不该增长——否则收敛后会持续漂移
+        // 所以账本也不该增长——否则收敛后会持续漂移。
+        // actual 固定不动，位移当然是 0；真正钉住死区的是命令和。
+        QCOMPARE(pc.accumulated().x, 0.0);
+        QCOMPARE(pc.commandedSum().x, 0.0);
+    }
+
+    void inSessionResetDoesNotMoveTheAnchor()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        Pose actual{0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 10; ++i)
+            actual.x += pc.step(actual).x;
+        // 再走一个周期但不喂回，使 before 就是"以当前 actual 度量的位移"，
+        // 这样才能和归零后同一 actual 上的度量直接比较（位移天然滞后一拍）。
+        pc.step(actual);
+        const double before = pc.accumulated().x;
+        QVERIFY(before > 0.0);
+
+        pc.resetToActual(actual);      // 会话内归零：原点不得移动
+        pc.setTracking(true);
+        pc.step(actual);
+        QVERIFY(qAbs(pc.accumulated().x - before) < 1e-9);
+    }
+
+    void beginSessionMovesTheAnchor()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        Pose actual{0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 10; ++i)
+            actual.x += pc.step(actual).x;
+        QVERIFY(pc.accumulated().x > 0.0);
+
+        pc.beginSession(actual);       // 真正的会话重启：原点移到此处
+        QCOMPARE(pc.accumulated().x, 0.0);
+        pc.setTracking(true);
+        pc.step(actual);
         QCOMPARE(pc.accumulated().x, 0.0);
     }
 };

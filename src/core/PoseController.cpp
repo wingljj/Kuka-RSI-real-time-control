@@ -44,12 +44,17 @@ void PoseController::resetToActual(const Pose &actual)
     m_state  = TrackState::Idle;
     m_faultReason.clear();
     // m_accum 刻意保留，理由见头文件注释
+    // m_anchor / m_displacement / m_haveAnchor 同样刻意不动：会话内的归零
+    // 不移动原点，否则第 2 层的预算又能被反复领取。只有 beginSession 才换锚点。
 }
 
 void PoseController::beginSession(const Pose &actual)
 {
     resetToActual(actual);
-    m_accum = Pose{};
+    m_accum        = Pose{};
+    m_anchor       = actual;      // 锁存 RIst₀：第 2 层从此以它为原点
+    m_displacement = Pose{};
+    m_haveAnchor   = true;
 }
 
 void PoseController::setTracking(bool on)
@@ -127,14 +132,33 @@ Pose PoseController::step(const Pose &actual)
         return Pose{};
     }
 
+    // 第 2 层限值改用"控制器回传的实际位姿相对会话锚点的位移"，而不是
+    // "主机发出的命令增量之和"。两者原点不同：命令和的原点会随主机对
+    // 会话边界的判断而漂移（一次比 KRC 的 Timeout 更短的通信间隙就足以
+    // 让主机误判为新会话并凭空发放新预算），而 POSCORR 的限值始终相对
+    // RSI 启动位姿测量。用 RIst 锚点后二者共享原点，且免疫丢包与误判。
+    // 前提：KRL 做原地 BCO 后静止，此后 TCP 的全部位移都来自 RSI 修正，
+    // 所以 ‖RIst − RIst₀‖ 就是已施加的修正量。
+    m_displacement = m_haveAnchor ? poseSub(actual, m_anchor) : Pose{};
+
+    if (!poseIsFinite(m_displacement)) {
+        m_state = TrackState::Fault;
+        m_faultReason = QStringLiteral(
+            "non-finite displacement from session anchor");
+        return Pose{};
+    }
+
     // 位置用欧几里得范数：逐轴判限会让三轴同时到限时的合成位移达到
     // √3 × limit（30mm → 51.96mm），越过 POSCORR 的 ~50mm 硬限，使第 2 层
     // 形同虚设、第一个停机的反而是第 4 层 RSI 错误停机。
-    const double posNorm = std::hypot(next.x, next.y, next.z);
+    const double posNorm = std::hypot(m_displacement.x,
+                                      m_displacement.y,
+                                      m_displacement.z);
     // 姿态保持逐轴最大值：A/B/C 是欧拉角，三者的欧氏范数没有物理意义，
     // 而 POSCORR 的姿态限值本身也是按轴给出的。
-    const double rotMax = std::max({std::fabs(next.a), std::fabs(next.b),
-                                    std::fabs(next.c)});
+    const double rotMax = std::max({std::fabs(m_displacement.a),
+                                    std::fabs(m_displacement.b),
+                                    std::fabs(m_displacement.c)});
 
     // 限值同样不信任配置：负的累积限值会让 posNorm(>=0) > limit 恒真，
     // 零误差时也立刻故障。与 vmax/cycleMs 的处理保持一致。
@@ -144,7 +168,7 @@ Pose PoseController::step(const Pose &actual)
     if (posNorm > accumLimPos) {
         m_state = TrackState::Fault;
         m_faultReason = QStringLiteral(
-            "accumulated translation norm %1 mm exceeds limit %2 mm")
+            "displacement from session anchor %1 mm exceeds limit %2 mm")
             .arg(posNorm, 0, 'f', 3)
             .arg(accumLimPos, 0, 'f', 3);
         return Pose{};

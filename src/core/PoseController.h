@@ -32,7 +32,19 @@ public:
     Pose step(const Pose &actual);
 
     TrackState state() const { return m_state; }
-    Pose accumulated() const { return m_accum; }
+    // 现在返回的是相对会话锚点的位移（见 displacement()），而非命令增量之和；
+    // 旧含义请用 commandedSum()。
+    Pose accumulated() const { return m_displacement; }
+
+    // 第 2 层限值所用的量：当前实际位姿相对会话锚点 RIst₀ 的位移。
+    // 这与 POSCORR 的 ~50mm 硬限共享原点（都相对 RSI 启动位姿测量），
+    // 所以 layer 2 与 layer 4 终于可比较。
+    Pose displacement() const { return m_displacement; }
+
+    // 主机累计发出的命令增量之和。保留作交叉校验：它与 displacement()
+    // 的背离说明"主机以为发出去了但机器人没走到"，是丢包的直接证据。
+    Pose commandedSum() const { return m_accum; }
+
     QString faultReason() const { return m_faultReason; }
 
 private:
@@ -41,6 +53,10 @@ private:
     Pose       m_accum;
     TrackState m_state = TrackState::Idle;
     QString    m_faultReason;
+
+    Pose m_anchor;                  // 会话首帧锁存的 RIst₀
+    Pose m_displacement;            // 当前实际位姿相对 m_anchor 的位移
+    bool m_haveAnchor = false;
 
     double m_stepLimitPos = 0.0;   // mm  / 周期
     double m_stepLimitRot = 0.0;   // deg / 周期
