@@ -6,6 +6,7 @@
 #include <QVBoxLayout>
 #include <QMessageBox>
 #include <cmath>
+#include "ui/ErrorChart.h"
 
 namespace {
 
@@ -36,7 +37,11 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     left->addWidget(buildParamPanel());
     left->addStretch();
     row->addLayout(left, 1);
-    row->addWidget(buildReadoutPanel(), 1);
+    auto *right = new QVBoxLayout;
+    m_chart = new ErrorChart(m_cfg.chartWindowS, this);
+    right->addWidget(m_chart, 2);
+    right->addWidget(buildReadoutPanel(), 1);
+    row->addLayout(right, 1);
     outer->addLayout(row);
 
     setCentralWidget(central);
@@ -247,4 +252,6 @@ void MainWindow::onRefresh()
               .arg(s.maxReplyUs, 0, 'f', 0)
               .arg(s.missedCount);
     m_statusLabel->setText(st);
+
+    m_chart->updateFrom(m_ring);
 }
