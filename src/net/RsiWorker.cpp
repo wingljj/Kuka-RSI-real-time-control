@@ -48,10 +48,12 @@ void RsiWorker::start()
     m_cycleTimerValid = false;
     m_lastIpoc        = 0;
     m_measuredCycleMs = 0.0;
-    // 注意：m_sinceLastFrame 只在 start() 失效化，stop() 里刻意不动它——
-    // 它必须跨越一次 teardown 存活，下个 start() 才能分辨"真正的会话重启"
-    // 与"快速的 stop()→start()"。
-    m_sinceLastFrame.invalidate();
+    // 注意：m_sinceLastFrame 在 start() 和 stop() 里都刻意不动——它必须跨越
+    // 一次 teardown 存活，下个 start() 才能分辨"真正的会话重启"与"快速的
+    // stop()→start()"。进程启动后的首个 start() 时它从未 start 过，isValid()
+    // 为假，首帧走 beginSession()；此后的 start() 仍持有上一帧的时间戳，
+    // elapsed() 很小，首帧走 resetToActual()，保住 KRC 侧已施加的修正。
+    // 在这里 invalidate() 会让 isValid() 恒假，判据形同虚设。
 
     emit listening();
 }

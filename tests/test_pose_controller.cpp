@@ -347,6 +347,22 @@ private slots:
         QCOMPARE(d.x, 0.0);
         QCOMPARE(pc.state(), TrackState::Tracking);
     }
+
+    void subQuantumIncrementDoesNotAccumulate()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos = 1e-6;          // 极小增益，使每周期增量远小于线上量化步长
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{1.0, 0, 0, 0, 0, 0});
+        for (int i = 0; i < 1000; ++i)
+            pc.step(Pose{0, 0, 0, 0, 0, 0});
+        // 每周期 1e-6 会被 buildSen 量化成 0.0000，机器人不动，
+        // 所以账本也不该增长——否则收敛后会持续漂移
+        QCOMPARE(pc.accumulated().x, 0.0);
+    }
 };
 
 QTEST_MAIN(TestPoseController)

@@ -99,6 +99,18 @@ Pose PoseController::step(const Pose &actual)
     d.b = clampAbs(m_cfg.kpRot * err.b, m_stepLimitRot);
     d.c = clampAbs(m_cfg.kpRot * err.c, m_stepLimitRot);
 
+    // 与 buildSen 的 4 位小数量化对齐：幅值小于线上量化步长的增量会被格式化
+    // 成 0.0000，机器人实际不动。若仍把它计入累积，收敛静止后账本会持续
+    // 漂移（实测约 9mm/小时），虚假耗尽第 2 层预算并让一次健康的长时间运行
+    // 无故故障。账本必须只记录真正发得出去的量。
+    constexpr double kWireQuantum = 1e-4;
+    if (std::fabs(d.x) < kWireQuantum) d.x = 0.0;
+    if (std::fabs(d.y) < kWireQuantum) d.y = 0.0;
+    if (std::fabs(d.z) < kWireQuantum) d.z = 0.0;
+    if (std::fabs(d.a) < kWireQuantum) d.a = 0.0;
+    if (std::fabs(d.b) < kWireQuantum) d.b = 0.0;
+    if (std::fabs(d.c) < kWireQuantum) d.c = 0.0;
+
     // 第 2 层限值：累积修正量。越限则转 Fault 并停止累加。
     const Pose next{
         m_accum.x + d.x, m_accum.y + d.y, m_accum.z + d.z,
