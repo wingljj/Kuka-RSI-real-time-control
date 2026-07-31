@@ -1,22 +1,17 @@
 {
-  "_comment_safety": [
-    "accum_limit_pos_mm / accum_limit_rot_deg 是第 2 层安全限值：主机侧对",
-    "『当前实际位姿相对本次 RSI 会话锚点的位移』判限。",
+  "_comment": [
+    "accum_limit 已按要求放开（1000mm / 100 度），主机侧不会先拦你。",
+    "真正的天花板在 KRC 侧，那是删不掉的：",
+    "    Limit 对象  ±35mm    POSCORR ±40mm    POSCORRMON 45mm",
+    "撞上它们的表现是控制器报错停机（示教器跳错误、程序中断），",
+    "而不是界面上一条可以点掉的故障提示。",
     "",
-    "当前的 1000mm / 100 度是【模拟器调试用】的放开值。krc_simulator 不实现",
-    "任何 RSI 侧限值，所以在它上面可以随便走。",
+    "kp 与 vmax 决定机器人走多快，不是限制：",
+    "    单周期增量 = kp × 误差，再夹到 vmax × cycle_ms",
+    "首次联机用 0.1 / 10mm/s，确认方向和响应都对了再往上调。",
     "",
-    "*** 接真机前必须调回 ***  KRC 侧的梯度是：",
-    "    Limit 对象      +-35 mm / +-35 度",
-    "    POSCORR         +-40 mm / 40 度",
-    "    POSCORRMON      45 mm / 45 度",
-    "主机侧必须小于其中最小的那个，否则第 2 层永远不会先触发，第一个拦下你的",
-    "会是 RSI 自己 —— 表现为机器人直接报错停机，而不是界面上一条可控的故障。",
-    "真机建议值：accum_limit_pos_mm 30、accum_limit_rot_deg 15；",
-    "首次联机更保守：10 和 5。",
-    "",
-    "另外 POSCORR 的用途是叠加在当前位姿上的小幅实时修正（几十毫米量级），",
-    "不是把机器人从 A 点搬到 B 点。大范围运动请用 KRL 的 PTP / LIN。"
+    "cycle_ms 必须与界面上显示的实测周期一致。若实测是 4.0 而这里写 12.0，",
+    "每个增量会是三倍大——这是首次联机最该先核对的一个数。"
   ],
   "network": {
     "listen_ip":   "192.168.44.1",
@@ -29,10 +24,10 @@
     "watchdog_miss_limit": 3
   },
   "control": {
-    "kp_pos":              0.30,
-    "kp_rot":              0.30,
-    "vmax_pos_mm_s":       50.0,
-    "vmax_rot_deg_s":      10.0,
+    "kp_pos":              0.10,
+    "kp_rot":              0.10,
+    "vmax_pos_mm_s":       10.0,
+    "vmax_rot_deg_s":      2.0,
     "accum_limit_pos_mm":  1000.0,
     "accum_limit_rot_deg": 100.0
   },

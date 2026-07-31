@@ -56,9 +56,12 @@ DECL INT CONTID
 PTP $POS_ACT
 
 ; ── 建立 RSI 上下文 ───────────────────────────────────────────────────────
-; 加载对象图。PoseTrack.rsi 内部通过 ETHERNET1 的 ConfigFile 参数
-; 再引用 PoseTrack_ethernet.xml，后者定义 IP、端口与收发元素。
-ret = RSI_CREATE("PoseTrack.rsi", CONTID, TRUE)
+; 加载对象图。注意这里【不写扩展名】：本机 RSI 是 5.0+，RSI_CREATE 会自动
+; 补 .rsix 去找文件。若写成 "PoseTrack.rsi"，它会去找 PoseTrack.rsi.rsix
+; 而报"未找到文件"。
+; 对象图内部再通过 Ethernet 对象的 ConfigFile 参数引用
+; PoseTrack_ethernet.xml，后者定义 IP、端口与收发元素。
+ret = RSI_CREATE("PoseTrack", CONTID, TRUE)
 IF (ret <> RSIOK) THEN
   HALT
 ENDIF

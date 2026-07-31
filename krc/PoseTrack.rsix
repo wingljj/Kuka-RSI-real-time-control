@@ -1,0 +1,145 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RSI 上下文 —— POSCORR 位姿跟踪（BASE 坐标系，RELATIVE 增量语义）
+
+  格式：RsiContext SchemaVersion 2.0.0（RSI 5.0+ / .rsix）
+        RSI_CREATE("PoseTrack.rsi", ...) 会自动补 .rsix 扩展名去找本文件。
+
+  拓扑：
+      RSI.Out0 -> Limit_X -> POSCORR1.CorrX
+      RSI.Out1 -> Limit_Y -> POSCORR1.CorrY
+      RSI.Out2 -> Limit_Z -> POSCORR1.CorrZ
+      RSI.Out3 -> Limit_A -> POSCORR1.CorrA
+      RSI.Out4 -> Limit_B -> POSCORR1.CorrB
+      RSI.Out5 -> Limit_C -> POSCORR1.CorrC
+      POSCORRMON1（无输入，独立监控总位移/总转角，越限直接停机）
+
+  中间那六个 Limit 是安全设计的第 3 层。它们在 KRC 上执行，不依赖上位机
+  代码正确——上位机崩溃、发出异常值、或被改坏，这一层照样生效。
+
+  ParamId 与 InIdx/OutIdx 全部 0-based，取自 rsiToolbox.xml 的 Index，
+  并与 RSIVisual 生成的 KR_C5 实例交叉验证过
+  （AxisCorr 的 UpperLimA1 在新格式是 ParamId=6，旧格式是 13——
+   新格式没有旧格式给外部轴预留的 7-12 空档，那些拆到了 AxisCorrExt）。
+
+  五层限值必须自内向外单调放大，否则内层永不触发：
+      1 上位机单周期增量   kp × 误差，夹到 vmax × cycle
+      2 上位机累积位移     rsi_config.json（当前放开到 1000mm）
+      3 本文件的 Limit     ±35 mm / ±35°
+      4 POSCORR 限值       ±40 mm / 40°
+      5 POSCORRMON 监控    45 mm / 45°
+  POSCORR 出厂默认只有 ±5mm / 5°，照默认部署会让 RSI 先在 5mm 拒绝。
+-->
+<RsiContext xsi:schemaLocation="RsiContext RsiContext.xsd" SchemaVersion="2.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="RsiContext">
+   <RsiObjects xmlns="RsiDriver">
+
+      <RsiObject ObjTypeId="64" ObjType="Ethernet" ObjId="RSI">
+         <Parameters>
+            <Parameter IsRuntime="false" Name="ConfigFile" ParamId="0" ParamValue="PoseTrack_ethernet.xml" />
+            <!-- Timeout 是 KRC 容忍的连续 IPOC 不匹配次数。12ms 周期下 100 次 ≈ 1.2s。
+                 上位机的 session_gap_ms 必须显著大于它（当前 2000ms），否则会在 KRC
+                 仍认为会话连续时移动安全锚点、凭空多发一份修正预算。 -->
+            <Parameter Name="Timeout" ParamId="0" ParamValue="100" />
+            <Parameter Name="Flag" ParamId="3" ParamValue="1" />
+            <!-- Precision=4 与上位机 RsiCodec::buildSen 的 'f',4 互为契约。 -->
+            <Parameter Name="Precision" ParamId="7" ParamValue="4" />
+         </Parameters>
+      </RsiObject>
+
+      <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_X">
+         <Inputs>
+            <Input InIdx="0" OutObjId="RSI" OutIdx="0" />
+         </Inputs>
+         <Parameters>
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-35" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="35" />
+         </Parameters>
+      </RsiObject>
+
+      <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_Y">
+         <Inputs>
+            <Input InIdx="0" OutObjId="RSI" OutIdx="1" />
+         </Inputs>
+         <Parameters>
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-35" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="35" />
+         </Parameters>
+      </RsiObject>
+
+      <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_Z">
+         <Inputs>
+            <Input InIdx="0" OutObjId="RSI" OutIdx="2" />
+         </Inputs>
+         <Parameters>
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-35" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="35" />
+         </Parameters>
+      </RsiObject>
+
+      <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_A">
+         <Inputs>
+            <Input InIdx="0" OutObjId="RSI" OutIdx="3" />
+         </Inputs>
+         <Parameters>
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-35" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="35" />
+         </Parameters>
+      </RsiObject>
+
+      <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_B">
+         <Inputs>
+            <Input InIdx="0" OutObjId="RSI" OutIdx="4" />
+         </Inputs>
+         <Parameters>
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-35" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="35" />
+         </Parameters>
+      </RsiObject>
+
+      <RsiObject ObjTypeId="39" ObjType="Limit" ObjId="Limit_C">
+         <Inputs>
+            <Input InIdx="0" OutObjId="RSI" OutIdx="5" />
+         </Inputs>
+         <Parameters>
+            <Parameter Name="LowerLimit" ParamId="0" ParamValue="-35" />
+            <Parameter Name="UpperLimit" ParamId="1" ParamValue="35" />
+         </Parameters>
+      </RsiObject>
+
+      <RsiObject ObjTypeId="27" ObjType="PosCorr" ObjId="POSCORR1">
+         <Inputs>
+            <!-- InIdx 0..5 依次是 CorrX CorrY CorrZ CorrA CorrB CorrC -->
+            <Input InIdx="0" OutObjId="Limit_X" OutIdx="0" />
+            <Input InIdx="1" OutObjId="Limit_Y" OutIdx="0" />
+            <Input InIdx="2" OutObjId="Limit_Z" OutIdx="0" />
+            <Input InIdx="3" OutObjId="Limit_A" OutIdx="0" />
+            <Input InIdx="4" OutObjId="Limit_B" OutIdx="0" />
+            <Input InIdx="5" OutObjId="Limit_C" OutIdx="0" />
+         </Inputs>
+         <Parameters>
+            <Parameter IsPublic="true" Name="LowerLimX" ParamId="0" ParamValue="-40" />
+            <Parameter IsPublic="true" Name="LowerLimY" ParamId="1" ParamValue="-40" />
+            <Parameter IsPublic="true" Name="LowerLimZ" ParamId="2" ParamValue="-40" />
+            <Parameter IsPublic="true" Name="UpperLimX" ParamId="3" ParamValue="40" />
+            <Parameter IsPublic="true" Name="UpperLimY" ParamId="4" ParamValue="40" />
+            <Parameter IsPublic="true" Name="UpperLimZ" ParamId="5" ParamValue="40" />
+            <!-- MaxRotAngle 是【单一总转角】限值，不是每轴一个。 -->
+            <Parameter IsPublic="true" Name="MaxRotAngle" ParamId="6" ParamValue="40" />
+            <!-- RefCorrSys 是 TrafoCosysType 枚举，序列化为【数字】：
+                 World=0  Base=1  RobRoot=2  Tool=3  TTS=4
+                 我们要 BASE，所以是 1。写字符串 "Base" 会被拒绝。 -->
+            <Parameter IsRuntime="false" Name="RefCorrSys" ParamId="0" ParamValue="1" />
+         </Parameters>
+      </RsiObject>
+
+      <RsiObject ObjTypeId="81" ObjType="PosCorrMon" ObjId="POSCORRMON1">
+         <Parameters>
+            <!-- MaxTrans 是总平移量（不是每轴），语义上就是欧氏范数——这也是
+                 上位机第 2 层用 hypot 判限的依据：两层量的定义一致才可比较。 -->
+            <Parameter IsRuntime="false" Name="MaxTrans" ParamId="0" ParamValue="45" />
+            <Parameter IsRuntime="false" Name="MaxRotAngle" ParamId="1" ParamValue="45" />
+         </Parameters>
+      </RsiObject>
+
+   </RsiObjects>
+</RsiContext>
