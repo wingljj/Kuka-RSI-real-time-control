@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QHostAddress>
 #include <QNetworkDatagram>
+#include <QThread>
 #include <QUdpSocket>
 #include <QtGlobal>
 #include <algorithm>
@@ -105,25 +106,42 @@ int main(int argc, char **argv)
     Pose pose{1250.0, 0.0, 1000.0, 0.0, 90.0, 0.0};
     quint64 ipoc = 1000;
 
-    int replies = 0, ipocMismatch = 0, timeouts = 0;
+    int replies = 0, ipocMismatch = 0, missed = 0;
     double maxRttUs = 0.0, sumRttUs = 0.0;
 
+    // 真实 KRC 按固定节拍发帧。若不设节拍而是收到回复就立刻发下一帧，
+    // 面对快速主机会全速空转——那测的是吞吐，不是"能否在周期内回复"，
+    // 而且主机侧实测出来的周期也不再是 cycleMs。
+    QElapsedTimer pace;
+    pace.start();
+
     for (int i = 0; i < cycles; ++i) {
+        // 等到本周期的标称发送时刻
+        const qint64 dueNs = qint64(double(i) * cycleMs * 1.0e6);
+        while (pace.nsecsElapsed() < dueNs) {
+            const qint64 remainMs = (dueNs - pace.nsecsElapsed()) / 1000000;
+            if (remainMs > 1)
+                QThread::msleep(1);
+        }
+
         QElapsedTimer rtt;
         rtt.start();
         sock.writeDatagram(buildRob(pose, ipoc), host, port);
 
-        // 等待本周期内的回包
+        // 等待本周期内的回包。注意不能用 waitForReadyRead 的返回值当作
+        // "收到回复"：端口关闭时 Windows 的 ICMP port-unreachable 也会让它
+        // 返回 true，那样该周期既不计 replies 也不计 timeouts，
+        // cycles == replies + missed 就不再成立。只认解析成功的 <Sen>。
         const int budgetMs = std::max(1, int(cycleMs));
-        if (!sock.waitForReadyRead(budgetMs)) {
-            ++timeouts;
-        } else {
+        bool got = false;
+        if (sock.waitForReadyRead(budgetMs)) {
             while (sock.hasPendingDatagrams()) {
                 const QByteArray d = sock.receiveDatagram().data();
                 Pose korr;
                 quint64 echoed = 0;
                 if (parseSen(d, &korr, &echoed)) {
                     ++replies;
+                    got = true;
                     if (echoed != ipoc)
                         ++ipocMismatch;
                     // RELATIVE：增量累加到当前位姿
@@ -133,15 +151,19 @@ int main(int argc, char **argv)
                     pose.c = wrap180(pose.c + korr.c);
                 }
             }
+        }
+        if (got) {
             const double us = rtt.nsecsElapsed() / 1000.0;
             maxRttUs = std::max(maxRttUs, us);
             sumRttUs += us;
+        } else {
+            ++missed;
         }
         ++ipoc;
     }
 
-    std::printf("cycles=%d replies=%d timeouts=%d ipoc_mismatch=%d\n",
-                cycles, replies, timeouts, ipocMismatch);
+    std::printf("cycles=%d replies=%d missed=%d ipoc_mismatch=%d\n",
+                cycles, replies, missed, ipocMismatch);
     std::printf("rtt_avg_us=%.1f rtt_max_us=%.1f\n",
                 replies ? sumRttUs / replies : 0.0, maxRttUs);
     std::printf("final_pose X=%.3f Y=%.3f Z=%.3f A=%.3f B=%.3f C=%.3f\n",
