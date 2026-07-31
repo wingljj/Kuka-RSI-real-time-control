@@ -53,9 +53,16 @@ wait
 | 源 | 目标 |
 |---|---|
 | `krc/PoseTrack.src` | `KRC:\R1\Program\` |
-| `krc/PoseTrack.rsi` | `C:\KRC\ROBOTER\Config\User\Common\SensorInterface\` |
-| `krc/PoseTrack.rsi.xml` | 同上 |
+| `krc/PoseTrack.rsix` | `C:\KRC\ROBOTER\Config\User\Common\SensorInterface\` |
 | `krc/PoseTrack_ethernet.xml` | 同上 |
+
+**只有三个文件。** 本机 RSI 是 5.0+，用 `.rsix` 单文件格式。
+`krc/legacy-krc4/` 里那两个 `.rsi` + `.rsi.xml` 是旧格式（给 KR C4 用），
+不要部署到这台 —— RSIVisual 能打开它们只说明工具向后兼容，不代表运行时认。
+
+`PoseTrack.src` 里 `RSI_CREATE("PoseTrack", ...)` **刻意不写扩展名** ——
+RSI 5.0 会自己补 `.rsix`。写成 `"PoseTrack.rsi"` 会让它去找
+`PoseTrack.rsi.rsix`，报「未找到文件」。
 
 途径：SMB（`net use Z: \\192.168.44.128\C$ /user:<账号> <密码>`，注意 guest 的
 Windows 账号密码与示教器管理员密码 `kuka` 不是一回事）或 RDP
