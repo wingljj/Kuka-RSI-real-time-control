@@ -1,52 +1,60 @@
 <ROOT>
    <CONFIG>
-      <!-- IP_NUMBER 是【上位机】的地址，不是机器人的。RSI 由 KRC 侧主动连出。
-           必须与 config/rsi_config.json 的 listen_ip / listen_port 一致。 -->
+      <!-- IP_NUMBER is the HOST address, not the robot. RSI dials out from the
+           KRC side. Must match listen_ip / listen_port in
+           config/rsi_config.json and the GUI listen-address field. -->
       <IP_NUMBER>192.168.44.1</IP_NUMBER>
       <PORT>59152</PORT>
-      <!-- SENTYPE 必须与上位机回包 <Sen Type="..."> 中的字符串一致，
-           即 rsi_config.json 的 sen_type。不一致时 KRC 会静默丢弃每一帧回包，
-           而上位机侧看不出任何异常——它以为自己答了。 -->
+      <!-- SENTYPE must equal the string the host puts in Sen Type, i.e.
+           sen_type in rsi_config.json. If they differ the KRC silently discards
+           every reply while the host sees nothing wrong - it believes it
+           answered. That failure ends in an RSI timeout stop with the host still
+           reporting zero lost packets. -->
       <SENTYPE>ImFree</SENTYPE>
       <ONLYSEND>FALSE</ONLYSEND>
    </CONFIG>
 
-   <!-- RSI Data: TYPE= "BOOL" | "STRING" | "LONG" | "DOUBLE"
-        INDX="INTERNAL" 表示由 RSI 内部填充（DEF_ 开头的都是）
-        INDX="n"        表示映射到 ETHERNET 对象的第 n 个输入/输出通道
-        HOLDON="1"      无新数据时保持上一次的值                              -->
+   <!-- TYPE   = BOOL | STRING | LONG | DOUBLE
+        INDX   = INTERNAL  filled in by RSI itself (everything DEF_*)
+        INDX   = n         maps to channel n of the Ethernet object, 1-based
+        HOLDON = 1         hold the previous value when no new data arrives -->
 
    <SEND>
       <ELEMENTS>
-         <!-- DEF_RIst：笛卡尔实际位姿。上位机的闭环与安全账本都以它为准，
-              是唯一不可省的一项。 -->
+         <!-- Cartesian actual pose. The host closed loop and its safety ledger
+              both key off this; the one element that cannot be omitted. -->
          <ELEMENT TAG="DEF_RIst"  TYPE="DOUBLE" INDX="INTERNAL" />
-         <!-- DEF_RSol：笛卡尔额定位姿。上位机目前只做诊断显示。 -->
+         <!-- Cartesian setpoint pose. Host-side diagnostics only. -->
          <ELEMENT TAG="DEF_RSol"  TYPE="DOUBLE" INDX="INTERNAL" />
-         <!-- 关节实际/额定角。POSCORR 用不到，但留着便于排查
-              "笛卡尔看着对、关节其实撞了限位" 这类问题。 -->
+         <!-- Joint actual / setpoint. POSCORR does not need them, but they make
+              "cartesian looks fine yet a joint hit its limit" diagnosable. -->
          <ELEMENT TAG="DEF_AIPos" TYPE="DOUBLE" INDX="INTERNAL" />
          <ELEMENT TAG="DEF_ASPos" TYPE="DOUBLE" INDX="INTERNAL" />
-         <!-- DEF_Delay：KRC 自己统计的迟到/丢失包数。这是唯一能让上位机看见
-              "KRC 认为我丢包了" 的量——上位机自己的丢包计数看不到迟到回包，
-              也看不到因 SENTYPE 不符而被丢弃的回包。务必保留。 -->
+         <!-- DEF_Delay is the KRC own count of late / lost packets. It is the
+              only way the host can see "the controller thinks I am dropping
+              packets": the host counter cannot see a reply that arrived late,
+              nor one the KRC discarded over a SENTYPE mismatch. Keep it. -->
          <ELEMENT TAG="DEF_Delay" TYPE="LONG"   INDX="INTERNAL" />
       </ELEMENTS>
    </SEND>
 
    <RECEIVE>
       <ELEMENTS>
-         <!-- 上位机回包中 <RKorr X=".." Y=".." .../> 的六个分量，依次进入
-              ETHERNET 对象的输出通道 1..6。对象图里再经 Limit 送到 POSCORR。
+         <!-- The six components of RKorr in the host reply, feeding Ethernet
+              output channels 1..6. The object graph then routes each one through
+              a Limit object into POSCORR.
 
-              注意：这些是【每周期的位移增量】，不是目标坐标。POSCORR 工作在
-              RELATIVE 语义下，发绝对坐标等于命令机器人在一个插补周期内走完
-              整段距离。
+              These are PER-CYCLE DISPLACEMENT INCREMENTS, not target
+              coordinates. POSCORR runs in RELATIVE mode, so sending an absolute
+              coordinate would command the robot to cover that whole distance
+              within one interpolation cycle.
 
-              HOLDON 刻意设为 0：增量语义下 "保持上一次的值" 意味着上位机一旦
-              停顿，KRC 会把最后那个增量每周期重复施加一次——0.6mm × Timeout
-              的 100 个周期就是 60mm，而上位机的账本一格都不会动。对绝对接口
-              HOLDON=1 是安全的，对增量接口它是最坏的选择。 -->
+              HOLDON is deliberately 0. Under incremental semantics, holding the
+              previous value means that if the host stalls the KRC re-applies the
+              last increment every cycle: 0.6 mm times the 100 cycles of Timeout
+              is 60 mm, and the host ledger would count none of it. HOLDON=1 is
+              safe for an absolute interface and the worst possible choice for an
+              incremental one. -->
          <ELEMENT TAG="RKorr.X" TYPE="DOUBLE" INDX="1" HOLDON="0" />
          <ELEMENT TAG="RKorr.Y" TYPE="DOUBLE" INDX="2" HOLDON="0" />
          <ELEMENT TAG="RKorr.Z" TYPE="DOUBLE" INDX="3" HOLDON="0" />

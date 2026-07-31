@@ -1,4 +1,84 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+"""把 krc/ 下三个部署文件规范化为 KRL/RSI 能正确读取的形式。
+
+KRL 编辑器与 RSI 解析器按单字节代码页读文件，UTF-8 的中文注释在示教器上
+显示为乱码。KUKA 官方生成的同类文件是纯 ASCII + CRLF，这里对齐。
+
+用法：python tools/normalize_krc.py
+"""
+import io
+import os
+
+os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+ETH = '''<ROOT>
+   <CONFIG>
+      <!-- IP_NUMBER is the HOST address, not the robot. RSI dials out from the
+           KRC side. Must match listen_ip / listen_port in
+           config/rsi_config.json and the GUI listen-address field. -->
+      <IP_NUMBER>192.168.44.1</IP_NUMBER>
+      <PORT>59152</PORT>
+      <!-- SENTYPE must equal the string the host puts in Sen Type, i.e.
+           sen_type in rsi_config.json. If they differ the KRC silently discards
+           every reply while the host sees nothing wrong - it believes it
+           answered. That failure ends in an RSI timeout stop with the host still
+           reporting zero lost packets. -->
+      <SENTYPE>ImFree</SENTYPE>
+      <ONLYSEND>FALSE</ONLYSEND>
+   </CONFIG>
+
+   <!-- TYPE   = BOOL | STRING | LONG | DOUBLE
+        INDX   = INTERNAL  filled in by RSI itself (everything DEF_*)
+        INDX   = n         maps to channel n of the Ethernet object, 1-based
+        HOLDON = 1         hold the previous value when no new data arrives -->
+
+   <SEND>
+      <ELEMENTS>
+         <!-- Cartesian actual pose. The host closed loop and its safety ledger
+              both key off this; the one element that cannot be omitted. -->
+         <ELEMENT TAG="DEF_RIst"  TYPE="DOUBLE" INDX="INTERNAL" />
+         <!-- Cartesian setpoint pose. Host-side diagnostics only. -->
+         <ELEMENT TAG="DEF_RSol"  TYPE="DOUBLE" INDX="INTERNAL" />
+         <!-- Joint actual / setpoint. POSCORR does not need them, but they make
+              "cartesian looks fine yet a joint hit its limit" diagnosable. -->
+         <ELEMENT TAG="DEF_AIPos" TYPE="DOUBLE" INDX="INTERNAL" />
+         <ELEMENT TAG="DEF_ASPos" TYPE="DOUBLE" INDX="INTERNAL" />
+         <!-- DEF_Delay is the KRC own count of late / lost packets. It is the
+              only way the host can see "the controller thinks I am dropping
+              packets": the host counter cannot see a reply that arrived late,
+              nor one the KRC discarded over a SENTYPE mismatch. Keep it. -->
+         <ELEMENT TAG="DEF_Delay" TYPE="LONG"   INDX="INTERNAL" />
+      </ELEMENTS>
+   </SEND>
+
+   <RECEIVE>
+      <ELEMENTS>
+         <!-- The six components of RKorr in the host reply, feeding Ethernet
+              output channels 1..6. The object graph then routes each one through
+              a Limit object into POSCORR.
+
+              These are PER-CYCLE DISPLACEMENT INCREMENTS, not target
+              coordinates. POSCORR runs in RELATIVE mode, so sending an absolute
+              coordinate would command the robot to cover that whole distance
+              within one interpolation cycle.
+
+              HOLDON is deliberately 0. Under incremental semantics, holding the
+              previous value means that if the host stalls the KRC re-applies the
+              last increment every cycle: 0.6 mm times the 100 cycles of Timeout
+              is 60 mm, and the host ledger would count none of it. HOLDON=1 is
+              safe for an absolute interface and the worst possible choice for an
+              incremental one. -->
+         <ELEMENT TAG="RKorr.X" TYPE="DOUBLE" INDX="1" HOLDON="0" />
+         <ELEMENT TAG="RKorr.Y" TYPE="DOUBLE" INDX="2" HOLDON="0" />
+         <ELEMENT TAG="RKorr.Z" TYPE="DOUBLE" INDX="3" HOLDON="0" />
+         <ELEMENT TAG="RKorr.A" TYPE="DOUBLE" INDX="4" HOLDON="0" />
+         <ELEMENT TAG="RKorr.B" TYPE="DOUBLE" INDX="5" HOLDON="0" />
+         <ELEMENT TAG="RKorr.C" TYPE="DOUBLE" INDX="6" HOLDON="0" />
+      </ELEMENTS>
+   </RECEIVE>
+</ROOT>
+'''
+
+RSIX = '''<?xml version="1.0" encoding="utf-8"?>
 <!--
   RSI context - POSCORR pose tracking (BASE frame, RELATIVE increments)
 
@@ -149,3 +229,23 @@
 
    </RsiObjects>
 </RsiContext>
+'''
+
+
+def write_ascii_crlf(path, text, bom=False):
+    data = text.replace("\r\n", "\n").replace("\n", "\r\n").encode("ascii")
+    if bom:
+        data = b"\xef\xbb\xbf" + data
+    with open(path, "wb") as f:
+        f.write(data)
+    print("wrote %-34s %6d bytes  BOM=%s" % (path, len(data), bom))
+
+
+write_ascii_crlf("krc/PoseTrack_ethernet.xml", ETH, bom=False)
+# 官方生成的 .rsix 带 BOM，保持一致
+write_ascii_crlf("krc/PoseTrack.rsix", RSIX, bom=True)
+
+# .src 已是 ASCII，只需确保 CRLF
+with io.open("krc/PoseTrack.src", encoding="ascii") as f:
+    src = f.read()
+write_ascii_crlf("krc/PoseTrack.src", src, bom=False)
