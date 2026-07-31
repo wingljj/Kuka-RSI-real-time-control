@@ -1,0 +1,7 @@
+build/
+_screen*.png
+*.log
+setup_vmnet1.ps1
+set_vmnet1_native.ps1
+vmnet1_backup.txt
+CMakeLists.txt.user

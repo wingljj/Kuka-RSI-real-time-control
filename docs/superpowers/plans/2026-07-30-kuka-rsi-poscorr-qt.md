@@ -27,10 +27,13 @@
 ## 工具链路径（命令中逐字使用）
 
 ```bash
+# 被 CMake 消费的路径用 Windows 形式；要放进 PATH 的必须用 POSIX 形式 ——
+# MSYS/Git-Bash 按 ':' 切分 PATH，"D:/Software/..." 会被撕成 "D" 和
+# "/Software/..." 两个无效项，导致 Ninja 找不到、g++ 误解析到其他安装。
 QTDIR="D:/Software/QT/content/6.5.3/mingw_64"
-MINGW="D:/Software/QT/content/Tools/mingw1120_64/bin"
-NINJA="D:/Software/QT/content/Tools/Ninja"
 CMAKE="D:/Software/QT/content/Tools/CMake_64/bin/cmake.exe"
+MINGW="/d/Software/QT/content/Tools/mingw1120_64/bin"
+NINJA="/d/Software/QT/content/Tools/Ninja"
 ```
 
 配置与构建（后续任务反复使用，记作 **BUILD 命令**）：
@@ -593,8 +596,14 @@ bool AppConfig::loadFromFile(const QString &path, AppConfig *out,
 
     const QJsonObject net = root.value("network").toObject();
     readString(net, "listen_ip", &out->listenIp);
-    if (net.contains("listen_port"))
-        out->listenPort = quint16(net.value("listen_port").toInt());
+    // 与其余字段一致地做类型守卫：无守卫时 "59152"(带引号) 或 null 都会
+    // 让 toInt() 返回 0，端口 0 会绑到 OS 分配的临时端口，KRC 永远连不上，
+    // 且表现为静默失败而非配置报错。范围检查挡住 quint16 截断。
+    if (net.value("listen_port").isDouble()) {
+        const int p = net.value("listen_port").toInt(-1);
+        if (p > 0 && p <= 65535)
+            out->listenPort = quint16(p);
+    }
 
     const QJsonObject rsi = root.value("rsi").toObject();
     readDouble(rsi, "cycle_ms", &out->cycleMs);
@@ -790,6 +799,7 @@ public:
 #include "core/RsiCodec.h"
 
 #include <QXmlStreamReader>
+#include <cmath>
 
 namespace {
 
@@ -832,18 +842,30 @@ RobFrame RsiCodec::parseRob(const QByteArray &datagram)
         } else if (name == QLatin1String("RSol")) {
             readPoseAttrs(xml.attributes(), &out.rsol);  // 可选
         } else if (name == QLatin1String("IPOC")) {
-            bool ok = false;
-            const quint64 v = xml.readElementText().toULongLong(&ok);
-            if (ok) {
-                out.ipoc = v;
-                haveIpoc = true;
+            const QString t = xml.readElementText();
+            // 必须在此检查 reader 状态。实测 (Qt 6.5.3)：若部分数字后还跟着
+            // 标记（<IPOC>5551< 或 <IPOC>5551</IPOC），readElementText() 会
+            // 返回"已累积的部分数字" 5551 并同时置错误位；而纯粹截断在数字
+            // 末尾（<IPOC>5551）则返回空串。前一种若不检查就会回显 5551，
+            // 真实值可能是 5551234——IPOC 字节精确是硬契约，回错等同丢包。
+            // 现实触发场景是接收缓冲区过小导致 readDatagram 静默截断，
+            // 而 IPOC 恰位于 RSI 报文末尾。
+            if (!xml.hasError()) {
+                bool ok = false;
+                const quint64 v = t.toULongLong(&ok);
+                if (ok) {
+                    out.ipoc = v;
+                    haveIpoc = true;
+                }
             }
         }
     }
 
-    if (xml.hasError())
-        return out;                 // valid 仍为 false
-
+    // 尾部填充容忍：真实 KRC datagram 可能带尾部 NUL 或空白，
+    // QXmlStreamReader 会就此报错；若因任何 reader 错误一律拒绝，将是每帧
+    // 都失败的全盘故障而非间歇故障。此处只依据"两个必需元素是否都完整读到"
+    // 判定——IPOC 的截断已在上面的 hasError 守卫处挡掉，RIst 的属性在
+    // StartElement 时就已完整解析（否则不会 emit），故二者均可信。
     out.valid = haveRist && haveIpoc;
     return out;
 }
@@ -865,7 +887,12 @@ QByteArray RsiCodec::buildSen(const Pose &korr, quint64 ipoc,
                             korr.a, korr.b, korr.c};
     for (int i = 0; i < 6; ++i) {
         s += keys[i];
-        s += QByteArray::number(vals[i], 'f', 4);
+        // 非有限值守卫：NaN 会输出 "nan"、Inf 输出 "inf"，都不是 4 位小数，
+        // KRC 的 RKorr 解析不了，等同丢包并停机。而上游基于比较的限幅会
+        // 传播 NaN 而非限界它，所以这道防线必须在此层——它是 wire 格式的
+        // 保证者。替换为 0.0 表示"本周期无修正"，是正确的降级行为。
+        const double v = std::isfinite(vals[i]) ? vals[i] : 0.0;
+        s += QByteArray::number(v, 'f', 4);
         s += '"';
     }
 
@@ -908,7 +935,8 @@ git commit -m "feat(core): add RsiCodec for Rob parsing and Sen building with IP
   - `class PoseController` 含：
     - `void configure(const AppConfig &cfg)`
     - `void setTarget(const Pose &t)` / `Pose target() const`
-    - `void resetToActual(const Pose &actual)` — 目标置为实际、累积清零、状态回 Idle
+    - `void resetToActual(const Pose &actual)` — 目标置为实际、状态回 Idle、清故障原因，**刻意保留累积量**（会话内的「停止跟踪」「归零」用）
+    - `void beginSession(const Pose &actual)` — 在上者之上额外清零累积量，**仅 RSI 会话开始时调用**
     - `Pose step(const Pose &actual)` — 返回本周期增量；非 Tracking 时返回零增量
     - `void setTracking(bool on)`
     - `TrackState state() const`
@@ -1293,7 +1321,9 @@ git commit -m "feat(core): add PoseController with clamped P control and accumul
 #include <QMutex>
 #include <QMutexLocker>
 #include <QString>
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include "core/PoseController.h"
 #include "core/Pose.h"
 
@@ -1359,11 +1389,23 @@ public:
     // 按时间先后写入 dst，返回实际写入数量。
     int copyOut(ChartSample *dst, int maxCount) const
     {
+        if (!dst || maxCount <= 0)
+            return 0;                   // 负数会让下面的 % 触发有符号溢出
         QMutexLocker lock(&m_mutex);
         const int n = std::min(m_size, maxCount);
         const int start = (m_head - n + kCapacity) % kCapacity;
-        for (int i = 0; i < n; ++i)
-            dst[i] = m_buf[(start + i) % kCapacity];
+        // 用两段连续 memcpy 代替逐元素取模循环。持锁时长直接决定 comm 线程
+        // push() 的最坏等待：GUI 线程是普通优先级且 QMutex 无优先级继承，
+        // 若它在持锁期间被 OS 抢占，push() 会一直停到它被重新调度——最多
+        // 一个时间片（默认定时器精度下约 10–15ms），超过 4–12ms 的 RSI 周期，
+        // 于是迟到回复→丢包→停机。缩短持锁窗口是直接的风险削减。
+        // ChartSample 是三个 double，trivially copyable，memcpy 安全。
+        const int first = std::min(n, kCapacity - start);
+        std::memcpy(dst, &m_buf[start],
+                    size_t(first) * sizeof(ChartSample));
+        if (n > first)
+            std::memcpy(dst + first, &m_buf[0],
+                        size_t(n - first) * sizeof(ChartSample));
         return n;
     }
 
@@ -1602,8 +1644,10 @@ void RsiWorker::onDatagram()
                 if (f.ipoc <= m_lastIpoc)
                     ++m_missed;
             } else {
-                // 首帧：目标置为实际，误差归零，机器人原地不动
-                m_ctl.resetToActual(f.rist);
+                // 首帧 = RSI 会话开始：目标置为实际且累积清零，机器人原地不动。
+                // 必须用 beginSession 而非 resetToActual——后者刻意保留累积量，
+                // 因为 RELATIVE 模式下 KRC 侧已施加的修正不会因主机归零而消失。
+                m_ctl.beginSession(f.rist);
                 m_haveFirstFrame = true;
                 emit firstFrameReceived();
             }
@@ -1713,6 +1757,8 @@ git commit -m "feat(net): add RsiWorker with always-reply UDP loop and watchdog"
 #include <QCommandLineParser>
 #include <QElapsedTimer>
 #include <QHostAddress>
+#include <QNetworkDatagram>   // qudpsocket.h 只前向声明它，缺此则不编译
+#include <QThread>
 #include <QUdpSocket>
 #include <QtGlobal>
 #include <algorithm>
@@ -1813,25 +1859,42 @@ int main(int argc, char **argv)
     Pose pose{1250.0, 0.0, 1000.0, 0.0, 90.0, 0.0};
     quint64 ipoc = 1000;
 
-    int replies = 0, ipocMismatch = 0, timeouts = 0;
+    int replies = 0, ipocMismatch = 0, missed = 0;
     double maxRttUs = 0.0, sumRttUs = 0.0;
 
+    // 真实 KRC 按固定节拍发帧。若不设节拍而是收到回复就立刻发下一帧，
+    // 面对快速主机会全速空转——那测的是吞吐，不是"能否在周期内回复"，
+    // 而且主机侧实测出来的周期也不再是 cycleMs。
+    QElapsedTimer pace;
+    pace.start();
+
     for (int i = 0; i < cycles; ++i) {
+        // 等到本周期的标称发送时刻
+        const qint64 dueNs = qint64(double(i) * cycleMs * 1.0e6);
+        while (pace.nsecsElapsed() < dueNs) {
+            const qint64 remainMs = (dueNs - pace.nsecsElapsed()) / 1000000;
+            if (remainMs > 1)
+                QThread::msleep(1);
+        }
+
         QElapsedTimer rtt;
         rtt.start();
         sock.writeDatagram(buildRob(pose, ipoc), host, port);
 
-        // 等待本周期内的回包
+        // 等待本周期内的回包。注意不能用 waitForReadyRead 的返回值当作
+        // "收到回复"：端口关闭时 Windows 的 ICMP port-unreachable 也会让它
+        // 返回 true，那样该周期既不计 replies 也不计 timeouts，
+        // cycles == replies + missed 就不再成立。只认解析成功的 <Sen>。
         const int budgetMs = std::max(1, int(cycleMs));
-        if (!sock.waitForReadyRead(budgetMs)) {
-            ++timeouts;
-        } else {
+        bool got = false;
+        if (sock.waitForReadyRead(budgetMs)) {
             while (sock.hasPendingDatagrams()) {
                 const QByteArray d = sock.receiveDatagram().data();
                 Pose korr;
                 quint64 echoed = 0;
                 if (parseSen(d, &korr, &echoed)) {
                     ++replies;
+                    got = true;
                     if (echoed != ipoc)
                         ++ipocMismatch;
                     // RELATIVE：增量累加到当前位姿
@@ -1841,15 +1904,19 @@ int main(int argc, char **argv)
                     pose.c = wrap180(pose.c + korr.c);
                 }
             }
+        }
+        if (got) {
             const double us = rtt.nsecsElapsed() / 1000.0;
             maxRttUs = std::max(maxRttUs, us);
             sumRttUs += us;
+        } else {
+            ++missed;
         }
         ++ipoc;
     }
 
-    std::printf("cycles=%d replies=%d timeouts=%d ipoc_mismatch=%d\n",
-                cycles, replies, timeouts, ipocMismatch);
+    std::printf("cycles=%d replies=%d missed=%d ipoc_mismatch=%d\n",
+                cycles, replies, missed, ipocMismatch);
     std::printf("rtt_avg_us=%.1f rtt_max_us=%.1f\n",
                 replies ? sumRttUs / replies : 0.0, maxRttUs);
     std::printf("final_pose X=%.3f Y=%.3f Z=%.3f A=%.3f B=%.3f C=%.3f\n",
@@ -2026,7 +2093,7 @@ wait
 ```
 
 Expected:
-- 模拟器打印 `cycles=500 replies=500 timeouts=0 ipoc_mismatch=0` 与 `PASS`，退出码 0
+- 模拟器打印 `cycles=500 replies=500 missed=0 ipoc_mismatch=0` 与 `PASS`，退出码 0
 - `loopback_test` 打印 `missed=0`，`max_reply_us` 应远小于 12000（预期数百微秒量级）
 - 未使能跟踪，`final_pose` 与初值一致（增量恒为 0）
 
@@ -2520,8 +2587,13 @@ ErrorChart::ErrorChart(int windowSeconds, QWidget *parent)
 
 void ErrorChart::updateFrom(const SampleRing &ring)
 {
-    static std::vector<ChartSample> buf(SampleRing::kCapacity);
-    const int n = ring.copyOut(buf.data(), SampleRing::kCapacity);
+    // 只取绘制真正需要的点数，不要拉满 kCapacity。copyOut 在 ring 互斥内
+    // 执行，而 comm 线程每周期的 push() 抢同一把锁；GUI 线程持锁期间若被
+    // 抢占，push() 最坏要等一个时间片（~10–15ms），超过 RSI 周期即丢包停机。
+    // 1200 点已超过任何常见图表的像素宽度，再多也画不出信息。
+    static constexpr int kMaxDrawPoints = 1200;
+    static std::vector<ChartSample> buf(kMaxDrawPoints);
+    const int n = ring.copyOut(buf.data(), kMaxDrawPoints);
     if (n == 0) {
         m_posSeries->clear();
         m_rotSeries->clear();
