@@ -3,6 +3,7 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QPushButton>
 #include <QVBoxLayout>
 #include <QMessageBox>
 #include <cmath>
@@ -43,6 +44,38 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     right->addWidget(buildReadoutPanel(), 1);
     row->addLayout(right, 1);
     outer->addLayout(row);
+
+    auto *bar = new QHBoxLayout;
+
+    auto *zeroBtn = new QPushButton("归零到当前位姿", this);
+    connect(zeroBtn, &QPushButton::clicked,
+            this, &MainWindow::onZeroToActual);
+    bar->addWidget(zeroBtn);
+
+    // 两段式使能：构造时不勾选，连接本身不会启动运动。操作员先看读数是否
+    // 合理，再手动勾选。任何"连上就自动使能"的便利都不可接受。
+    m_trackCheck = new QCheckBox("使能跟踪", this);
+    connect(m_trackCheck, &QCheckBox::toggled,
+            this, &MainWindow::onTrackingToggled);
+    bar->addWidget(m_trackCheck);
+
+    auto *stopBtn = new QPushButton("停止跟踪", this);
+    connect(stopBtn, &QPushButton::clicked,
+            this, &MainWindow::onStopTracking);
+    bar->addWidget(stopBtn);
+
+    bar->addStretch();
+    m_safetyNote = new QLabel(
+        "「停止跟踪」是软停止，不是急停。急停只能用示教器上的物理急停按钮。",
+        this);
+    m_safetyNote->setStyleSheet("color: #b00; font-weight: bold;");
+    // 刻意不开 setWordWrap：关闭自动换行时 QLabel::minimumSizeHint() 等于整段
+    // 文本的宽度，布局因此不可能把这条提示截断——窗口只会拒绝再变窄。开了
+    // 换行反而允许标签被压成一行高度而把后半句藏掉，那是安全提示最坏的失效
+    // 方式。
+    bar->addWidget(m_safetyNote);
+
+    outer->addLayout(bar);
 
     setCentralWidget(central);
 
@@ -251,7 +284,55 @@ void MainWindow::onRefresh()
               .arg(s.measuredCycleMs, 0, 'f', 1)
               .arg(s.maxReplyUs, 0, 'f', 0)
               .arg(s.missedCount);
+    // Fault 是锁存的：PoseController::setTracking(true) 在 Fault 下不会转
+    // Tracking，必须先经「归零到当前位姿」清除。所以此时勾选框若还打着勾，
+    // 显示的就是一个与机器状态不符的谎言——强制取消勾选。
+    if (s.state == TrackState::Fault && m_trackCheck->isChecked())
+        m_trackCheck->setChecked(false);
+
     m_statusLabel->setText(st);
 
     m_chart->updateFrom(m_ring);
+}
+
+void MainWindow::onZeroToActual()
+{
+    // 目标置为实际、状态回 Idle、清除故障原因。
+    // 【累积修正量刻意不清零】——RELATIVE 模式下 KRC 侧已施加的修正是累积的，
+    // 不会因主机侧归零而消失。只有真正的 RSI 会话重启（由 RsiWorker 自己按
+    // 静默时长判定）才可以调 beginSession() 清账本。界面永远不得调
+    // beginSession：否则反复「停止→归零→使能」就能不断领取新的安全预算，
+    // 把总修正一路推过 POSCORR 的 ~50mm 硬限。
+    if (!m_worker)
+        return;
+    QMetaObject::invokeMethod(m_worker, "resetToActual",
+                              Qt::QueuedConnection);
+    const Pose a = m_state.snapshot().actual;
+    m_suppressTargetSignal = true;
+    const double v[6] = {a.x, a.y, a.z, a.a, a.b, a.c};
+    for (int i = 0; i < 6; ++i) {
+        m_targetSpin[i]->setValue(v[i]);
+        m_targetSlider[i]->setValue(int(v[i] * 10.0));
+    }
+    m_suppressTargetSignal = false;
+    m_trackCheck->setChecked(false);
+}
+
+void MainWindow::onTrackingToggled(bool on)
+{
+    if (!m_worker)
+        return;
+    // 必须排队：直连会在通信线程 step() 读状态的同时改写它。
+    QMetaObject::invokeMethod(m_worker, "setTracking",
+                              Qt::QueuedConnection, Q_ARG(bool, on));
+}
+
+void MainWindow::onStopTracking()
+{
+    // 软停止，不是急停：把目标拉回实际使误差归零、机器人停在原地，
+    // 但通信线程一个周期都不停地继续回包。停止回包会让 RSI 判定通信故障
+    // 并直接错误停机（第 4 层），那不是"停下"而是"摔停"。
+    // 真正的急停只有示教器上的物理按钮，界面上的红字提示说的就是这件事。
+    m_trackCheck->setChecked(false);
+    onZeroToActual();
 }

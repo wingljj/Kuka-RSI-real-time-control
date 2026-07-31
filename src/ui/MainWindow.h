@@ -1,6 +1,8 @@
 #pragma once
+#include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
+#include <QPushButton>
 #include <QMainWindow>
 #include <QSlider>
 #include <QThread>
@@ -22,6 +24,9 @@ public:
 private slots:
     void onRefresh();
     void onTargetEdited();
+    void onZeroToActual();
+    void onTrackingToggled(bool on);
+    void onStopTracking();
 
 private:
     QWidget *buildTargetPanel();
@@ -46,6 +51,10 @@ private:
 
     QLabel *m_statusLabel = nullptr;
     ErrorChart *m_chart   = nullptr;
+
+    // 两段式使能：连接不等于运动，操作员确认数值后才勾选。
+    QCheckBox *m_trackCheck = nullptr;
+    QLabel    *m_safetyNote = nullptr;
 
     bool m_suppressTargetSignal = false;
 };
