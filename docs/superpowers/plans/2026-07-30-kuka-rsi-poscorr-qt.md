@@ -935,7 +935,8 @@ git commit -m "feat(core): add RsiCodec for Rob parsing and Sen building with IP
   - `class PoseController` 含：
     - `void configure(const AppConfig &cfg)`
     - `void setTarget(const Pose &t)` / `Pose target() const`
-    - `void resetToActual(const Pose &actual)` — 目标置为实际、累积清零、状态回 Idle
+    - `void resetToActual(const Pose &actual)` — 目标置为实际、状态回 Idle、清故障原因，**刻意保留累积量**（会话内的「停止跟踪」「归零」用）
+    - `void beginSession(const Pose &actual)` — 在上者之上额外清零累积量，**仅 RSI 会话开始时调用**
     - `Pose step(const Pose &actual)` — 返回本周期增量；非 Tracking 时返回零增量
     - `void setTracking(bool on)`
     - `TrackState state() const`
@@ -1629,8 +1630,10 @@ void RsiWorker::onDatagram()
                 if (f.ipoc <= m_lastIpoc)
                     ++m_missed;
             } else {
-                // 首帧：目标置为实际，误差归零，机器人原地不动
-                m_ctl.resetToActual(f.rist);
+                // 首帧 = RSI 会话开始：目标置为实际且累积清零，机器人原地不动。
+                // 必须用 beginSession 而非 resetToActual——后者刻意保留累积量，
+                // 因为 RELATIVE 模式下 KRC 侧已施加的修正不会因主机归零而消失。
+                m_ctl.beginSession(f.rist);
                 m_haveFirstFrame = true;
                 emit firstFrameReceived();
             }
