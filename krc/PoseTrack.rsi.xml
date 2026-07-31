@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  运行时对象图 —— POSCORR 位姿跟踪（BASE 坐标系，RELATIVE 增量语义）
+
+  拓扑：
+      ETHERNET1.Out1 -> Limit_X -> POSCORR1.CorrX
+      ETHERNET1.Out2 -> Limit_Y -> POSCORR1.CorrY
+      ETHERNET1.Out3 -> Limit_Z -> POSCORR1.CorrZ
+      ETHERNET1.Out4 -> Limit_A -> POSCORR1.CorrA
+      ETHERNET1.Out5 -> Limit_B -> POSCORR1.CorrB
+      ETHERNET1.Out6 -> Limit_C -> POSCORR1.CorrC
+      POSCORRMON1（无输入，独立监控总位移/总转角，越限直接停机）
+
+  为什么要在中间串六个 Limit：这是安全设计的第 3 层。它在 KRC 侧执行，
+  不依赖上位机代码正确——上位机崩溃、发出异常值、或被改坏，这一层照样生效。
+
+  ParamID 取自 RSIVisual 的 rsiToolbox.xml（该文件的 Index 即旧格式 ParamID，
+  已用 ref/ 下 KR_C4 的真实文件逐项校对过 ETHERNET 与 AXISCORR）。
+
+  四层限值必须自内向外单调放大，否则内层永不触发、防线退化成一层：
+      第 1 层 上位机单周期增量   50 mm/s × 12 ms = 0.6 mm
+      第 2 层 上位机累积位移     30 mm（欧氏范数）/ 15°
+      第 3 层 本文件的 Limit     ±35 mm / ±35°
+      第 4 层 POSCORR 限值       ±40 mm / 40°
+      第 5 层 POSCORRMON 监控    45 mm / 45°
+  注意 POSCORR 出厂默认只有 ±5mm / 5°，若照默认部署，RSI 会先在 5mm 拒绝，
+  上位机那 30mm 永远不会触发。
+-->
+<RSIObjects xsi:noNamespaceSchemaLocation="/Roboter/Config/System/Common/Schemes/RSIContext.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+  <RSIObject ObjType="ETHERNET" ObjTypeID="64" ObjID="ETHERNET1">
+    <Parameters>
+      <Parameter Name="ConfigFile" ParamID="1" ParamValue="PoseTrack_ethernet.xml" IsRuntime="false" />
+      <!-- Timeout 是 KRC 容忍的连续 IPOC 不匹配次数。12ms 周期下 100 次 ≈ 1.2s。
+           上位机的 session_gap_ms 必须显著大于它（当前 2000ms），否则会在 KRC
+           仍认为会话连续时移动安全锚点、凭空多发一份修正预算。 -->
+      <Parameter Name="Timeout"    ParamID="1" ParamValue="100" />
+      <Parameter Name="Flag"       ParamID="4" ParamValue="1" />
+      <!-- Precision=4 与上位机 RsiCodec::buildSen 的 'f',4 互为契约。改一边必须改另一边。 -->
+      <Parameter Name="Precision"  ParamID="8" ParamValue="4" />
+    </Parameters>
+  </RSIObject>
+
+  <RSIObject ObjType="LIMIT" ObjTypeID="39" ObjID="Limit_X">
+    <Inputs>
+      <Input InIdx="1" OutObjID="ETHERNET1" OutIdx="1" />
+    </Inputs>
+    <Parameters>
+      <Parameter Name="LowerLimit" ParamID="1" ParamValue="-35.0" />
+      <Parameter Name="UpperLimit" ParamID="2" ParamValue="35.0" />
+    </Parameters>
+  </RSIObject>
+
+  <RSIObject ObjType="LIMIT" ObjTypeID="39" ObjID="Limit_Y">
+    <Inputs>
+      <Input InIdx="1" OutObjID="ETHERNET1" OutIdx="2" />
+    </Inputs>
+    <Parameters>
+      <Parameter Name="LowerLimit" ParamID="1" ParamValue="-35.0" />
+      <Parameter Name="UpperLimit" ParamID="2" ParamValue="35.0" />
+    </Parameters>
+  </RSIObject>
+
+  <RSIObject ObjType="LIMIT" ObjTypeID="39" ObjID="Limit_Z">
+    <Inputs>
+      <Input InIdx="1" OutObjID="ETHERNET1" OutIdx="3" />
+    </Inputs>
+    <Parameters>
+      <Parameter Name="LowerLimit" ParamID="1" ParamValue="-35.0" />
+      <Parameter Name="UpperLimit" ParamID="2" ParamValue="35.0" />
+    </Parameters>
+  </RSIObject>
+
+  <RSIObject ObjType="LIMIT" ObjTypeID="39" ObjID="Limit_A">
+    <Inputs>
+      <Input InIdx="1" OutObjID="ETHERNET1" OutIdx="4" />
+    </Inputs>
+    <Parameters>
+      <Parameter Name="LowerLimit" ParamID="1" ParamValue="-35.0" />
+      <Parameter Name="UpperLimit" ParamID="2" ParamValue="35.0" />
+    </Parameters>
+  </RSIObject>
+
+  <RSIObject ObjType="LIMIT" ObjTypeID="39" ObjID="Limit_B">
+    <Inputs>
+      <Input InIdx="1" OutObjID="ETHERNET1" OutIdx="5" />
+    </Inputs>
+    <Parameters>
+      <Parameter Name="LowerLimit" ParamID="1" ParamValue="-35.0" />
+      <Parameter Name="UpperLimit" ParamID="2" ParamValue="35.0" />
+    </Parameters>
+  </RSIObject>
+
+  <RSIObject ObjType="LIMIT" ObjTypeID="39" ObjID="Limit_C">
+    <Inputs>
+      <Input InIdx="1" OutObjID="ETHERNET1" OutIdx="6" />
+    </Inputs>
+    <Parameters>
+      <Parameter Name="LowerLimit" ParamID="1" ParamValue="-35.0" />
+      <Parameter Name="UpperLimit" ParamID="2" ParamValue="35.0" />
+    </Parameters>
+  </RSIObject>
+
+  <RSIObject ObjType="POSCORR" ObjTypeID="27" ObjID="POSCORR1">
+    <Inputs>
+      <!-- InIdx 1..6 依次是 CorrX CorrY CorrZ CorrA CorrB CorrC -->
+      <Input InIdx="1" OutObjID="Limit_X" OutIdx="1" />
+      <Input InIdx="2" OutObjID="Limit_Y" OutIdx="1" />
+      <Input InIdx="3" OutObjID="Limit_Z" OutIdx="1" />
+      <Input InIdx="4" OutObjID="Limit_A" OutIdx="1" />
+      <Input InIdx="5" OutObjID="Limit_B" OutIdx="1" />
+      <Input InIdx="6" OutObjID="Limit_C" OutIdx="1" />
+    </Inputs>
+    <Parameters>
+      <Parameter Name="LowerLimX"   ParamID="1" ParamValue="-40.0" />
+      <Parameter Name="LowerLimY"   ParamID="2" ParamValue="-40.0" />
+      <Parameter Name="LowerLimZ"   ParamID="3" ParamValue="-40.0" />
+      <Parameter Name="UpperLimX"   ParamID="4" ParamValue="40.0" />
+      <Parameter Name="UpperLimY"   ParamID="5" ParamValue="40.0" />
+      <Parameter Name="UpperLimZ"   ParamID="6" ParamValue="40.0" />
+      <!-- MaxRotAngle 是【单一总转角】限值，不是每轴各一个。 -->
+      <Parameter Name="MaxRotAngle" ParamID="7" ParamValue="40.0" />
+      <!-- 修正量的参考坐标系。Base 也是出厂默认值，但显式写出来，
+           免得后人以为它跟随 $BASE 之外的什么东西。 -->
+      <Parameter Name="RefCorrSys"  ParamID="1" ParamValue="Base" IsRuntime="false" />
+    </Parameters>
+  </RSIObject>
+
+  <RSIObject ObjType="POSCORRMON" ObjTypeID="81" ObjID="POSCORRMON1">
+    <Parameters>
+      <!-- MaxTrans 是总平移量（不是每轴），语义上就是欧氏范数——这也是上位机
+           第 2 层改用 hypot 判限的依据：两层量的定义一致才可比较。 -->
+      <Parameter Name="MaxTrans"    ParamID="1" ParamValue="45.0" IsRuntime="false" />
+      <Parameter Name="MaxRotAngle" ParamID="2" ParamValue="45.0" IsRuntime="false" />
+    </Parameters>
+  </RSIObject>
+
+</RSIObjects>
