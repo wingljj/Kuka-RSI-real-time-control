@@ -76,27 +76,31 @@ for ($i = 1; $i -le 900; $i++) {
         $hits++
         if ($d -gt $peak) { $peak = $d }
         $t = $sw.Elapsed.ToString('mm\:ss')
-        Write-Host ("      [{0}] 收到 {1} 个包   <== KRC 正在发帧" -f $t, $d) -ForegroundColor Green
+        Write-Host ("      [{0}] 整机 UDP {1} 个/秒" -f $t, $d) -ForegroundColor Green
     }
 }
 
 Write-Host ''
 Write-Host '  ============================================'
 if ($peak -gt 20) {
-    Write-Host "  KRC 确实在发帧（峰值 $peak 个/秒，共 $hits 秒有流量）。" -ForegroundColor Green
+    Write-Host "  采样期间有 UDP 流量（峰值 $peak 个/秒，共 $hits 秒）。" -ForegroundColor Yellow
     Write-Host ''
-    Write-Host '  问题在应答方向，按这个顺序查：'
-    Write-Host '    1. rsi_host 界面的"不匹配"计数 —— 非零说明 IPOC 回显有问题'
-    Write-Host '    2. SENTYPE：ethernet.xml 写 ImFree，配置里 sen_type 也必须是 ImFree'
-    Write-Host "    3. 峰值 $peak 对应实测周期约 $([math]::Round(1000.0/$peak,1)) ms"
-    Write-Host '       若不是 12 ms，rsi_config.json 的 cycle_ms 必须改，否则每个增量都错倍数'
+    Write-Host '  注意：这个计数器统计的是整机所有 UDP 包，不区分端口。' -ForegroundColor Yellow
+    Write-Host '  浏览器、mDNS、VMware 自己的流量都会计入，所以"有流量"'
+    Write-Host '  并不等于"KRC 在发帧"。判断依据以 rsi_host 界面为准：'
+    Write-Host ''
+    Write-Host '    状态栏 ● 已连接        -> KRC 确实在发，链路通了'
+    Write-Host '    状态栏 ◐ 监听中(等待)  -> 一帧都没收到，上面的流量是别的'
+    Write-Host ''
+    Write-Host "  参考：12 ms 周期下 RSI 约 $Expected 个/秒。远高于此的峰值多半不是 RSI。"
 } else {
-    Write-Host '  整个采样期间没有成片的包到达宿主。' -ForegroundColor Yellow
+    Write-Host '  采样期间整机 UDP 流量都几乎为零。' -ForegroundColor Yellow
     Write-Host ''
+    Write-Host '  这个方向的结论是可靠的：连别的流量都没有，RSI 帧更不可能到。'
     Write-Host '  如果这期间程序确实在跑，说明 Ethernet 对象没能发出数据。查：'
-    Write-Host '    1. OfficeLite 里 RSI 绑的网卡是不是 192.168.44.x 那块'
+    Write-Host '    1. KRC 网络配置里的地址是否与虚拟机网卡实际地址一致'
     Write-Host '    2. 虚拟机内的防火墙是否挡了出站 UDP'
-    Write-Host '    3. 示教器上 RSIBad 之前的那条报错 —— 首个报错信息量最大'
+    Write-Host '    3. 示教器上 RSIBad 之前的那条报错'
 }
 Write-Host ''
 Read-Host '  按回车关闭'
