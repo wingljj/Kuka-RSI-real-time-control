@@ -31,6 +31,8 @@ cp build-release/rsi_host.exe                        dist/
 cp build-release/tools/krc_simulator/krc_simulator.exe dist/
 cp config/rsi_config.json                            dist/config/
 cp krc/*                                             dist/krc/
+# 链路诊断（判断 KRC 有没有把帧发到宿主）；.bat 只是 .ps1 的启动壳，两个都要
+cp tools/网络诊断.ps1 tools/网络诊断.bat  dist/
 
 echo "==> Qt 运行库"
 for d in Qt6Core Qt6Gui Qt6Widgets Qt6Network Qt6Charts Qt6OpenGL Qt6OpenGLWidgets; do
