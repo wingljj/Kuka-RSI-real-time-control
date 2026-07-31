@@ -286,6 +286,67 @@ private slots:
         QVERIFY(qAbs(d.b - 0.12) < 1e-9);
         QVERIFY(qAbs(d.c - 0.12) < 1e-9);
     }
+
+    void invalidCycleMsSurvivesReset()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.cycleMs = 0.0;
+        pc.configure(c);
+        // 生产调用顺序：configure → beginSession(首帧)。粘滞标志必须活过它
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        QVERIFY(pc.state() != TrackState::Tracking);   // 不得被使能
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        QCOMPARE(d.x, 0.0);
+        QCOMPARE(pc.state(), TrackState::Fault);
+        QVERIFY(pc.faultReason().contains("cycleMs"));
+    }
+
+    void validConfigureClearsInvalidFlag()
+    {
+        PoseController pc;
+        AppConfig bad = testCfg();
+        bad.cycleMs = -1.0;
+        pc.configure(bad);
+        pc.configure(testCfg());       // 一次有效配置应解除粘滞
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        QCOMPARE(pc.state(), TrackState::Tracking);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        QVERIFY(pc.step(Pose{0, 0, 0, 0, 0, 0}).x > 0.0);
+    }
+
+    void nonFiniteGainEntersFault()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos = std::numeric_limits<double>::quiet_NaN();
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{10, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        QCOMPARE(d.x, 0.0);
+        QCOMPARE(pc.state(), TrackState::Fault);
+        // 累积量绝不能被污染，否则第 2 层永久失效
+        QVERIFY(std::isfinite(pc.accumulated().x));
+    }
+
+    void negativeAccumLimitDoesNotFaultAtZeroError()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.accumLimitPosMm = -30.0;     // 误填负号
+        pc.configure(c);
+        pc.beginSession(Pose{5, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        // 误差为 0、累积为 0，不该因负限值立刻故障
+        const Pose d = pc.step(Pose{5, 0, 0, 0, 0, 0});
+        QCOMPARE(d.x, 0.0);
+        QCOMPARE(pc.state(), TrackState::Tracking);
+    }
 };
 
 QTEST_MAIN(TestPoseController)

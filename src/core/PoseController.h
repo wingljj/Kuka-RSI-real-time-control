@@ -44,4 +44,10 @@ private:
 
     double m_stepLimitPos = 0.0;   // mm  / 周期
     double m_stepLimitRot = 0.0;   // deg / 周期
+
+    // 配置非法（如 cycleMs <= 0）。粘滞：resetToActual/beginSession 都不清除它，
+    // 因为生产调用顺序恰是 configure → beginSession(首帧)，若用 Fault 状态承载
+    // 就会在第一次 step() 之前被擦掉，保护形同不存在。只有一次有效的
+    // configure() 能解除。
+    bool m_configInvalid = false;
 };

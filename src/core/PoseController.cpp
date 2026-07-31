@@ -29,8 +29,9 @@ void PoseController::configure(const AppConfig &cfg)
     m_stepLimitRot = std::fabs(cfg.vmaxRotDegS) * cycleS;
 
     // 非正周期会让步长上限为 0，表现为静默不动而 state() 仍报 Tracking。
-    // 宁可显式故障，也不要装作在跟踪。
-    if (!(cfg.cycleMs > 0.0)) {
+    // 用粘滞标志承载，而不是 Fault 状态——Fault 会被随后的 beginSession 清除。
+    m_configInvalid = !(cfg.cycleMs > 0.0);
+    if (m_configInvalid) {
         m_state = TrackState::Fault;
         m_faultReason = QStringLiteral("invalid cycleMs %1; must be > 0")
                             .arg(cfg.cycleMs);
@@ -55,7 +56,7 @@ void PoseController::setTracking(bool on)
 {
     if (on) {
         // Fault 必须先经 resetToActual 清除，不能直接重新使能
-        if (m_state == TrackState::Idle)
+        if (m_state == TrackState::Idle && !m_configInvalid)
             m_state = TrackState::Tracking;
     } else if (m_state == TrackState::Tracking) {
         m_state = TrackState::Idle;
@@ -64,6 +65,15 @@ void PoseController::setTracking(bool on)
 
 Pose PoseController::step(const Pose &actual)
 {
+    // 粘滞的配置故障：每个周期都重新宣告，因为 resetToActual/beginSession
+    // 会清掉 Fault 状态，但不该让一个非法配置就此隐身。
+    if (m_configInvalid) {
+        m_state = TrackState::Fault;
+        m_faultReason = QStringLiteral("invalid cycleMs %1; must be > 0")
+                            .arg(m_cfg.cycleMs);
+        return Pose{};
+    }
+
     if (m_state != TrackState::Tracking)
         return Pose{};
 
@@ -95,6 +105,16 @@ Pose PoseController::step(const Pose &actual)
         m_accum.a + d.a, m_accum.b + d.b, m_accum.c + d.c,
     };
 
+    // 兜住所有非有限来源：上面的守卫只覆盖 actual/target，而增益本身
+    // （kpPos/kpRot）若为非有限值同样会污染 next，进而让 next > limit 恒假、
+    // 第 2 层永久失效。在此一次性挡住当前与将来的所有路径。
+    if (!poseIsFinite(next)) {
+        m_state = TrackState::Fault;
+        m_faultReason = QStringLiteral(
+            "non-finite accumulated correction (check Kp and limits)");
+        return Pose{};
+    }
+
     // 位置用欧几里得范数：逐轴判限会让三轴同时到限时的合成位移达到
     // √3 × limit（30mm → 51.96mm），越过 POSCORR 的 ~50mm 硬限，使第 2 层
     // 形同虚设、第一个停机的反而是第 4 层 RSI 错误停机。
@@ -104,20 +124,25 @@ Pose PoseController::step(const Pose &actual)
     const double rotMax = std::max({std::fabs(next.a), std::fabs(next.b),
                                     std::fabs(next.c)});
 
-    if (posNorm > m_cfg.accumLimitPosMm) {
+    // 限值同样不信任配置：负的累积限值会让 posNorm(>=0) > limit 恒真，
+    // 零误差时也立刻故障。与 vmax/cycleMs 的处理保持一致。
+    const double accumLimPos = std::fabs(m_cfg.accumLimitPosMm);
+    const double accumLimRot = std::fabs(m_cfg.accumLimitRotDeg);
+
+    if (posNorm > accumLimPos) {
         m_state = TrackState::Fault;
         m_faultReason = QStringLiteral(
             "accumulated translation norm %1 mm exceeds limit %2 mm")
             .arg(posNorm, 0, 'f', 3)
-            .arg(m_cfg.accumLimitPosMm, 0, 'f', 3);
+            .arg(accumLimPos, 0, 'f', 3);
         return Pose{};
     }
-    if (rotMax > m_cfg.accumLimitRotDeg) {
+    if (rotMax > accumLimRot) {
         m_state = TrackState::Fault;
         m_faultReason = QStringLiteral(
             "accumulated rotation %1 deg exceeds limit %2 deg")
             .arg(rotMax, 0, 'f', 3)
-            .arg(m_cfg.accumLimitRotDeg, 0, 'f', 3);
+            .arg(accumLimRot, 0, 'f', 3);
         return Pose{};
     }
 
