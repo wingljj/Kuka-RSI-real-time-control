@@ -1,7 +1,9 @@
 #include "ui/ErrorChart.h"
 
+#include <QBrush>
 #include <QChart>
 #include <QPainter>
+#include <QSize>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -37,8 +39,23 @@ ErrorChart::ErrorChart(int windowSeconds, QWidget *parent)
     chart->addAxis(m_axisRot, Qt::AlignRight);
     m_rotSeries->attachAxis(m_axisRot);
 
+    // 两条曲线共用横轴但各有自己的纵轴（左 mm、右 °），量纲不同、量程独立。
+    // 若不做颜色关联，操作员看到一段平台期时无法判断该照哪根轴读数——而这
+    // 两个数都是他要据以动手的误差量。把轴标签与轴线染成对应曲线的颜色。
+    m_axisPos->setLabelsColor(m_posSeries->color());
+    m_axisPos->setLinePenColor(m_posSeries->color());
+    m_axisPos->setTitleBrush(QBrush(m_posSeries->color()));
+    m_axisRot->setLabelsColor(m_rotSeries->color());
+    m_axisRot->setLinePenColor(m_rotSeries->color());
+    m_axisRot->setTitleBrush(QBrush(m_rotSeries->color()));
+
     m_view = new QChartView(chart, this);
     m_view->setRenderHint(QPainter::Antialiasing);
+    // QChartView 的 minimumSizeHint 很大（QGraphicsView 默认约 250×250 再加
+    // 边框），它会顶掉 MainWindow 的 resize(980,620)，在小屏笔电上把窗口撑到
+    // 超过显示区。显式解除下限，再给一个够看的自有下限。
+    m_view->setMinimumSize(QSize(0, 0));
+    m_view->setMinimumHeight(180);
 
     auto *lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
