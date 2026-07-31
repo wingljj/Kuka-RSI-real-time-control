@@ -1,5 +1,4 @@
 build/
-_screen*.png
 *.log
 setup_vmnet1.ps1
 set_vmnet1_native.ps1
@@ -7,3 +6,7 @@ vmnet1_backup.txt
 CMakeLists.txt.user
 dist/
 build-release/
+
+# 会话中的临时诊断截图与日志
+_*.png
+_*.log
