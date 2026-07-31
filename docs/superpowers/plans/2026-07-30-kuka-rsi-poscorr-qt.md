@@ -843,11 +843,13 @@ RobFrame RsiCodec::parseRob(const QByteArray &datagram)
             readPoseAttrs(xml.attributes(), &out.rsol);  // 可选
         } else if (name == QLatin1String("IPOC")) {
             const QString t = xml.readElementText();
-            // readElementText() 在文档提前结束时会返回"已累积的部分字符"而非
-            // 报废，所以必须在此检查 reader 状态：被截断的 <IPOC>5551 会解析出
-            // 数值 5551（真实值可能是 5551234）并被误判为有效，而 IPOC 字节精确
-            // 是硬契约——回错等同丢包。现实触发场景是接收缓冲区过小导致
-            // readDatagram 静默截断，而 IPOC 恰位于 RSI 报文末尾。
+            // 必须在此检查 reader 状态。实测 (Qt 6.5.3)：若部分数字后还跟着
+            // 标记（<IPOC>5551< 或 <IPOC>5551</IPOC），readElementText() 会
+            // 返回"已累积的部分数字" 5551 并同时置错误位；而纯粹截断在数字
+            // 末尾（<IPOC>5551）则返回空串。前一种若不检查就会回显 5551，
+            // 真实值可能是 5551234——IPOC 字节精确是硬契约，回错等同丢包。
+            // 现实触发场景是接收缓冲区过小导致 readDatagram 静默截断，
+            // 而 IPOC 恰位于 RSI 报文末尾。
             if (!xml.hasError()) {
                 bool ok = false;
                 const quint64 v = t.toULongLong(&ok);
