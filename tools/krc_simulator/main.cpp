@@ -190,17 +190,17 @@ int main(int argc, char **argv)
         };
 
         if (reorder) {
-            // 本帧缓冲，下周期先发（乱序到达）
+            // 本帧缓冲，下周期后发（真乱序）
             heldRob   = rob;
             heldIpoc  = sendIpoc;
             heldValid = true;
         } else {
+            if (!drop)
+                sendFrame(rob, sendIpoc);          // 本帧先发
             if (heldValid) {
-                sendFrame(heldRob, heldIpoc);
+                sendFrame(heldRob, heldIpoc);      // 缓冲帧后发（真乱序）
                 heldValid = false;
             }
-            if (!drop)
-                sendFrame(rob, sendIpoc);
         }
 
         // 推进序列：dup 不推进（下帧还发同一个）；其余推进。
