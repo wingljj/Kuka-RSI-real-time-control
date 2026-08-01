@@ -303,7 +303,7 @@ void RsiWorker::publishSnapshot(const Pose &actual, const Pose &err,
     s.frameCount      = m_frameCount;
     s.connected       = connected;
     s.peerIp4      = m_peerLocked ? m_peerAddr.toIPv4Address() : 0;
-    s.peerPort     = m_peerPort;
+    s.peerPort     = m_peerLocked ? m_peerPort : 0;
     s.lifetimeLost = m_lifetimeLost;
     s.lastDelta    = m_lastDelta;
     if (m_cycleCount > 0) {
