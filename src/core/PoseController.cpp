@@ -142,7 +142,9 @@ Pose PoseController::step(const Pose &actual)
     d.y = m_cfg.kpPos * errPos.y;
     d.z = m_cfg.kpPos * errPos.z;
     const double posNorm = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-    if (m_stepLimitPos > 0.0 && posNorm > m_stepLimitPos) {
+    if (m_stepLimitPos <= 0.0) {
+        d.x = d.y = d.z = 0.0;   // vmax_pos=0：位置被阻止（与姿态路径一致）
+    } else if (posNorm > m_stepLimitPos) {
         const double s = m_stepLimitPos / posNorm;
         d.x *= s; d.y *= s; d.z *= s;
     }

@@ -522,6 +522,23 @@ private slots:
         QVERIFY(norm <= 0.6 + 1e-9);
         QVERIFY(qAbs(d.x - d.y) < 1e-9);  // 等比缩放
     }
+
+    void position_zeroVmax_blocksMotion()
+    {
+        // vmax_pos=0：位置被阻止（镜像姿态路径）。旧实现用 `m_stepLimitPos > 0.0`
+        // 守卫跳过限幅，原始 kp×err 无界直通——修复前本用例失败。
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.vmaxPosMmS = 0.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 100, 100, 0, 0, 0});   // 大位置误差
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        QCOMPARE(d.x, 0.0);
+        QCOMPARE(d.y, 0.0);
+        QCOMPARE(d.z, 0.0);
+    }
 };
 
 QTEST_MAIN(TestPoseController)
