@@ -171,6 +171,44 @@ private slots:
         const RobFrame f = RsiCodec::parseRob(d);
         QVERIFY(!f.valid);
     }
+
+    void parseRob_readsDelay()
+    {
+        const QByteArray d =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1\" Y=\"2\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
+            "<Delay D=\"42\"/>"
+            "<IPOC>5</IPOC>"
+            "</Rob>";
+        const RobFrame f = RsiCodec::parseRob(d);
+        QVERIFY(f.valid);
+        QCOMPARE(f.delay, quint64(42));
+    }
+
+    void parseRob_missingDelay_isValidDefaultZero()
+    {
+        const QByteArray d =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1\" Y=\"2\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
+            "<IPOC>5</IPOC>"
+            "</Rob>";
+        const RobFrame f = RsiCodec::parseRob(d);
+        QVERIFY(f.valid);
+        QCOMPARE(f.delay, quint64(0));
+    }
+
+    void parseRob_badDelayKeepsDefault()
+    {
+        const QByteArray d =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1\" Y=\"2\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
+            "<Delay D=\"abc\"/>"
+            "<IPOC>5</IPOC>"
+            "</Rob>";
+        const RobFrame f = RsiCodec::parseRob(d);
+        QVERIFY(f.valid);
+        QCOMPARE(f.delay, quint64(0));
+    }
 };
 
 QTEST_MAIN(TestRsiCodec)

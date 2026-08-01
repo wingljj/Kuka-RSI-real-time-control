@@ -8,6 +8,7 @@ struct RobFrame
     Pose    rist;           // 实际位姿
     Pose    rsol;           // 额定位姿
     quint64 ipoc  = 0;
+    quint64 delay = 0;      // KRC 统计的迟到/丢失回包数（DEF_Delay）
     bool    valid = false;
 };
 

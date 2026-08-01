@@ -44,6 +44,14 @@ RobFrame RsiCodec::parseRob(const QByteArray &datagram)
             haveRist = readPoseAttrs(xml.attributes(), &out.rist);
         } else if (name == QLatin1String("RSol")) {
             readPoseAttrs(xml.attributes(), &out.rsol);  // 可选
+        } else if (name == QLatin1String("Delay")) {
+            // DEF_Delay 是 KRC 自己统计的迟到/丢失回包数，唯一能让主机看见
+            // "KRC 认为我丢包了"的量。诊断字段，解析失败不拒绝整帧。
+            const QStringView d = xml.attributes().value(QLatin1String("D"));
+            bool ok = false;
+            const quint64 v = d.toULongLong(&ok);
+            if (ok)
+                out.delay = v;
         } else if (name == QLatin1String("IPOC")) {
             const QString t = xml.readElementText();
             // 必须在此检查 reader 状态。实测 (Qt 6.5.3)：若部分数字后还跟着
