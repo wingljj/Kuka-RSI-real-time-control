@@ -110,9 +110,11 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     m_chartPos = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Position, this);
     m_chartRot = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Rotation, this);
     auto *chartCol = new QVBoxLayout;
-    chartCol->addWidget(m_chartPos, 1);
-    chartCol->addWidget(m_chartRot, 1);
-    right->addLayout(chartCol, 2);
+    // 位置/姿态两图各占较高高度（stretch 2），图表区整体 3:1 于读数——曲线
+    // 太小是"看不清"的直接原因，宁可给图更多空间。
+    chartCol->addWidget(m_chartPos, 2);
+    chartCol->addWidget(m_chartRot, 2);
+    right->addLayout(chartCol, 3);
     right->addWidget(buildReadoutPanel(), 1);
     row->addLayout(right, 1);
 

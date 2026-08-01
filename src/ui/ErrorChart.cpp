@@ -19,6 +19,9 @@ ErrorChart::ErrorChart(int windowSeconds, Mode mode, QWidget *parent)
     // 单系列单 Y 轴：位置图 mm、姿态图 °，量纲不同的两套数据各占一图。
     m_series = new QLineSeries;
     m_series->setName(isPos ? "位置误差 mm" : "姿态误差 °");
+    // 2px 线宽：默认 1px 在 12ms 高频采样下几乎是一条不可辨的细线。
+    QPen pen(m_series->color(), 2.0);
+    m_series->setPen(pen);
     chart->addSeries(m_series);
 
     m_axisX = new QValueAxis;

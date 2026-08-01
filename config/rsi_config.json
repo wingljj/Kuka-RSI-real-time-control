@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "accum_limit 的 1000mm / 100 度会被启动联锁拦截（须 < krc_poscorr_limit 25mm / 25 度）。",
+    "主机累积上限默认 20mm / 20 度（须 < KRC POSCORR 限值 25mm / 25 度，否则联锁拦截）。",
     "真正的天花板在 KRC 侧，那是删不掉的：",
     "    Limit 对象  ±35mm    POSCORR ±40mm    POSCORRMON 45mm",
     "撞上它们的表现是控制器报错停机（示教器跳错误、程序中断），",
@@ -33,8 +33,8 @@
     "kp_rot":              0.10,
     "vmax_pos_mm_s":       10.0,
     "vmax_rot_deg_s":      2.0,
-    "accum_limit_pos_mm":  1000.0,
-    "accum_limit_rot_deg": 100.0
+    "accum_limit_pos_mm":  20.0,
+    "accum_limit_rot_deg": 20.0
   },
   "ui": {
     "refresh_ms":     20,
