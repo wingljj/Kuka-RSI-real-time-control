@@ -72,7 +72,8 @@ private:
 
     QLabel *m_stateCard   = nullptr;   // 大字状态卡（颜色分级）
     QLabel *m_stateDetail = nullptr;   // 次行诊断详情
-    ErrorChart *m_chart   = nullptr;
+    ErrorChart *m_chartPos = nullptr;   // 位置误差图（上）
+    ErrorChart *m_chartRot = nullptr;   // 姿态误差图（下）
 
     QPushButton *m_enableBtn = nullptr;   // 两阶段使能：准备→确认→已使能
     QLabel    *m_safetyNote = nullptr;

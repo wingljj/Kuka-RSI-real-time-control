@@ -35,7 +35,7 @@ struct AppConfig
     double  accumLimitRotDeg  = 15.0;
 
     int     refreshMs         = 33;
-    int     chartWindowS      = 20;
+    int     chartWindowS      = 10;
 
     static AppConfig defaults() { return AppConfig{}; }
 

@@ -104,8 +104,15 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     left->addStretch();
     row->addLayout(left, 1);
     auto *right = new QVBoxLayout;
-    m_chart = new ErrorChart(m_cfg.chartWindowS, this);
-    right->addWidget(m_chart, 2);
+    // 位置图在上、姿态图在下，各占一个 ErrorChart。原先单图双 Y 轴把量纲
+    // 不同的 mm 与 ° 压在同一张图上，量程互相挤压、读数难分；拆开后每图
+    // 只画一条线、只配一个 Y 轴，比例与空态都由各自处理。
+    m_chartPos = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Position, this);
+    m_chartRot = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Rotation, this);
+    auto *chartCol = new QVBoxLayout;
+    chartCol->addWidget(m_chartPos, 1);
+    chartCol->addWidget(m_chartRot, 1);
+    right->addLayout(chartCol, 2);
     right->addWidget(buildReadoutPanel(), 1);
     row->addLayout(right, 1);
 
@@ -443,22 +450,30 @@ QWidget *MainWindow::buildParamPanel()
 
 QWidget *MainWindow::buildReadoutPanel()
 {
-    auto *box = new QGroupBox("读数", this);
-    auto *grid = new QGridLayout(box);
-    grid->addWidget(new QLabel("当前位姿", box), 0, 1);
-    grid->addWidget(new QLabel("误差",     box), 0, 2);
-    grid->addWidget(new QLabel("累积修正", box), 0, 3);
-
-    for (int i = 0; i < 6; ++i) {
-        grid->addWidget(new QLabel(kAxisName[i], box), i + 1, 0);
-        m_actualLabel[i] = new QLabel("--", box);
-        m_errorLabel[i]  = new QLabel("--", box);
-        m_accumLabel[i]  = new QLabel("--", box);
-        grid->addWidget(m_actualLabel[i], i + 1, 1);
-        grid->addWidget(m_errorLabel[i],  i + 1, 2);
-        grid->addWidget(m_accumLabel[i],  i + 1, 3);
+    // 三列卡片化：当前位姿 / 目标误差 / 累积修正 各成一个 QGroupBox 并排。
+    // 读数标签复用 m_actualLabel / m_errorLabel / m_accumLabel 数组，
+    // onRefresh 的填充逻辑原样不动。
+    auto *row = new QWidget(this);
+    auto *lay = new QHBoxLayout(row);
+    const char *titles[3] = {"当前位姿", "目标误差", "累积修正"};
+    for (int col = 0; col < 3; ++col) {
+        auto *box = new QGroupBox(titles[col], row);
+        auto *g = new QGridLayout(box);
+        for (int i = 0; i < 6; ++i) {
+            g->addWidget(new QLabel(kAxisName[i], box), i, 0);
+            auto *lab = new QLabel("--", box);
+            lab->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            lab->setStyleSheet(col == 1 ? "color: #b06;"
+                              : col == 2 ? "color: #068;"
+                                         : "color: #0057b8; font-weight: bold;");
+            g->addWidget(lab, i, 1);
+            (col == 0 ? m_actualLabel[i]
+                      : col == 1 ? m_errorLabel[i]
+                                 : m_accumLabel[i]) = lab;
+        }
+        lay->addWidget(box, 1);
     }
-    return box;
+    return row;
 }
 
 void MainWindow::onTargetEdited()
@@ -579,7 +594,8 @@ void MainWindow::onRefresh()
         m_enableBtn->setEnabled(s.connected);
     }
 
-    m_chart->updateFrom(m_ring);
+    m_chartPos->updateFrom(m_ring);
+    m_chartRot->updateFrom(m_ring);
 }
 
 void MainWindow::onZeroToActual()

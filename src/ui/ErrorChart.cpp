@@ -1,53 +1,35 @@
 #include "ui/ErrorChart.h"
 
-#include <QBrush>
 #include <QChart>
+#include <QGridLayout>
 #include <QPainter>
 #include <QSize>
-#include <QVBoxLayout>
 #include <algorithm>
 
-ErrorChart::ErrorChart(int windowSeconds, QWidget *parent)
+ErrorChart::ErrorChart(int windowSeconds, Mode mode, QWidget *parent)
     : QWidget(parent), m_windowSeconds(std::max(1, windowSeconds)),
-      m_buf(kMaxDrawPoints)
+      m_mode(mode), m_buf(kMaxDrawPoints)
 {
+    const bool isPos = m_mode == Mode::Position;
+
     auto *chart = new QChart;
-    chart->setTitle("跟踪误差");
+    chart->setTitle(isPos ? "位置误差 mm" : "姿态误差 °");
     chart->legend()->setAlignment(Qt::AlignBottom);
 
-    m_posSeries = new QLineSeries;
-    m_posSeries->setName("位置误差 mm");
-    m_rotSeries = new QLineSeries;
-    m_rotSeries->setName("姿态误差 °");
-
-    chart->addSeries(m_posSeries);
-    chart->addSeries(m_rotSeries);
+    // 单系列单 Y 轴：位置图 mm、姿态图 °，量纲不同的两套数据各占一图。
+    m_series = new QLineSeries;
+    m_series->setName(isPos ? "位置误差 mm" : "姿态误差 °");
+    chart->addSeries(m_series);
 
     m_axisX = new QValueAxis;
     m_axisX->setTitleText("时间 s");
     chart->addAxis(m_axisX, Qt::AlignBottom);
-    m_posSeries->attachAxis(m_axisX);
-    m_rotSeries->attachAxis(m_axisX);
+    m_series->attachAxis(m_axisX);
 
-    m_axisPos = new QValueAxis;
-    m_axisPos->setTitleText("mm");
-    chart->addAxis(m_axisPos, Qt::AlignLeft);
-    m_posSeries->attachAxis(m_axisPos);
-
-    m_axisRot = new QValueAxis;
-    m_axisRot->setTitleText("°");
-    chart->addAxis(m_axisRot, Qt::AlignRight);
-    m_rotSeries->attachAxis(m_axisRot);
-
-    // 两条曲线共用横轴但各有自己的纵轴（左 mm、右 °），量纲不同、量程独立。
-    // 若不做颜色关联，操作员看到一段平台期时无法判断该照哪根轴读数——而这
-    // 两个数都是他要据以动手的误差量。把轴标签与轴线染成对应曲线的颜色。
-    m_axisPos->setLabelsColor(m_posSeries->color());
-    m_axisPos->setLinePenColor(m_posSeries->color());
-    m_axisPos->setTitleBrush(QBrush(m_posSeries->color()));
-    m_axisRot->setLabelsColor(m_rotSeries->color());
-    m_axisRot->setLinePenColor(m_rotSeries->color());
-    m_axisRot->setTitleBrush(QBrush(m_rotSeries->color()));
+    m_axisY = new QValueAxis;
+    m_axisY->setTitleText(isPos ? "mm" : "°");
+    chart->addAxis(m_axisY, Qt::AlignLeft);
+    m_series->attachAxis(m_axisY);
 
     m_view = new QChartView(chart, this);
     m_view->setRenderHint(QPainter::Antialiasing);
@@ -55,47 +37,56 @@ ErrorChart::ErrorChart(int windowSeconds, QWidget *parent)
     // 边框），它会顶掉 MainWindow 的 resize(980,620)，在小屏笔电上把窗口撑到
     // 超过显示区。显式解除下限，再给一个够看的自有下限。
     m_view->setMinimumSize(QSize(0, 0));
-    m_view->setMinimumHeight(180);
+    m_view->setMinimumHeight(150);
 
-    auto *lay = new QVBoxLayout(this);
+    // 空态占位：与 m_view 叠在同一个 grid 单元格里。无数据时显示提示、
+    // 隐藏视图；有数据反之（见 updateFrom）。
+    m_placeholder = new QLabel(
+        isPos ? "等待 RSI 数据…\n请启动 KRL PoseTrack 程序"
+              : "等待姿态误差数据…", this);
+    m_placeholder->setAlignment(Qt::AlignCenter);
+    m_placeholder->setStyleSheet("color: #888; font-size: 14px;");
+
+    auto *lay = new QGridLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
-    lay->addWidget(m_view);
+    lay->addWidget(m_view, 0, 0);
+    lay->addWidget(m_placeholder, 0, 0);
 }
 
 void ErrorChart::updateFrom(const SampleRing &ring)
 {
     const int n = ring.copyOut(m_buf.data(), kMaxDrawPoints);
     if (n == 0) {
-        m_posSeries->clear();
-        m_rotSeries->clear();
+        m_series->clear();
+        m_placeholder->setVisible(true);
+        m_view->setVisible(false);
         return;
     }
 
     const double tEnd    = m_buf[n - 1].tSec;
     const double tOldest = m_buf[0].tSec;
     // 轴起点取「名义窗口起点」与「实际最老样本」中较晚的那个。
-    // 绘制点数上限 kMaxDrawPoints 在高频周期下会比 chartWindowS 先耗尽
-    // （1200 点 × 12ms = 14.4s < 20s 窗口），若仍按名义窗口画轴，左侧会留出
-    // 一段永久空白，读起来像"前面的数据丢了"。轴不该承诺它没有的数据。
+    // 绘制点数上限 kMaxDrawPoints 在高频周期下会比 chartWindowS 先耗尽，
+    // 若仍按名义窗口画轴，左侧会留出一段永久空白，读起来像"前面的数据丢
+    // 了"。轴不该承诺它没有的数据。
     const double tStart  = std::max(std::max(0.0, tEnd - double(m_windowSeconds)),
                                     tOldest);
 
-    QList<QPointF> pos, rot;
-    pos.reserve(n);
-    rot.reserve(n);
-    double posMax = 1.0, rotMax = 1.0;
+    QList<QPointF> pts;
+    pts.reserve(n);
+    double yMax = 1.0;
     for (int i = 0; i < n; ++i) {
         if (m_buf[i].tSec < tStart)
             continue;
-        pos.append(QPointF(m_buf[i].tSec, m_buf[i].posErrNorm));
-        rot.append(QPointF(m_buf[i].tSec, m_buf[i].rotErrNorm));
-        posMax = std::max(posMax, m_buf[i].posErrNorm);
-        rotMax = std::max(rotMax, m_buf[i].rotErrNorm);
+        const double y = (m_mode == Mode::Position) ? m_buf[i].posErrNorm
+                                                    : m_buf[i].rotErrNorm;
+        pts.append(QPointF(m_buf[i].tSec, y));
+        yMax = std::max(yMax, y);
     }
 
-    m_posSeries->replace(pos);
-    m_rotSeries->replace(rot);
+    m_series->replace(pts);
     m_axisX->setRange(tStart, std::max(tStart + 1.0, tEnd));
-    m_axisPos->setRange(0.0, posMax * 1.2);
-    m_axisRot->setRange(0.0, rotMax * 1.2);
+    m_axisY->setRange(0.0, yMax * 1.2);
+    m_placeholder->setVisible(n == 0);
+    m_view->setVisible(n > 0);
 }

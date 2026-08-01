@@ -1,4 +1,5 @@
 #pragma once
+#include <QLabel>
 #include <QChartView>
 #include <QLineSeries>
 #include <QValueAxis>
@@ -10,7 +11,8 @@ class ErrorChart : public QWidget
 {
     Q_OBJECT
 public:
-    explicit ErrorChart(int windowSeconds, QWidget *parent = nullptr);
+    enum class Mode { Position, Rotation };
+    explicit ErrorChart(int windowSeconds, Mode mode, QWidget *parent = nullptr);
 
     // 从环形缓冲拉取样本重画。由 GUI 线程调用。
     void updateFrom(const SampleRing &ring);
@@ -20,20 +22,18 @@ private:
     // 执行，而 comm 线程每周期的 push() 抢同一把锁；GUI 线程持锁期间若被
     // 抢占，push() 最坏要等一个时间片（~10–15ms），超过 RSI 周期即丢包停机。
     //
-    // 2000 点覆盖 12ms 周期下的完整 20s 窗口（20/0.012 ≈ 1667）。原先取 1200
-    // 只够 14.4s，于是 20s 的轴上永远有一段空白。copyOut 已改成两段连续
+    // 2000 点覆盖 12ms 周期下的完整 10s 窗口（10/0.012 ≈ 834），再往上按
+    // 4ms 周期 10s 需要 2500 点也仍够（12ms 是默认）。copyOut 已改成两段连续
     // memcpy，2000 × 24B = 48KB 的拷贝仍远快于早先逐元素取模的 4096 次循环。
-    // 注意 4ms 周期下 20s 需要 5000 点，超过 SampleRing::kCapacity(4096)，
-    // 那时窗口会被环形缓冲本身截短——轴会如实收窄，不会再假装有数据。
     static constexpr int kMaxDrawPoints = 2000;
 
-    int m_windowSeconds = 20;
-    QLineSeries *m_posSeries = nullptr;
-    QLineSeries *m_rotSeries = nullptr;
+    int m_windowSeconds = 10;
+    Mode m_mode = Mode::Position;
+    QLineSeries *m_series = nullptr;
     QValueAxis  *m_axisX = nullptr;
-    QValueAxis  *m_axisPos = nullptr;
-    QValueAxis  *m_axisRot = nullptr;
+    QValueAxis  *m_axisY = nullptr;
     QChartView  *m_view = nullptr;
+    QLabel      *m_placeholder = nullptr;   // 空态占位，与 m_view 叠放
 
     // 抓取样本的暂存区。做成成员而非函数内 static：static 会被所有
     // ErrorChart 实例共享，而 updateFrom 每秒调用 30 次，容量在构造时

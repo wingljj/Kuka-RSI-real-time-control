@@ -38,6 +38,6 @@
   },
   "ui": {
     "refresh_ms":     20,
-    "chart_window_s": 20
+    "chart_window_s": 10
   }
 }
