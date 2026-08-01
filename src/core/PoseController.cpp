@@ -5,6 +5,9 @@
 
 namespace {
 
+constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+
 double clampAbs(double v, double limit)
 {
     return std::clamp(v, -limit, limit);
@@ -110,26 +113,59 @@ Pose PoseController::step(const Pose &actual)
     // 累加，绝不直接赋值——否则会丢历史。τ=0 时 m_alpha=1，一步到位等价无平滑。
     Pose errSrc = m_target;
     if (m_alpha < 1.0) {
+        // 位置线性；姿态用旋转向量插值（SO(3) 最短弧），避免 wrap 边界跳变。
         m_smoothTarget.x += m_alpha * (m_target.x - m_smoothTarget.x);
         m_smoothTarget.y += m_alpha * (m_target.y - m_smoothTarget.y);
         m_smoothTarget.z += m_alpha * (m_target.z - m_smoothTarget.z);
-        // 姿态取最短角路径：目标跳变 -179→+179 应走经 180 的 2°，而非经 0 的 358°
-        m_smoothTarget.a += m_alpha * wrap180(m_target.a - m_smoothTarget.a);
-        m_smoothTarget.b += m_alpha * wrap180(m_target.b - m_smoothTarget.b);
-        m_smoothTarget.c += m_alpha * wrap180(m_target.c - m_smoothTarget.c);
+        const poseops::Quat qS = poseops::quatFromABC(
+            m_smoothTarget.a, m_smoothTarget.b, m_smoothTarget.c);
+        const poseops::Quat qT2 = poseops::quatFromABC(
+            m_target.a, m_target.b, m_target.c);
+        const poseops::Quat qES = poseops::quatError(qT2, qS);
+        double rotS[3];
+        poseops::rotVecFromQuat(qES, rotS);
+        rotS[0] *= m_alpha; rotS[1] *= m_alpha; rotS[2] *= m_alpha;
+        const poseops::Quat qInc = poseops::quatFromRotVec(rotS);
+        const poseops::Quat qNew = poseops::quatMul(qInc, qS);
+        poseops::abcFromQuat(qNew, &m_smoothTarget.a, &m_smoothTarget.b, &m_smoothTarget.c);
         errSrc = m_smoothTarget;
     }
-    // 误差：位置直接相减，姿态取最短角路径
-    const Pose err = poseSub(errSrc, actual);
 
-    // 第 1 层限值：单周期增量
+    // 位置误差：逐轴差（无奇异问题）。姿态误差：SO(3) 最短旋转（旋转向量，
+    // 世界坐标 rad）——奇异/边界目标下不再逐轴 wrap 跳变。
+    const Pose errPos = poseSub(errSrc, actual);   // 仅用 x/y/z
+    const poseops::Quat qA = poseops::quatFromABC(actual.a, actual.b, actual.c);
+    const poseops::Quat qT = poseops::quatFromABC(errSrc.a, errSrc.b, errSrc.c);
+    const poseops::Quat qE = poseops::quatError(qT, qA);
+    double rotErr[3];
+    poseops::rotVecFromQuat(qE, rotErr);
+
+    // 第 1 层限值：位置逐分量 clamp；姿态按范数限幅（旋转向量是单一旋转）。
     Pose d;
-    d.x = clampAbs(m_cfg.kpPos * err.x, m_stepLimitPos);
-    d.y = clampAbs(m_cfg.kpPos * err.y, m_stepLimitPos);
-    d.z = clampAbs(m_cfg.kpPos * err.z, m_stepLimitPos);
-    d.a = clampAbs(m_cfg.kpRot * err.a, m_stepLimitRot);
-    d.b = clampAbs(m_cfg.kpRot * err.b, m_stepLimitRot);
-    d.c = clampAbs(m_cfg.kpRot * err.c, m_stepLimitRot);
+    d.x = clampAbs(m_cfg.kpPos * errPos.x, m_stepLimitPos);
+    d.y = clampAbs(m_cfg.kpPos * errPos.y, m_stepLimitPos);
+    d.z = clampAbs(m_cfg.kpPos * errPos.z, m_stepLimitPos);
+    double dRot[3] = {m_cfg.kpRot * rotErr[0],
+                      m_cfg.kpRot * rotErr[1],
+                      m_cfg.kpRot * rotErr[2]};
+    const double rotNorm = std::sqrt(dRot[0]*dRot[0] + dRot[1]*dRot[1] + dRot[2]*dRot[2]);
+    if (m_stepLimitRot > 0.0 && rotNorm > m_stepLimitRot) {
+        const double s = m_stepLimitRot / rotNorm;
+        dRot[0] *= s; dRot[1] *= s; dRot[2] *= s;
+    }
+
+    // RKorr 姿态输出：Δ欧拉 = E⁻¹(actual A,B,C)·dRot。奇异时退化为一阶近似 + 限幅。
+    double invE[3][3];
+    if (poseops::invEulerRate(actual.a, actual.b, actual.c, invE)) {
+        d.a = (invE[0][0]*dRot[0] + invE[0][1]*dRot[1] + invE[0][2]*dRot[2]) * kRadToDeg;
+        d.b = (invE[1][0]*dRot[0] + invE[1][1]*dRot[1] + invE[1][2]*dRot[2]) * kRadToDeg;
+        d.c = (invE[2][0]*dRot[0] + invE[2][1]*dRot[1] + invE[2][2]*dRot[2]) * kRadToDeg;
+    } else {
+        // B≈±90° 奇异：E⁻¹ 退化。一阶近似（旋转向量分量当欧拉增量）+ 已被范数限幅。
+        d.a = dRot[0] * kRadToDeg;
+        d.b = dRot[1] * kRadToDeg;
+        d.c = dRot[2] * kRadToDeg;
+    }
 
     // 与 buildSen 的 4 位小数量化对齐：幅值小于线上量化步长的增量会被格式化
     // 成 0.0000，机器人实际不动。若仍把它计入累积，收敛静止后账本会持续

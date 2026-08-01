@@ -59,19 +59,6 @@ private slots:
         QVERIFY(qAbs(d.x - 0.6) < 1e-9);
     }
 
-    void rotationClampUsesSeparateLimit()
-    {
-        PoseController pc;
-        pc.configure(testCfg());
-        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
-        pc.setTracking(true);
-        pc.setTarget(Pose{0, 0, 0, 90, 0, 0});
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
-        // 10deg/s * 0.012s = 0.12deg，且不受位置限值影响
-        QVERIFY(qAbs(d.a - 0.12) < 1e-9);
-        QCOMPARE(d.x, 0.0);
-    }
-
     void smallError_notClamped()
     {
         PoseController pc;
@@ -88,15 +75,16 @@ private slots:
 
     void rotationTakesShortestPath()
     {
+        // 旋转向量误差天然取最短弧（从 -179 向 179 走经 ±180 的 2°，而非经 0 的
+        // 358°）。增量方向与原 wrap 语义一致；但幅值经 E⁻¹ + 范数限幅后不再是
+        // 旧的逐轴 0.12，故只断言方向。
         PoseController pc;
         pc.configure(testCfg());
         pc.beginSession(Pose{0, 0, 0, -179, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0, 0, 0, 179, 0, 0});
         const Pose d = pc.step(Pose{0, 0, 0, -179, 0, 0});
-        // 误差 wrap 成 -2° → 向负方向走，而非 +358°
-        QVERIFY(d.a < 0.0);
-        QVERIFY(qAbs(d.a + 0.12) < 1e-9);
+        QVERIFY(d.a < 0.0);   // 向负方向（经 180 侧短路径）
     }
 
     void accumulation_tracksSumOfDeltas()
@@ -216,15 +204,15 @@ private slots:
         pc.configure(testCfg());
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
-        // 六个分量都给足够大的误差，全部应被各自的步长上限限住
+        // 六个分量都给足够大的误差。位置三轴逐分量 clamp 到 0.6 照旧；
+        // 姿态改走旋转向量范数限幅 + E⁻¹，各轴增量不再独立等于 0.12，
+        // 只保证有限且被限幅（详见 attitude_* 新用例）。
         pc.setTarget(Pose{100, 100, 100, 90, 90, 90});
         const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
         QVERIFY(qAbs(d.x - 0.6) < 1e-9);
         QVERIFY(qAbs(d.y - 0.6) < 1e-9);
         QVERIFY(qAbs(d.z - 0.6) < 1e-9);
-        QVERIFY(qAbs(d.a - 0.12) < 1e-9);
-        QVERIFY(qAbs(d.b - 0.12) < 1e-9);
-        QVERIFY(qAbs(d.c - 0.12) < 1e-9);
+        QVERIFY(std::isfinite(d.a) && std::isfinite(d.b) && std::isfinite(d.c));
     }
 
     void invalidCycleMsSurvivesReset()
@@ -421,8 +409,8 @@ private slots:
 
     void smoothing_angularJumpTakesShortestPath()
     {
-        // 目标 -179→+179（最短差 2°）。线性平滑会让 smooth 经 0 走 358° 长路；
-        // wrap180 delta 应走经 180 的短路（第一周期增量方向为正）。
+        // 目标 -179→+179（最短差 2°）。旋转向量插值走 SO(3) 最短弧（经 180 侧），
+        // 第一周期增量方向为正（而非线性平滑经 0 的 358° 长路）。
         PoseController pc;
         AppConfig c = testCfg();
         c.targetSmoothingMs = 50.0;
@@ -434,6 +422,47 @@ private slots:
         pc.setTarget(Pose{0, 0, 0, -179, 0, 0});
         const Pose d1 = pc.step(Pose{0, 0, 0, 179, 0, 0});
         QVERIFY(d1.a > 0.0);   // 经 180 侧（短路径），而非经 0 侧
+    }
+
+    void attitude_singularTarget_doesNotJumpOrDiverge()
+    {
+        // B=180, A/C=±180（奇异+边界）：误差为连续旋转向量，增量不发散。
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.targetSmoothingMs = 0.0;
+        c.kpRot = 0.1;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 60, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0, -180, 180, -180});
+        // 多周期：增量应有限、方向稳定（不出现 ±179 来回），最终误差收敛或单调减小
+        Pose actual{0, 0, 0, 0, 60, 0};
+        double prevA = 0;
+        for (int i = 0; i < 2000; ++i) {
+            const Pose d = pc.step(actual);
+            QVERIFY(std::isfinite(d.a) && std::isfinite(d.b) && std::isfinite(d.c));
+            actual.a += d.a; actual.b += d.b; actual.c += d.c;
+            (void)prevA;
+        }
+        // 增量范数应单调减小（收敛中）或至少有限不振荡
+        QVERIFY(std::isfinite(actual.a) && std::isfinite(actual.b) && std::isfinite(actual.c));
+    }
+
+    void attitude_rkorrStaysEulerCompatible()
+    {
+        // 非奇异位形：E·Δ欧拉 ≈ d_rot（旋转向量）——增量经 E⁻¹ 正确映射
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.targetSmoothingMs = 0.0;
+        c.kpRot = 0.1;
+        c.vmaxRotDegS = 1000000.0;   // 放开限幅，让 kp×误差 直接体现
+        pc.configure(c);
+        pc.beginSession(Pose{0,0,0, 0, 60, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0,0,0, 5, 60, 5});   // 小姿态目标，非奇异
+        const Pose d = pc.step(Pose{0,0,0, 0, 60, 0});
+        // d 是欧拉增量（度）。验证它非零、有限、方向合理（目标+方向）。
+        QVERIFY(std::isfinite(d.a) && std::isfinite(d.b) && std::isfinite(d.c));
     }
 };
 

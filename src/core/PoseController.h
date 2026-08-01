@@ -2,6 +2,7 @@
 #include <QString>
 #include "core/AppConfig.h"
 #include "core/Pose.h"
+#include "core/PoseOps.h"
 
 enum class TrackState { Idle, Tracking, Fault };
 
@@ -58,8 +59,9 @@ private:
     TrackState m_state = TrackState::Idle;
     QString    m_faultReason;
 
-    // 目标一阶低通（仅 Tracking 生效）。m_smoothTarget 每周期向 m_target 逼近，
-    // 系数 m_alpha = cycleS/(cycleS+tauS)；tauS≤0 时 m_alpha=1 直通。
+    // 目标一阶低通（仅 Tracking 生效）。位置线性逼近，姿态用旋转向量插值
+    // （SO(3) 最短弧）——避免逐轴 wrap 边界跳变。系数 m_alpha = cycleS/(cycleS+tauS)；
+    // tauS≤0 时 m_alpha=1 直通。
     Pose    m_smoothTarget;
     double  m_alpha = 1.0;
 
