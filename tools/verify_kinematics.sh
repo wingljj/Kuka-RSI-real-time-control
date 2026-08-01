@@ -120,9 +120,15 @@ check_lb "速度限制下主机保持 Tracking" vel "state=Tracking"
 
 # 5. 会话重启：模拟器中断（KRL 重启，IPOC/q 复位）→ 主机重新建立会话，回显
 #    正确。注意：gap 期间模拟器直接跳过回复等待，所以日志表现是 replies<cycles
-#    （如 replies=316<400）、missed 保持 0——不是 missed>0。这也正是 host 端
+#    （如 replies=216<400）、missed 保持 0——不是 missed>0。这也正是 host 端
 #    看到的帧数变少的来源。
-run restart "" --restart-at-ms 2000 --restart-gap-ms 1000
+#    gap 必须 > sessionGapMs（默认 2000ms，loopback 日志首行打印 session_gap_ms）：
+#    只有静默超过会话间隔，主机才会把恢复判定为真正的新 RSI 会话并调
+#    beginSession()（清零累积量、重锁锚点）；否则走 resetToActual()（保留累积）。
+#    --track 1 让主机在会话内累积一个非零账本，restart 后的 beginSession 把它
+#    清零 → 断言最终快照 accum X≈0 即可确定性地证明走的是 beginSession 路径
+#    （resetToActual 会保留 pre-gap ≈1mm 的账本）。
+run restart "--track 1" --restart-at-ms 2000 --restart-gap-ms 2200
 check "会话重启后回显正确" restart "ipoc_mismatch=0"
 check "会话重启确实发生（gap 后会话复位）" restart "session resumed"
 REP=$(grep -o 'replies=[0-9]*' "/tmp/kx_restart_sim.log" | head -1 | cut -d= -f2)
@@ -131,6 +137,15 @@ if [ -n "$REP" ] && [ "$REP" -lt "$CYCLES" ]; then
     pass=$((pass + 1))
 else
     echo "FAIL  会话重启未造成停发（replies=${REP:-?} vs cycles=$CYCLES）"
+    fail=$((fail + 1))
+fi
+# 主机侧：gap>sessionGapMs → beginSession → 累积量清零（相对新锚点的位移）。
+RACC=$(grep "\[final\]" "/tmp/kx_restart.log" | grep -o 'accum X=[-0-9.]*' | head -1 | cut -d= -f2)
+if [ -n "$RACC" ] && awk -v v="$RACC" 'BEGIN{exit !(v<0.05 && v>-0.05)}'; then
+    echo "PASS  重启触发主机 beginSession，累积量清零（accum X=$RACC）"
+    pass=$((pass + 1))
+else
+    echo "FAIL  重启后累积量未清零（accum X=${RACC:-?}，beginSession 未触发？）"
     fail=$((fail + 1))
 fi
 
