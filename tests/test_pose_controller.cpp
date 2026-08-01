@@ -198,20 +198,23 @@ private slots:
         QVERIFY(qAbs(d.x - 0.6) < 1e-9);
     }
 
-    void allSixComponentsClampIndependently()
+    void largeError_allComponentsLimited()
     {
         PoseController pc;
         pc.configure(testCfg());
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
-        // 六个分量都给足够大的误差。位置三轴逐分量 clamp 到 0.6 照旧；
-        // 姿态改走旋转向量范数限幅 + E⁻¹，各轴增量不再独立等于 0.12，
-        // 只保证有限且被限幅（详见 attitude_* 新用例）。
+        // 六个分量都给足够大的误差。位置三轴按欧氏范数限幅：大误差下合成
+        // 增量范数 = 0.6（每轴 0.6/√3 ≈ 0.346），不再逐轴 clamp 到 0.6
+        // （逐轴 clamp 会让对角运动达到 √3× 限速）；姿态改走旋转向量范数
+        // 限幅 + E⁻¹，各轴增量不再独立等于 0.12，只保证有限且被限幅
+        // （详见 attitude_* 新用例）。
         pc.setTarget(Pose{100, 100, 100, 90, 90, 90});
         const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
-        QVERIFY(qAbs(d.x - 0.6) < 1e-9);
-        QVERIFY(qAbs(d.y - 0.6) < 1e-9);
-        QVERIFY(qAbs(d.z - 0.6) < 1e-9);
+        const double posNorm = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+        QVERIFY(qAbs(posNorm - 0.6) < 1e-9);   // 范数恰好压到限值
+        QVERIFY(qAbs(d.x - d.y) < 1e-9);       // 等比缩放（各轴误差等大）
+        QVERIFY(qAbs(d.y - d.z) < 1e-9);
         QVERIFY(std::isfinite(d.a) && std::isfinite(d.b) && std::isfinite(d.c));
     }
 
@@ -499,6 +502,25 @@ private slots:
         QCOMPARE(d.a, 0.0);
         QCOMPARE(d.b, 0.0);
         QCOMPARE(d.c, 0.0);
+    }
+
+    void positionDiagLimit_usesEuclideanNorm()
+    {
+        // 三轴各 0.5mm 误差：逐轴 clamp（0.6 限）各 0.5 → 合成 0.866 超限；
+        // 范数限幅应把合成压到 ≤ 0.6（每轴 ~0.346）。
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.targetSmoothingMs = 0.0;
+        c.kpPos = 1.0;
+        c.vmaxPosMmS = 50.0;              // 12ms → 0.6mm/周期
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0.5, 0.5, 0.5, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const double norm = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+        QVERIFY(norm <= 0.6 + 1e-9);
+        QVERIFY(qAbs(d.x - d.y) < 1e-9);  // 等比缩放
     }
 };
 

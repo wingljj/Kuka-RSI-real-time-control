@@ -8,11 +8,6 @@ namespace {
 constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
 constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 
-double clampAbs(double v, double limit)
-{
-    return std::clamp(v, -limit, limit);
-}
-
 bool poseIsFinite(const Pose &p)
 {
     return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)
@@ -140,11 +135,17 @@ Pose PoseController::step(const Pose &actual)
     double rotErr[3];
     poseops::rotVecFromQuat(qE, rotErr);
 
-    // 第 1 层限值：位置逐分量 clamp；姿态按范数限幅（旋转向量是单一旋转）。
+    // 第 1 层限值：位置按欧氏范数限幅（三轴同时到限时合成速度不超 √3×——
+    // 逐轴 clamp 会让对角运动达到 √3×limit），姿态按旋转向量范数限幅。
     Pose d;
-    d.x = clampAbs(m_cfg.kpPos * errPos.x, m_stepLimitPos);
-    d.y = clampAbs(m_cfg.kpPos * errPos.y, m_stepLimitPos);
-    d.z = clampAbs(m_cfg.kpPos * errPos.z, m_stepLimitPos);
+    d.x = m_cfg.kpPos * errPos.x;
+    d.y = m_cfg.kpPos * errPos.y;
+    d.z = m_cfg.kpPos * errPos.z;
+    const double posNorm = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (m_stepLimitPos > 0.0 && posNorm > m_stepLimitPos) {
+        const double s = m_stepLimitPos / posNorm;
+        d.x *= s; d.y *= s; d.z *= s;
+    }
     double dRot[3] = {m_cfg.kpRot * rotErr[0],
                       m_cfg.kpRot * rotErr[1],
                       m_cfg.kpRot * rotErr[2]};
