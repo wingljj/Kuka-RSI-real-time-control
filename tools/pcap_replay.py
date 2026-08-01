@@ -112,6 +112,8 @@ def main():
     ap.add_argument("--drop", type=int, default=0, help="每 N 帧丢 1 帧")
     ap.add_argument("--loop", action="store_true", help="循环回放")
     args = ap.parse_args()
+    if args.speed <= 0:
+        ap.error("--speed must be > 0")
 
     frames = parse_pcap(args.pcap, args.port)
     if not frames:
@@ -122,16 +124,19 @@ def main():
 
     sent = 0
     loop_shift = 0
+    prev_t = 0.0
     try:
         while True:
             for k, (t, payload) in enumerate(frames):
-                if args.drop and k % args.drop == 0:
+                delta = t - prev_t
+                prev_t = t
+                if delta > 0:
+                    time.sleep(delta / args.speed)
+                if args.drop and k > 0 and k % args.drop == 0:
                     continue
                 payload = rewrite_ipoc(payload, args.ipoc_shift + loop_shift)
                 sock.sendto(payload, (args.host, args.port))
                 sent += 1
-                if t > 0:
-                    time.sleep(t / args.speed)
             if not args.loop:
                 break
             loop_shift += 1000   # 每圈 IPOC 整体上移，避免圈间重复
