@@ -13,8 +13,9 @@ add_library(rsi_core STATIC
     src/core/RsiCodec.cpp
     src/core/PoseController.cpp
     src/core/SessionGuard.cpp
+    tools/krc_simulator/kinematics.cpp
 )
-target_include_directories(rsi_core PUBLIC src)
+target_include_directories(rsi_core PUBLIC src tools/krc_simulator ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(rsi_core PUBLIC Qt6::Core)
 
 # RsiWorker 单独成库：rsi_host 与 loopback_test 都要用它，
