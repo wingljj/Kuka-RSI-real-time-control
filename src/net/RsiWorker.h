@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QUdpSocket>
+#include "core/IpocTracker.h"
 #include "core/AppConfig.h"
 #include "core/PoseController.h"
 #include "net/SharedState.h"
@@ -55,8 +56,7 @@ private:
     QHostAddress m_peerAddr;
     quint16      m_peerPort = 0;
 
-    bool    m_haveFirstFrame = false;
-    quint64 m_lastIpoc       = 0;
+    IpocTracker m_ipocTracker;
     int     m_missed         = 0;
     quint64 m_frameCount     = 0;
     double  m_maxReplyUs     = 0.0;

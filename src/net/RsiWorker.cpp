@@ -41,12 +41,11 @@ void RsiWorker::start()
     m_watchdog->start();
 
     m_sessionTimer.start();
-    m_haveFirstFrame  = false;
+    m_ipocTracker.reset();
     m_frameCount      = 0;
     m_missed          = 0;
     m_maxReplyUs      = 0.0;
     m_cycleTimerValid = false;
-    m_lastIpoc        = 0;
     m_measuredCycleMs = 0.0;
     // 注意：m_sinceLastFrame 在 start() 和 stop() 里都刻意不动——它必须跨越
     // 一次 teardown 存活，下个 start() 才能分辨"真正的会话重启"与"快速的
@@ -70,7 +69,7 @@ void RsiWorker::stop()
         m_sock->deleteLater();
         m_sock = nullptr;
     }
-    m_haveFirstFrame = false;
+    m_ipocTracker.reset();
     StatusSnapshot s;
     s.connected = false;
     m_state->publish(s);
@@ -94,7 +93,7 @@ void RsiWorker::resetToActual()
 
 void RsiWorker::onWatchdog()
 {
-    if (!m_haveFirstFrame)
+    if (!m_ipocTracker.haveFirst())
         return;
     if (!m_watchdog)
         return;
@@ -105,7 +104,7 @@ void RsiWorker::onWatchdog()
         && m_sinceLastFrame.elapsed() < m_watchdog->interval())
         return;
 
-    m_haveFirstFrame  = false;
+    m_ipocTracker.reset();
     m_cycleTimerValid = false;   // 否则下个会话的首帧会把整段静默当作周期发布
     m_missed          = 0;       // 丢包计数是突发保护，不是终身计数
     m_ring->clear();
@@ -131,24 +130,18 @@ void RsiWorker::onDatagram()
         // hasError 守卫），所以 0 是可靠哨兵。只要 IPOC 本身解析成功就必须
         // 原样回显——哪怕 RIst 损坏导致整帧 invalid。回一个陈旧 IPOC 等同
         // 丢包，而那正是"任何分支都必须回包"这条约束要避免的后果。
-        const quint64 echoIpoc = f.ipoc ? f.ipoc : m_lastIpoc;
+        const quint64 echoIpoc = f.ipoc ? f.ipoc : m_ipocTracker.lastGood();
         Pose    delta;   // 默认零增量
         bool    wasFirstFrame = false;
 
         if (f.valid) {
-            bool ipocOk = true;
-            if (m_haveFirstFrame) {
-                // IPOC 应单调递增；否则计一次丢包
-                if (f.ipoc <= m_lastIpoc) {
-                    ++m_missed;
-                    ipocOk = false;
-                }
-            } else {
+            const IpocEvent ev = m_ipocTracker.classify(f.ipoc);
+
+            if (ev.kind == IpocEvent::First) {
                 // 只有确实静默过至少一个会话间隔，才算真正的 RSI 会话重启，
                 // 才可以清零累积量。快速的 stop()→start() 不算：KRC 侧已施加
                 // 的修正仍然存在，清零等于凭空多发一份预算，反复几次就能把
-                // 总修正推过 POSCORR 的 ~50mm 硬限，而界面上第 2 层始终显示
-                // 一个很小的累积值。
+                // 总修正推过 POSCORR 的 ~50mm 硬限。
                 // 用独立的会话间隔阈值，而不是看门狗间隔。看门狗只负责
                 // "连接丢失"的显示，阈值必须小；会话判定则必须大于 KRC 的
                 // Timeout，否则会在 KRC 仍认为会话连续时移动安全锚点。
@@ -159,8 +152,7 @@ void RsiWorker::onDatagram()
                     m_ctl.beginSession(f.rist);
                 else
                     m_ctl.resetToActual(f.rist);
-                m_haveFirstFrame = true;
-                wasFirstFrame    = true;
+                wasFirstFrame = true;
             }
 
             if (m_cycleTimerValid) {
@@ -169,15 +161,31 @@ void RsiWorker::onDatagram()
             m_cycleTimer.start();
             m_cycleTimerValid = true;
 
-            m_lastIpoc = f.ipoc;
             m_sinceLastFrame.restart();
             m_lastActual = f.rist;
             ++m_frameCount;
 
-            if (ipocOk)
-                m_missed = 0;       // 连续丢包计数：只有正常帧才清零
+            // 丢包计数：仅 Normal 清零；Gap 加缺口；Dup/Back 各 +1。
+            // Gap 帧带全新 RIst（非旧位姿重放），正常 step；Dup/Back 是旧数据
+            // 重放，只回零增量且不推进 lastGood（IpocTracker 已保证），否则会
+            // 用一帧旧位姿再产生一次修正。
+            switch (ev.kind) {
+            case IpocEvent::Normal:
+                m_missed = 0;
+                break;
+            case IpocEvent::Gap:
+                m_missed += int(ev.gapCount);
+                break;
+            case IpocEvent::Duplicate:
+            case IpocEvent::Backward:
+                ++m_missed;
+                break;
+            case IpocEvent::First:
+                break;
+            }
 
-            delta = m_ctl.step(f.rist);
+            if (ev.kind == IpocEvent::Normal || ev.kind == IpocEvent::Gap)
+                delta = m_ctl.step(f.rist);
         } else {
             ++m_missed;
         }
