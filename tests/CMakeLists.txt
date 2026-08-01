@@ -17,3 +17,7 @@ add_test(NAME test_pose_controller COMMAND test_pose_controller)
 add_executable(test_shared_state test_shared_state.cpp)
 target_link_libraries(test_shared_state PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_shared_state COMMAND test_shared_state)
+
+add_executable(test_ipoc_tracker test_ipoc_tracker.cpp)
+target_link_libraries(test_ipoc_tracker PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_ipoc_tracker COMMAND test_ipoc_tracker)

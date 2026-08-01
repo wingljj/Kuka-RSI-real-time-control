@@ -9,6 +9,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Charts Test)
 
 add_library(rsi_core STATIC
     src/core/AppConfig.cpp
+    src/core/IpocTracker.cpp
     src/core/RsiCodec.cpp
     src/core/PoseController.cpp
 )
