@@ -32,6 +32,8 @@
 
 | 场景 | 工具 | 预期 | 判定 |
 |---|---|---|---|
-| 目标平滑 | `test_pose_controller` smoothing_* 5 用例 | 阶跃削平 / τ=0 直通 / reset 同步 / 稳态不变 / 角跳变走最短路径 | 单测 PASS |
-| UI 状态卡 | 手动驱动 GUI | 颜色分级 + 诊断字段 | 手动 |
+| 目标轨迹 | `test_target_trajectory` 4 用例 + `test_pose_controller` targetTrajectory_* 5 用例 | 端点精确 / quintic 端点零速 / Slerp 中点与最短弧 / 零时长直通 / 阶跃逐步趋近、稳态不变、reset 同步、角跳变走最短路径 | 单测 PASS |
+| 异常帧剔除 | `test_pose_ops` exceedsPhysicalJump_* + `verify_kinematics.sh`/`verify_robustness.sh` 正常运动场景 | 跳变超物理极限（位置欧氏距离、姿态 SO(3) 最短角）判陈旧：回零增量、连续 `stale_frame_limit` 帧 Fault；正常运动不触发 | 单测 PASS；正常运动 e2e 无误报（simulator 暂无跳变注入开关） |
+| 7 态状态机 | `test_shared_state` state_* 2 用例 + `verify_robustness.sh` | 默认 Disconnected、状态快照往返；e2e `state=Fault`；优先级 Fault > StaleFrame > Syncing > Tracking > Ready > WaitingFirstFrame > Disconnected | 单测 PASS + e2e |
+| UI 状态卡 | 手动驱动 GUI | 7 态颜色分级：Fault 红 / StaleFrame 黄 / Tracking+Ready 绿 / Syncing+WaitingFirstFrame 蓝 / Disconnected 灰，另保留丢包/周期偏离黄警告 | 手动 |
 | 两阶段使能 | 手动驱动 GUI | 准备→确认→已使能；Fault→归零并复位 | 手动 |

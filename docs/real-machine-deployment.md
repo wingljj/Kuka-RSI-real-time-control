@@ -151,7 +151,34 @@ KRC 侧限值仍须**自内向外单调放大**，否则内层永不触发：
 这是 SENTYPE 错配（KRC 静默丢弃回包、主机显示丢包 0）的唯一可见征兆。
 
 新增配置字段（均已在 `config/rsi_config.json`）：
-`krc_timeout_cycles`、`krc_poscorr_limit_pos_mm/rot_deg`、`rx_buffer_bytes`。
+
+| 字段 | 含义 |
+|---|---|
+| `krc_timeout_cycles` | KRC 侧 ETHERNET Timeout（周期数）；联锁校验 `session_gap_ms > krc_timeout_cycles × cycle_ms` |
+| `krc_poscorr_limit_pos_mm` / `krc_poscorr_limit_rot_deg` | KRC 侧 POSCORR 累积限值（§4 层 4），仅显示参考 |
+| `rx_buffer_bytes` | socket 接收缓冲（字节） |
+| `target_trajectory_ms` | 目标阶跃的平滑轨迹时长：位置五次多项式 + 姿态 Slerp，速度/加速度连续、到点即达；`0` = 立即完成 = 直通。**替代旧字段 `target_smoothing_ms`** |
+| `phys_vmax_pos_mm_s` / `phys_vmax_rot_deg_s` | 反馈异常剔除的物理极限速度（真机可达速度以内），默认 500 mm/s / 60 °/s |
+| `stale_frame_limit` | 连续超限帧数阈值，达到即转 Fault，默认 10 |
+
+会话/控制状态（7 态，优先级 Fault > StaleFrame > Syncing > Tracking > Ready >
+WaitingFirstFrame > Disconnected）：
+
+| 状态 | 含义（UI 颜色） |
+|---|---|
+| `Disconnected` | 未锁定对端，无会话（灰） |
+| `WaitingFirstFrame` | 已锁定对端，尚未收到帧（蓝） |
+| `Syncing` | 首帧/会话恢复的同步瞬间，仅一帧（蓝） |
+| `Ready` | 会话已建立（收到过帧），未使能跟踪（绿） |
+| `Tracking` | 跟踪中（绿） |
+| `StaleFrame` | 最近一帧被判陈旧：该周期回零增量但仍回包（黄，见下） |
+| `Fault` | 控制器故障，锁定直至「归零并复位」（红） |
+
+反馈异常剔除（陈旧帧）：单帧位姿相对上一帧的跳变超过物理极限
+（`phys_vmax_*` × `cycle_ms`，位置用欧氏距离、姿态用 SO(3) 最短旋转角）即判为
+陈旧/损坏帧：该周期回零增量但仍回包，状态显示 `StaleFrame`（黄）；连续
+`stale_frame_limit` 帧超限即转 `Fault`（红）。正常运动（真机可达速度以内）
+不会触发；首帧与会话重启首帧无可比帧，不检查。
 
 通信健壮性验证工具：`tools/verify_robustness.sh`（故障注入端到端）与
 `tools/pcap_replay.py`（真实抓包回放），矩阵见
