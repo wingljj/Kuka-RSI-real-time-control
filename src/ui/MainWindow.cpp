@@ -87,6 +87,7 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     auto *row = new QHBoxLayout;
     auto *left = new QVBoxLayout;
     left->addWidget(buildTargetPanel());
+    left->addWidget(buildSingularWarn());
     left->addWidget(buildParamPanel());
     left->addStretch();
     row->addLayout(left, 1);
@@ -302,6 +303,16 @@ QWidget *MainWindow::buildTargetPanel()
     return box;
 }
 
+QWidget *MainWindow::buildSingularWarn()
+{
+    m_singularWarnLabel = new QLabel(this);
+    m_singularWarnLabel->setStyleSheet(
+        "color: #a06000; font-weight: bold;");
+    m_singularWarnLabel->setWordWrap(true);
+    m_singularWarnLabel->hide();
+    return m_singularWarnLabel;
+}
+
 QWidget *MainWindow::buildParamPanel()
 {
     auto *box = new QGroupBox("控制参数", this);
@@ -382,6 +393,15 @@ void MainWindow::onTargetEdited()
     t.c = m_targetSpin[5]->value();
     QMetaObject::invokeMethod(m_worker, "applyTarget",
                               Qt::QueuedConnection, Q_ARG(Pose, t));
+
+    // 欧拉奇异区：B≈±90° 时 A/C 耦合，姿态误差计算退化。仅警告，不拦截。
+    if (std::fabs(m_targetSpin[4]->value()) >= 85.0) {
+        m_singularWarnLabel->setText(
+            QStringLiteral("⚠ 接近欧拉奇异区 (B≈±90°)，姿态控制可能退化"));
+        m_singularWarnLabel->show();
+    } else {
+        m_singularWarnLabel->hide();
+    }
 }
 
 void MainWindow::onRefresh()

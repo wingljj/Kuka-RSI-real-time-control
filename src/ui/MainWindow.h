@@ -37,6 +37,7 @@ private:
     QWidget *buildReadoutPanel();
     QWidget *buildParamPanel();
     QWidget *buildConnPanel();
+    QWidget *buildSingularWarn();
 
     // 依据当前是否已绑定，切换监听按钮与地址输入的可用状态。
     // 地址与端口只在未绑定时可编辑——运行中改它们毫无意义，而且会让界面
@@ -72,6 +73,9 @@ private:
 
     // 联锁拦截原因（红字）。硬拦截：使能不通过时置红字，无覆盖入口。
     QLabel *m_interlockLabel = nullptr;
+
+    // 欧拉奇异区警告（B≈±90° 时姿态控制退化）。黄色提示，不拦截。
+    QLabel *m_singularWarnLabel = nullptr;
 
     // 连接配置与手动监听控制。没有这些的话 bindFailed 是个死局：
     // 弹一次对话框之后应用永久停在未连接，只能改 JSON 再重启。
