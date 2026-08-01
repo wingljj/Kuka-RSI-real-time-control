@@ -423,7 +423,7 @@ QWidget *MainWindow::buildParamPanel()
     const int rows = 3;
     const char *names[rows] = {"Kp", "限速", "累积上限"};
     for (int r = 0; r < rows; ++r) {
-        grid->addWidget(new QLabel(QLatin1String(names[r]), box), r + 1, 0);
+        grid->addWidget(new QLabel(names[r], box), r + 1, 0);
         for (int c = 0; c < 2; ++c) {
             auto *val = new QLabel("--", box);
             val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
