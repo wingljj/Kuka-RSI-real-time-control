@@ -86,7 +86,17 @@ const JointLimits &limits();
 - 模拟器闭环回归：loopback_test + verify_kinematics/verify_robustness（替换后行为不退化）
 - kr210 测试保留（对照）
 
-### 5. 风险与验证点
+### 5. 打包要求（用户明确）
+
+- **Eigen 是 header-only 编译期依赖**：代码在编译时内联进 RL 静态库，最终 exe
+  **运行时不需要任何 Eigen 文件**——离线安装包（dist/Inno Setup）**无需携带 Eigen**。
+- **RL 必须静态链接**（`librl*.a` 静态库进 exe），不产生 RL 动态库；若任何环节
+  出现 RL DLL，必须纳入打包。
+- 最终验证：打包后的 exe 在**干净环境**（无 Eigen/无 RL 路径）运行模拟器
+  （`--self-test` + 与 rsi_host 闭环），确认零运行时依赖遗漏。
+- Qt DLL 依赖沿用现有 `windeployqt`/`package.sh` 处理。
+
+### 6. 风险与验证点
 
 - RL CMake 模块选项（实现时探索 `RL_BUILD_*`）；rlmdl 解析（Comau 模型）；
   RL API 用法（`rl::mdl::Model/Kinematic/AnalyticalInverseKinematics`）
