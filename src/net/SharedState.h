@@ -12,7 +12,7 @@ struct StatusSnapshot
 {
     Pose       actual;
     Pose       target;
-    Pose       error;
+    Pose       error;  // 位置误差 = target − actual；姿态误差 = SO(3) 旋转向量分量（世界坐标，度）
     Pose       accum;
     quint64    ipoc            = 0;
     TrackState state           = TrackState::Idle;

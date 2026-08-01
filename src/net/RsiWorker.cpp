@@ -269,8 +269,8 @@ void RsiWorker::onDatagram()
             cs.tSec = m_sessionTimer.nsecsElapsed() / 1.0e9;
             cs.posErrNorm = std::sqrt(err.x * err.x + err.y * err.y +
                                       err.z * err.z);
-            cs.rotErrNorm = std::max({std::fabs(err.a), std::fabs(err.b),
-                                      std::fabs(err.c)});
+            // 姿态误差现在是旋转向量（世界坐标，度），范数 = 总旋转角
+            cs.rotErrNorm = std::sqrt(err.a * err.a + err.b * err.b + err.c * err.c);
             m_ring->push(cs);
 
             // 必须在 publishSnapshot 之后才发这个信号：GUI 的处理器会读
