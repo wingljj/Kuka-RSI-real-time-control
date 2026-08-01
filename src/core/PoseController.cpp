@@ -113,9 +113,10 @@ Pose PoseController::step(const Pose &actual)
         m_smoothTarget.x += m_alpha * (m_target.x - m_smoothTarget.x);
         m_smoothTarget.y += m_alpha * (m_target.y - m_smoothTarget.y);
         m_smoothTarget.z += m_alpha * (m_target.z - m_smoothTarget.z);
-        m_smoothTarget.a += m_alpha * (m_target.a - m_smoothTarget.a);
-        m_smoothTarget.b += m_alpha * (m_target.b - m_smoothTarget.b);
-        m_smoothTarget.c += m_alpha * (m_target.c - m_smoothTarget.c);
+        // 姿态取最短角路径：目标跳变 -179→+179 应走经 180 的 2°，而非经 0 的 358°
+        m_smoothTarget.a += m_alpha * wrap180(m_target.a - m_smoothTarget.a);
+        m_smoothTarget.b += m_alpha * wrap180(m_target.b - m_smoothTarget.b);
+        m_smoothTarget.c += m_alpha * wrap180(m_target.c - m_smoothTarget.c);
         errSrc = m_smoothTarget;
     }
     // 误差：位置直接相减，姿态取最短角路径

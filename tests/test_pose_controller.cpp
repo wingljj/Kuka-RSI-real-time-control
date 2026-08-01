@@ -542,6 +542,23 @@ private slots:
         QVERIFY(qAbs(pc.target().x - actual.x) < 1e-3);
         QVERIFY(qAbs(pc.accumulated().x - 5.0) < 1e-3);
     }
+
+    void smoothing_angularJumpTakesShortestPath()
+    {
+        // 目标 -179→+179（最短差 2°）。线性平滑会让 smooth 经 0 走 358° 长路；
+        // wrap180 delta 应走经 180 的短路（第一周期增量方向为正）。
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.targetSmoothingMs = 50.0;
+        c.kpRot             = 0.5;
+        c.vmaxRotDegS       = 1000000.0;   // 放开限幅
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 179, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0, -179, 0, 0});
+        const Pose d1 = pc.step(Pose{0, 0, 0, 179, 0, 0});
+        QVERIFY(d1.a > 0.0);   // 经 180 侧（短路径），而非经 0 侧
+    }
 };
 
 QTEST_MAIN(TestPoseController)
