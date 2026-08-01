@@ -51,9 +51,9 @@ void abcFromQuat(const Quat &q, double *aDeg, double *bDeg, double *cDeg)
         *aDeg = std::atan2(R[1][0], R[0][0]) * kRadToDeg;
         *cDeg = std::atan2(R[2][1], R[2][2]) * kRadToDeg;
     } else {
-        // B = ±90°：A/C 耦合，取 C = 0 分支。
+        // B = ±90°：A/C 耦合，取 C = 0 分支。R[0][1]=-sA, R[1][1]=cA → atan2(-R[0][1], R[1][1]) = A
         *bDeg = (sb > 0 ? 90.0 : -90.0);
-        *aDeg = std::atan2(R[0][1], R[1][1]) * kRadToDeg;
+        *aDeg = std::atan2(-R[0][1], R[1][1]) * kRadToDeg;
         *cDeg = 0.0;
     }
 }

@@ -21,6 +21,18 @@ private slots:
             const double dot = q.w*q2.w + q.x*q2.x + q.y*q2.y + q.z*q2.z;
             QVERIFY(qAbs(std::fabs(dot) - 1.0) < 1e-9);
         }
+        // 奇异分支：B=±90（C=0 gauge）round-trip 必须保持旋转
+        for (const auto &abc : {std::array<double,3>{30,90,0},   // 回归：旧实现提取 A=-30（dot 0.866）
+                                std::array<double,3>{0,90,0},
+                                std::array<double,3>{40,-90,25},
+                                std::array<double,3>{-170,90,10}}) {
+            const Quat q = poseops::quatFromABC(abc[0], abc[1], abc[2]);
+            double a, b, c;
+            poseops::abcFromQuat(q, &a, &b, &c);
+            const Quat q2 = poseops::quatFromABC(a, b, c);
+            const double dot = q.w*q2.w + q.x*q2.x + q.y*q2.y + q.z*q2.z;
+            QVERIFY(qAbs(std::fabs(dot) - 1.0) < 1e-9);
+        }
     }
 
     void quatError_singularTarget_givesSaneRotation()
