@@ -1,4 +1,5 @@
 #pragma once
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -53,6 +54,11 @@ private:
     // 目标位姿输入：6 个滑块 + 6 个数值框联动
     std::array<QSlider *, 6>        m_targetSlider{};
     std::array<QDoubleSpinBox *, 6> m_targetSpin{};
+
+    // 小步进：步长选择器 + 每轴 [-][+] 按钮
+    QComboBox *m_stepSel = nullptr;
+    std::array<QPushButton *, 6> m_stepMinus{};
+    std::array<QPushButton *, 6> m_stepPlus{};
 
     // 紧贴目标数值框右侧的当前位姿。读数面板在曲线下方，窗口一矮就被滚出
     // 视野；而"目标给了多少 / 现在到哪了"是操作时最需要并排看的一对值。

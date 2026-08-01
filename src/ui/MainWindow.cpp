@@ -257,7 +257,8 @@ void MainWindow::onStopListening()
 QWidget *MainWindow::buildTargetPanel()
 {
     auto *box = new QGroupBox("目标位姿 (BASE)　／　当前位姿", this);
-    auto *grid = new QGridLayout(box);
+    // grid 先不挂到 box：顶部要加步长选择行，统一装进一个 VBox
+    auto *grid = new QGridLayout;
 
     grid->addWidget(new QLabel("目标", box),     0, 2, Qt::AlignHCenter);
     grid->addWidget(new QLabel("当前实际", box), 0, 3, Qt::AlignHCenter);
@@ -288,6 +289,26 @@ QWidget *MainWindow::buildTargetPanel()
         grid->addWidget(live, r, 3);
         m_liveLabel[i] = live;
 
+        // 小步进：每轴 [-][+] 按钮，步长由顶部选择器决定
+        auto *minus = new QPushButton("−", box);
+        minus->setMaximumWidth(28);
+        grid->addWidget(minus, r, 4);
+        m_stepMinus[i] = minus;
+        auto *plus = new QPushButton("＋", box);
+        plus->setMaximumWidth(28);
+        grid->addWidget(plus, r, 5);
+        m_stepPlus[i] = plus;
+
+        const int axis = i;
+        connect(minus, &QPushButton::clicked, this, [this, axis] {
+            const double step = m_stepSel->currentText().toDouble();
+            m_targetSpin[axis]->setValue(m_targetSpin[axis]->value() - step);
+        });
+        connect(plus, &QPushButton::clicked, this, [this, axis] {
+            const double step = m_stepSel->currentText().toDouble();
+            m_targetSpin[axis]->setValue(m_targetSpin[axis]->value() + step);
+        });
+
         // 滑块与数值框联动（滑块用 0.1 单位整数）
         connect(sl, &QSlider::valueChanged, this, [this, i](int v) {
             if (m_suppressTargetSignal)
@@ -307,6 +328,18 @@ QWidget *MainWindow::buildTargetPanel()
             onTargetEdited();
         });
     }
+
+    // 步长选择：位置 mm / 姿态 °
+    auto *stepLay = new QHBoxLayout;
+    stepLay->addWidget(new QLabel("步长", box));
+    m_stepSel = new QComboBox(box);
+    m_stepSel->addItems({"0.1", "0.5", "1", "5"});
+    stepLay->addWidget(m_stepSel);
+    stepLay->addStretch();
+
+    auto *v = new QVBoxLayout(box);
+    v->addLayout(stepLay);
+    v->addLayout(grid);
     return box;
 }
 
