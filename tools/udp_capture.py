@@ -21,7 +21,7 @@ import sys
 import os
 import datetime
 
-HOST = sys.argv[2] if len(sys.argv) > 2 else "192.168.44.1"
+HOST = sys.argv[2] if len(sys.argv) > 2 else "0.0.0.0"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 59152
 
 
@@ -35,7 +35,7 @@ def main():
             print(">>> 端口被占用 —— 请先在 rsi_host 里点「停止监听」，再重新运行")
         sys.exit(1)
 
-    print("已监听 %s:%d 。现在去示教器启动 PoseTrack。\n" % (HOST, PORT))
+    print("已监听 %s:%d （所有接口）。现在去示教器启动 PoseTrack。\n" % (HOST, PORT))
     print("（本脚本只接收不回复；KRC 会因超时报错停止 —— 属正常）\n")
     print("-" * 70)
 
