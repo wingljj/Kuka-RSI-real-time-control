@@ -29,3 +29,7 @@ add_test(NAME test_session_guard COMMAND test_session_guard)
 add_executable(test_kr210_kinematics test_kr210_kinematics.cpp)
 target_link_libraries(test_kr210_kinematics PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_kr210_kinematics COMMAND test_kr210_kinematics)
+
+add_executable(test_pose_ops test_pose_ops.cpp)
+target_link_libraries(test_pose_ops PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_pose_ops COMMAND test_pose_ops)
