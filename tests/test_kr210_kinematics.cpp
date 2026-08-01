@@ -1,6 +1,53 @@
 #include <QtTest>
+#include <algorithm>
 #include <cmath>
 #include "tools/krc_simulator/kinematics.h"
+
+namespace {
+
+// 由 KUKA A/B/C（度，ZYX: R = Rz(A)·Ry(B)·Rx(C)）重建旋转矩阵。
+void rotFromPose(const Pose &p, double R[3][3])
+{
+    const double a = p.a * M_PI / 180.0;
+    const double b = p.b * M_PI / 180.0;
+    const double c = p.c * M_PI / 180.0;
+    const double ca = std::cos(a), sa = std::sin(a);
+    const double cb = std::cos(b), sb = std::sin(b);
+    const double cc = std::cos(c), sc = std::sin(c);
+    R[0][0] = ca * cb;          R[0][1] = ca * sb * sc - sa * cc;  R[0][2] = ca * sb * cc + sa * sc;
+    R[1][0] = sa * cb;          R[1][1] = sa * sb * sc + ca * cc;  R[1][2] = sa * sb * cc - ca * sc;
+    R[2][0] = -sb;              R[2][1] = cb * sc;                 R[2][2] = cb * cc;
+}
+
+void mul3x3(const double A[3][3], const double B[3][3], double out[3][3])
+{
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) {
+            out[r][c] = 0.0;
+            for (int k = 0; k < 3; ++k)
+                out[r][c] += A[r][k] * B[k][c];
+        }
+}
+
+void trans3x3(const double A[3][3], double out[3][3])
+{
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            out[r][c] = A[c][r];
+}
+
+// 两旋转矩阵之间差的旋转角（rad）。
+double rotAngleBetween(const double Ra[3][3], const double Rb[3][3])
+{
+    double t = 0.0;
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            t += Ra[r][c] * Rb[r][c];   // tr(Ra^T Rb)
+    const double v = std::clamp((t - 1.0) / 2.0, -1.0, 1.0);
+    return std::acos(v);
+}
+
+} // namespace
 
 class TestKr210 : public QObject
 {
@@ -8,12 +55,13 @@ class TestKr210 : public QObject
 private slots:
     void forward_zeroPose()
     {
-        // q 全 0：位置 = (a1+a2+a3, 0, d1+d4+d6)，姿态 0
+        // q 全 0：位置 = (a1+a2+a3, 0, d1−d4+d6)。注意 DH 表下 d4 沿 frame-3 z，
+        // 零位时指向 -z，故 z = 675 − 1200 + 240 = −285（非 2115）。
         const double q[6] = {0, 0, 0, 0, 0, 0};
         const Pose p = kr210::forward(q);
         QVERIFY(qAbs(p.x - (350 + 1150 + 41)) < 1e-6);
         QVERIFY(qAbs(p.y) < 1e-6);
-        QVERIFY(qAbs(p.z - (675 + 1200 + 240)) < 1e-6);
+        QVERIFY(qAbs(p.z - (675 - 1200 + 240)) < 1e-6);
         QVERIFY(qAbs(p.a) < 1e-6);
         QVERIFY(qAbs(p.b) < 1e-6);
         QVERIFY(qAbs(p.c) < 1e-6);
@@ -28,7 +76,7 @@ private slots:
         // |p.x| ≈ 0（绕 Z 90° 后 x 方向分量消失）
         QVERIFY(qAbs(p.x) < 1e-3);
         QVERIFY(qAbs(p.y - 1541.0) < 1e-3);
-        QVERIFY(qAbs(p.z - 2115.0) < 1e-3);
+        QVERIFY(qAbs(p.z - (-285.0)) < 1e-3);
         QVERIFY(qAbs(p.a - 90.0) < 1e-6);
     }
 
@@ -38,6 +86,10 @@ private slots:
         double J[6][6];
         kr210::jacobian(q, J);
         constexpr double h = 1e-7;
+        const Pose f0 = kr210::forward(q);
+        double R0[3][3], R0t[3][3];
+        rotFromPose(f0, R0);
+        trans3x3(R0, R0t);
         for (int col = 0; col < 6; ++col) {
             double qp[6], qm[6];
             std::copy(q, q + 6, qp);
@@ -45,41 +97,61 @@ private slots:
             qp[col] += h; qm[col] -= h;
             const Pose fp = kr210::forward(qp);
             const Pose fm = kr210::forward(qm);
-            const double dq[6] = {fp.x - fm.x, fp.y - fm.y, fp.z - fm.z,
-                                  (fp.a - fm.a) * M_PI / 180.0,
-                                  (fp.b - fm.b) * M_PI / 180.0,
-                                  (fp.c - fm.c) * M_PI / 180.0};
-            for (int row = 0; row < 6; ++row)
-                QVERIFY2(qAbs(J[row][col] - dq[row] / (2 * h)) < 1e-5,
-                         "jacobian mismatch with numerical");
+            // 位置行：x/y/z 有限差分。
+            const double dp[3] = {fp.x - fm.x, fp.y - fm.y, fp.z - fm.z};
+            for (int row = 0; row < 3; ++row)
+                QVERIFY2(qAbs(J[row][col] - dp[row] / (2 * h)) < 1e-5,
+                         "jacobian position mismatch with numerical");
+            // 姿态行：旋转矩阵有限差分 → 基系角速度。
+            // 几何雅可比角部 = 基系角速度；欧拉角差分仅在零位姿时才等于角速度，
+            // 非零位姿下二者由非正交矩阵 E(A,B,C) 联系（本测试 q 的位姿远离零）。
+            double Rp[3][3], Rm[3][3];
+            rotFromPose(fp, Rp);
+            rotFromPose(fm, Rm);
+            double Ap[3][3], Am[3][3];
+            mul3x3(Rp, R0t, Ap);
+            mul3x3(Rm, R0t, Am);
+            // [ω]× = (R(q+h)R(q)ᵀ − R(q−h)R(q)ᵀ) / 2h
+            const double w[3] = {
+                (Ap[2][1] - Am[2][1]) / (2 * h),
+                (Ap[0][2] - Am[0][2]) / (2 * h),
+                (Ap[1][0] - Am[1][0]) / (2 * h),
+            };
+            for (int row = 0; row < 3; ++row)
+                QVERIFY2(qAbs(J[3 + row][col] - w[row]) < 1e-5,
+                         "jacobian angular mismatch with numerical");
         }
     }
 
     void solveDelta_roundTrip()
     {
-        const double q[6] = {0.2, -0.5, 0.7, 0.1, 0.4, -0.3};
-        const Pose dx{5.0, -3.0, 2.0, 1.0, -0.5, 0.8};   // mm, 度
+        // 非奇异位形（腕部 q5=90° 远离腕部奇异，σ_min≈0.87）。亦为默认位形。
+        const double q[6] = {0, -60.0 * M_PI / 180.0, 30.0 * M_PI / 180.0,
+                             0, 90.0 * M_PI / 180.0, 0};
+        const Pose dx{2.0, -1.0, 0.5, 0.5, -0.3, 0.4};   // mm, 度
         double dq[6];
         QVERIFY(kr210::solveDelta(q, dx, dq));
-        // 用雅可比线性化验证：J·Δq ≈ Δx
-        double J[6][6];
-        kr210::jacobian(q, J);
-        const double dxRot[3] = {dx.a * M_PI / 180.0, dx.b * M_PI / 180.0,
-                                 dx.c * M_PI / 180.0};
-        const double got[6] = {
-            J[0][0]*dq[0]+J[0][1]*dq[1]+J[0][2]*dq[2]+J[0][3]*dq[3]+J[0][4]*dq[4]+J[0][5]*dq[5],
-            J[1][0]*dq[0]+J[1][1]*dq[1]+J[1][2]*dq[2]+J[1][3]*dq[3]+J[1][4]*dq[4]+J[1][5]*dq[5],
-            J[2][0]*dq[0]+J[2][1]*dq[1]+J[2][2]*dq[2]+J[2][3]*dq[3]+J[2][4]*dq[4]+J[2][5]*dq[5],
-            J[3][0]*dq[0]+J[3][1]*dq[1]+J[3][2]*dq[2]+J[3][3]*dq[3]+J[3][4]*dq[4]+J[3][5]*dq[5],
-            J[4][0]*dq[0]+J[4][1]*dq[1]+J[4][2]*dq[2]+J[4][3]*dq[3]+J[4][4]*dq[4]+J[4][5]*dq[5],
-            J[5][0]*dq[0]+J[5][1]*dq[1]+J[5][2]*dq[2]+J[5][3]*dq[3]+J[5][4]*dq[4]+J[5][5]*dq[5],
-        };
-        QVERIFY(qAbs(got[0] - dx.x) < 1e-6);
-        QVERIFY(qAbs(got[1] - dx.y) < 1e-6);
-        QVERIFY(qAbs(got[2] - dx.z) < 1e-6);
-        QVERIFY(qAbs(got[3] - dxRot[0]) < 1e-6);
-        QVERIFY(qAbs(got[4] - dxRot[1]) < 1e-6);
-        QVERIFY(qAbs(got[5] - dxRot[2]) < 1e-6);
+        for (int i = 0; i < 6; ++i)
+            QVERIFY(std::isfinite(dq[i]));
+        // 函数式往返：forward(q+dq) 应复现 Δx（阻尼小 + 非奇异位形下精确）。
+        const Pose p0 = kr210::forward(q);
+        double q1[6];
+        for (int i = 0; i < 6; ++i)
+            q1[i] = q[i] + dq[i];
+        const Pose p1 = kr210::forward(q1);
+        QVERIFY(qAbs((p1.x - p0.x) - dx.x) < 0.01);
+        QVERIFY(qAbs((p1.y - p0.y) - dx.y) < 0.01);
+        QVERIFY(qAbs((p1.z - p0.z) - dx.z) < 0.01);
+        // 姿态：比较旋转角误差（R_cmd 与 R_actual）。不能用 A/B/C 逐分量差：
+        // 同一小旋转在非零位姿下按欧拉角表示会被耦合放大（本位姿 B=60°）。
+        double R0[3][3], R1[3][3], R0t[3][3], Ract[3][3], Rcmd[3][3];
+        rotFromPose(p0, R0);
+        rotFromPose(p1, R1);
+        trans3x3(R0, R0t);
+        mul3x3(R1, R0t, Ract);
+        const Pose dpose{0, 0, 0, dx.a, dx.b, dx.c};
+        rotFromPose(dpose, Rcmd);
+        QVERIFY(rotAngleBetween(Rcmd, Ract) < 0.01);
     }
 
     void limitCartDelta_speedClamps()

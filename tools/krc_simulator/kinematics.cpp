@@ -189,11 +189,10 @@ bool solveDelta(const double qRad[6], const Pose &dxDeg, double dqRad[6])
                 s += J[r][k] * J[c][k];
             JJt[r][c] = s;
         }
-    // λ 取 JJᵀ 最大特征量级的 1e-6，保证近奇异有界。
-    double scale = 0.0;
-    for (int r = 0; r < 6; ++r)
-        scale = std::max(scale, std::fabs(JJt[r][r]));
-    const double lam = std::max(1e-9, scale * 1e-6);
+    // 阻尼：小固定值。非奇异位形下伪逆≈真逆（往返精确）；近奇异时由 λ 限制
+    // 增益，幅值由关节限位 clamp 兜底。按 JJᵀ 最大特征缩放会使 λ≈1.6（本机
+    // 连杆臂~1250mm），对腕部模式（σ_min~0.3–1）衰减 30–70%——过强。
+    constexpr double lam = 1e-3;
     for (int r = 0; r < 6; ++r)
         JJt[r][r] += lam;
 
