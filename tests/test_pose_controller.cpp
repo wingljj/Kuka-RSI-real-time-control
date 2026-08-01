@@ -15,6 +15,7 @@ AppConfig testCfg()
     c.vmaxRotDegS        = 10.0;   // 12ms → 步长上限 0.12°
     c.accumLimitPosMm    = 30.0;
     c.accumLimitRotDeg   = 15.0;
+    c.targetSmoothingMs  = 0.0;    // 保持增量 = kp×误差 的精确算术断言
     return c;
 }
 
@@ -470,6 +471,76 @@ private slots:
             pc.step(actual);              // RIst 不跟随：位移恒 0，命令持续累计
         QCOMPARE(pc.state(), TrackState::Fault);
         QVERIFY(pc.faultReason().contains("rotation"));
+    }
+
+    void smoothing_progressivelyApproachesStepTarget()
+    {
+        // 放开限幅让增量 = kp×误差；无平滑时目标阶跃 100 第一周期误差=100
+        // → 增量=50。平滑后平滑目标第一步 = 100×α，α=12/(12+50)=0.1935
+        // → 误差≈19.35 → 增量≈9.68，显著削平。
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.targetSmoothingMs = 50.0;
+        c.kpPos             = 0.5;
+        c.vmaxPosMmS        = 1000000.0;   // 放开限幅
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        const Pose d1 = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        QVERIFY(d1.x < 20.0);
+        QVERIFY(qAbs(d1.x - 9.68) < 0.5);
+    }
+
+    void smoothing_tauZero_isPassthrough()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();            // targetSmoothingMs=0
+        c.kpPos      = 0.5;
+        c.vmaxPosMmS = 1000000.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        const Pose d1 = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        QVERIFY(qAbs(d1.x - 50.0) < 1e-9);   // α=1 直通
+    }
+
+    void resetToActual_syncsSmoothTarget()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.targetSmoothingMs = 50.0;
+        c.kpPos             = 0.5;
+        c.vmaxPosMmS        = 1000000.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        pc.step(Pose{0, 0, 0, 0, 0, 0});     // 平滑目标开始逼近（≈19.35）
+        pc.resetToActual(Pose{3, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        // 平滑目标必须同步为 actual(3)，否则从 19.35 向 3 逼近 → 假误差 → 非零增量
+        const Pose d = pc.step(Pose{3, 0, 0, 0, 0, 0});
+        QCOMPARE(d.x, 0.0);
+    }
+
+    void smoothing_doesNotChangeSteadyState()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.targetSmoothingMs = 50.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{5, 0, 0, 0, 0, 0});
+        Pose actual{0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 5000; ++i) {
+            const Pose d = pc.step(actual);
+            actual.x += d.x;
+        }
+        QVERIFY(qAbs(pc.target().x - actual.x) < 1e-3);
+        QVERIFY(qAbs(pc.accumulated().x - 5.0) < 1e-3);
     }
 };
 

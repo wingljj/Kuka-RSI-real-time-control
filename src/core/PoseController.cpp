@@ -28,6 +28,12 @@ void PoseController::configure(const AppConfig &cfg)
     m_stepLimitPos = std::fabs(cfg.vmaxPosMmS) * cycleS;
     m_stepLimitRot = std::fabs(cfg.vmaxRotDegS) * cycleS;
 
+    // 平滑系数：仅当时间常数 > 0 才启用低通，否则直通（保持旧行为）。
+    const double tauS = cfg.targetSmoothingMs > 0.0
+                            ? cfg.targetSmoothingMs / 1000.0
+                            : 0.0;
+    m_alpha = (tauS <= 0.0 || cycleS <= 0.0) ? 1.0 : cycleS / (cycleS + tauS);
+
     // 非正周期会让步长上限为 0，表现为静默不动而 state() 仍报 Tracking。
     // 用粘滞标志承载，而不是 Fault 状态——Fault 会被随后的 beginSession 清除。
     m_configInvalid = !(cfg.cycleMs > 0.0);
@@ -43,6 +49,7 @@ void PoseController::resetToActual(const Pose &actual)
     m_target = actual;
     m_state  = TrackState::Idle;
     m_faultReason.clear();
+    m_smoothTarget = actual;   // 归零/会话开始同步平滑目标，避免假误差
     // m_accum 刻意保留，理由见头文件注释
     // m_anchor / m_displacement / m_haveAnchor 同样刻意不动：会话内的归零
     // 不移动原点，否则第 2 层的预算又能被反复领取。只有 beginSession 才换锚点。
@@ -98,8 +105,21 @@ Pose PoseController::step(const Pose &actual)
         return Pose{};
     }
 
+    // 误差源：默认原始目标；平滑启用时用低通后的平滑目标（每周期指数逼近）。
+    // m_smoothTarget 只在 resetToActual/beginSession 同步到 actual，此处每周期
+    // 累加，绝不直接赋值——否则会丢历史。τ=0 时 m_alpha=1，一步到位等价无平滑。
+    Pose errSrc = m_target;
+    if (m_alpha < 1.0) {
+        m_smoothTarget.x += m_alpha * (m_target.x - m_smoothTarget.x);
+        m_smoothTarget.y += m_alpha * (m_target.y - m_smoothTarget.y);
+        m_smoothTarget.z += m_alpha * (m_target.z - m_smoothTarget.z);
+        m_smoothTarget.a += m_alpha * (m_target.a - m_smoothTarget.a);
+        m_smoothTarget.b += m_alpha * (m_target.b - m_smoothTarget.b);
+        m_smoothTarget.c += m_alpha * (m_target.c - m_smoothTarget.c);
+        errSrc = m_smoothTarget;
+    }
     // 误差：位置直接相减，姿态取最短角路径
-    const Pose err = poseSub(m_target, actual);
+    const Pose err = poseSub(errSrc, actual);
 
     // 第 1 层限值：单周期增量
     Pose d;

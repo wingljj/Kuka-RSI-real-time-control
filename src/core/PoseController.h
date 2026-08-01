@@ -58,6 +58,11 @@ private:
     TrackState m_state = TrackState::Idle;
     QString    m_faultReason;
 
+    // 目标一阶低通（仅 Tracking 生效）。m_smoothTarget 每周期向 m_target 逼近，
+    // 系数 m_alpha = cycleS/(cycleS+tauS)；tauS≤0 时 m_alpha=1 直通。
+    Pose    m_smoothTarget;
+    double  m_alpha = 1.0;
+
     Pose m_anchor;                  // 会话首帧锁存的 RIst₀
     Pose m_displacement;            // 当前实际位姿相对 m_anchor 的位移
     bool m_haveAnchor = false;
