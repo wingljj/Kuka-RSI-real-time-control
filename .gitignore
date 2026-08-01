@@ -11,3 +11,4 @@ build-release/
 _*.png
 _*.log
 ref/
+release/
