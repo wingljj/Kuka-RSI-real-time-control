@@ -51,6 +51,15 @@ private slots:
         QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
     }
 
+    void krcTimeoutCyclesNegative_fails()
+    {
+        AppConfig c = good();
+        c.krcTimeoutCycles = -100;
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("krc_timeout_cycles"));
+    }
+
     void accumLimitOverKrc_fails()
     {
         AppConfig c = good();

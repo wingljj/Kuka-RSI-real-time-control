@@ -12,6 +12,12 @@ QStringList SessionGuard::staticChecks(const AppConfig &cfg)
     if (!(cfg.sessionGapMs > 0.0))
         out << QStringLiteral("session_gap_ms=%1 must be > 0").arg(cfg.sessionGapMs);
 
+    // krc_timeout_cycles 必须为正，否则与 cycle_ms 的乘积为负/零，下面的
+    // session_gap 比较会被恒真地绕过，联锁静默失效。
+    if (!(cfg.krcTimeoutCycles > 0))
+        out << QStringLiteral("krc_timeout_cycles=%1 must be > 0")
+                .arg(cfg.krcTimeoutCycles);
+
     // 会话判定阈值必须大于 KRC 的容忍度，否则存在窗口：KRC 认为会话未断、
     // 仍按原始起始位姿累计修正，而主机已把安全锚点移到当前位置并发放新预算。
     if (!(cfg.sessionGapMs > cfg.krcTimeoutCycles * cfg.cycleMs))

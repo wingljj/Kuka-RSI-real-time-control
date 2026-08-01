@@ -10,6 +10,6 @@ public:
     // 静态联锁：仅依据配置评估，绑定后即可查。
     static QStringList staticChecks(const AppConfig &cfg);
 
-    // 动态联锁：使能跟踪时评估。measuredCycleMs < 0 表示尚无实测周期。
+    // 动态联锁：使能跟踪时评估。measuredCycleMs <= 0 表示尚无实测周期（未收到帧）。
     static QStringList enableChecks(const AppConfig &cfg, double measuredCycleMs);
 };

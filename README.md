@@ -153,6 +153,7 @@ VxWin 绕过方案但未验证）。因此真机是最终验证点，首次联�
 | 文件 | 内容 |
 |---|---|
 | [docs/real-machine-deployment.md](docs/real-machine-deployment.md) | **真机**部署与首次联机（当前主文档） |
+| [docs/verification-matrix.md](docs/verification-matrix.md) | 通信健壮性验证矩阵（故障注入 + 回放 + 真机 T1） |
 | [docs/deployment.md](docs/deployment.md) | 早期部署文档（含 OfficeLite 环境的记录） |
 | [docs/rsi-object-facts.md](docs/rsi-object-facts.md) | 从本机 RSI Visual 提取的对象定义权威数据 |
 | [docs/references.md](docs/references.md) | 参照过的第三方资料与各自解决了什么 |

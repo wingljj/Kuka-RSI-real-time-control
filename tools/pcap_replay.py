@@ -47,11 +47,11 @@ def parse_pcap(path, target_port):
             rec = f.read(16)
             if not rec:
                 break
-            ts_sec, ts_usec, incl_len, _ = struct.unpack(endian + "IIII", rec)
+            ts_sec, ts_sub, incl_len, _ = struct.unpack(endian + "IIII", rec)
             data = f.read(incl_len)
             if len(data) < incl_len:
                 break
-            t = ts_sec + ts_usec / subsecond_divisor
+            t = ts_sec + ts_sub / subsecond_divisor
             if t0 is None:
                 t0 = t
             payload = extract_udp_payload(data, target_port)
