@@ -57,6 +57,8 @@ void RsiWorker::start()
     m_lastDelta    = Pose{};
     m_cycleHead    = 0;
     m_cycleCount   = 0;
+    m_havePrevPose = false;   // 会话重启：下一帧无可比帧，不检查跳变
+    m_staleCount   = 0;
     // 注意：m_sinceLastFrame 在 start() 和 stop() 里都刻意不动——它必须跨越
     // 一次 teardown 存活，下个 start() 才能分辨"真正的会话重启"与"快速的
     // stop()→start()"。进程启动后的首个 start() 时它从未 start 过，isValid()
@@ -217,6 +219,25 @@ void RsiWorker::onDatagram()
                 break;
             }
 
+            // 反馈异常剔除：单帧跳变超物理极限 → 本周期回零增量 + stale 计数；
+            // 连续超限 → Fault。首帧/会话重启首帧无可比帧，不检查。
+            bool stale = false;
+            if (m_havePrevPose
+                && poseops::exceedsPhysicalJump(
+                    m_prevValidPose, f.rist, m_cfg.cycleMs / 1000.0,
+                    m_cfg.physVmaxPosMmS, m_cfg.physVmaxRotDegS)) {
+                stale = true;
+                if (++m_staleCount >= m_cfg.staleFrameLimit
+                    && m_ctl.state() == TrackState::Tracking) {
+                    m_ctl.forceFault(QStringLiteral(
+                        "feedback stale frames (jump beyond physical limit)"));
+                }
+            } else {
+                m_staleCount = 0;
+            }
+            m_prevValidPose = f.rist;
+            m_havePrevPose  = true;
+
             // KRC Delay 运行中保护：SENTYPE 错配、回复迟到/被丢弃都会让 KRC
             // 自己的 Delay 计数增长，而主机侧的丢包计数看不见这些。连续 3 帧
             // 递增（持平不算）即转 Fault。
@@ -231,7 +252,8 @@ void RsiWorker::onDatagram()
             }
             m_lastDelay = f.delay;
 
-            if (ev.kind == IpocEvent::Normal || ev.kind == IpocEvent::Gap)
+            if (!stale
+                && (ev.kind == IpocEvent::Normal || ev.kind == IpocEvent::Gap))
                 delta = m_ctl.step(f.rist);
         } else {
             ++m_missed;

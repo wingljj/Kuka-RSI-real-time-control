@@ -71,6 +71,11 @@ private:
     quint64 m_frameCount     = 0;
     double  m_maxReplyUs     = 0.0;
 
+    // 反馈异常剔除：上一有效帧位姿 + 连续 stale 帧计数
+    Pose m_prevValidPose;
+    bool m_havePrevPose = false;
+    int  m_staleCount   = 0;
+
     QElapsedTimer m_sessionTimer;   // 曲线时间轴
     QElapsedTimer m_cycleTimer;     // 实测周期
     QElapsedTimer m_sinceLastFrame;   // 最后一次收到有效帧的时刻

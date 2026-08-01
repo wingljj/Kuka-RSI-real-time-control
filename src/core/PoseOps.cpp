@@ -134,6 +134,24 @@ Pose errorPoseDeg(const Pose &target, const Pose &actual)
     return p;
 }
 
+bool exceedsPhysicalJump(const Pose &prev, const Pose &now, double dtS,
+                         double vmaxPosMmS, double vmaxRotDegS)
+{
+    if (dtS <= 0.0)
+        return false;
+    const double dx = now.x - prev.x, dy = now.y - prev.y, dz = now.z - prev.z;
+    const double dp = std::sqrt(dx*dx + dy*dy + dz*dz);
+    if (dp > vmaxPosMmS * dtS)
+        return true;
+    const Quat qP = quatFromABC(prev.a, prev.b, prev.c);
+    const Quat qN = quatFromABC(now.a, now.b, now.c);
+    const Quat qE = quatError(qN, qP);
+    double rot[3];
+    rotVecFromQuat(qE, rot);
+    const double ang = std::sqrt(rot[0]*rot[0] + rot[1]*rot[1] + rot[2]*rot[2]);
+    return ang > vmaxRotDegS * dtS * kDegToRad;
+}
+
 bool invEulerRate(double aDeg, double bDeg, double cDeg, double out3x3[3][3])
 {
     (void)cDeg;   // E⁻¹ 不依赖 C（X 旋转不影响 yaw/pitch 速率行）

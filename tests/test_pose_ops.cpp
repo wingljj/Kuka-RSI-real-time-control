@@ -165,6 +165,20 @@ private slots:
         QVERIFY(poseops::invEulerRate(0, 80, 0, m));
     }
 
+    void exceedsPhysicalJump_detectsPositionAndRotationJumps()
+    {
+        const Pose a{0,0,0,0,0,0};
+        Pose b = a; b.x = 600.0;                       // 600mm 单帧 > 500mm/s×1s
+        QVERIFY(poseops::exceedsPhysicalJump(a, b, 1.0, 500.0, 60.0));
+        b = a; b.x = 100.0;                            // 100mm < 500 → 位置正常
+        QVERIFY(!poseops::exceedsPhysicalJump(a, b, 1.0, 500.0, 60.0));
+        b = a; b.a = 90.0;                             // 90° 单帧 > 60°/s×1s
+        QVERIFY(poseops::exceedsPhysicalJump(a, b, 1.0, 500.0, 60.0));
+        b = a; b.a = 30.0;
+        QVERIFY(!poseops::exceedsPhysicalJump(a, b, 1.0, 500.0, 60.0));
+        QVERIFY(!poseops::exceedsPhysicalJump(a, a, 1.0, 500.0, 60.0));
+    }
+
     void errorPoseDeg_singularTarget_rotationVector()
     {
         // 目标 (-180,180,-180) vs 实际 (0,60,0)：SO(3) 最短旋转范数 ≈ 60°，而非

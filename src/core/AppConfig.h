@@ -34,6 +34,12 @@ struct AppConfig
     double  accumLimitPosMm   = 30.0;
     double  accumLimitRotDeg  = 15.0;
 
+    // 反馈异常剔除：单帧位置/旋转跳变超物理极限（v_max × dt）判为陈旧帧
+    //（回零增量 + 计数），连续 staleFrameLimit 帧 → Fault
+    double  physVmaxPosMmS    = 500.0;
+    double  physVmaxRotDegS   = 60.0;
+    int     staleFrameLimit   = 10;
+
     int     refreshMs         = 33;
     int     chartWindowS      = 10;
 

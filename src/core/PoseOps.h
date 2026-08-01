@@ -33,6 +33,11 @@ Quat quatFromRotVec(const double rotVec[3]);
 // 便捷：目标 vs 实际 → 误差 Pose（x/y/z 逐轴差；a/b/c = SO(3) 旋转向量分量，世界坐标，度）
 Pose errorPoseDeg(const Pose &target, const Pose &actual);
 
+// 反馈异常剔除：单帧位置/旋转跳变是否超物理极限（v_max × dt）。
+// dt<=0 或 prev==now 返回 false。纯 O(1) 算术，实时路径可调用。
+bool exceedsPhysicalJump(const Pose &prev, const Pose &now, double dtS,
+                         double vmaxPosMmS, double vmaxRotDegS);
+
 // ZYX 欧拉角速率矩阵逆 E⁻¹(A,B,C)（3×3）：[Ȧ,Ḃ,Ċ] = E⁻¹·ω。
 // E = [[0,-sA,cA·cB],[0,cA,sA·cB],[1,0,-sB]]，det=-cosB。
 // |cosB| < 0.1（B 超出 ~±84°，E⁻¹ 含 1/cosB 放大无界）返回 false；

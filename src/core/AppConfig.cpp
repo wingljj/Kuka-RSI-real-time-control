@@ -81,6 +81,9 @@ bool AppConfig::loadFromFile(const QString &path, AppConfig *out,
     readDouble(ctl, "vmax_rot_deg_s", &out->vmaxRotDegS);
     readDouble(ctl, "accum_limit_pos_mm", &out->accumLimitPosMm);
     readDouble(ctl, "accum_limit_rot_deg", &out->accumLimitRotDeg);
+    readDouble(ctl, "phys_vmax_pos_mm_s", &out->physVmaxPosMmS);
+    readDouble(ctl, "phys_vmax_rot_deg_s", &out->physVmaxRotDegS);
+    readInt(ctl, "stale_frame_limit", &out->staleFrameLimit);
 
     const QJsonObject ui = root.value("ui").toObject();
     readInt(ui, "refresh_ms", &out->refreshMs);

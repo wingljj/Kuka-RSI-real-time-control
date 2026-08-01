@@ -12,6 +12,12 @@
     "    单周期增量 = kp × 误差，再夹到 vmax × cycle_ms",
     "首次联机用 0.1 / 10mm/s，确认方向和响应都对了再往上调。",
     "",
+    "反馈异常剔除（phys_vmax_* 与 stale_frame_limit）：单帧位姿相对上一帧",
+    "的跳变超过 物理极限（v_max × cycle_ms，位置用欧氏距离、姿态用 SO(3)",
+    "最短旋转角）即判为陈旧/损坏帧：该周期回零增量但仍回包，连续",
+    "stale_frame_limit 帧超限则转 Fault。正常运动（真机可达速度以内）不会",
+    "触发；首帧与会话重启首帧无可比帧，不检查。",
+    "",
     "target_trajectory_ms：目标阶跃的平滑轨迹时长（位置五次多项式 + 姿态 Slerp，",
     "速度/加速度连续，到点即达）；0 = 轨迹立即完成 = 直通。",
     "",
@@ -39,7 +45,10 @@
     "vmax_pos_mm_s":       10.0,
     "vmax_rot_deg_s":      2.0,
     "accum_limit_pos_mm":  20.0,
-    "accum_limit_rot_deg": 20.0
+    "accum_limit_rot_deg": 20.0,
+    "phys_vmax_pos_mm_s":  500.0,
+    "phys_vmax_rot_deg_s": 60.0,
+    "stale_frame_limit":   10
   },
   "ui": {
     "refresh_ms":     20,
