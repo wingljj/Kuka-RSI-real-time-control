@@ -37,3 +37,8 @@ add_test(NAME test_pose_ops COMMAND test_pose_ops)
 add_executable(test_target_trajectory test_target_trajectory.cpp)
 target_link_libraries(test_target_trajectory PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_target_trajectory COMMAND test_target_trajectory)
+
+# RL 封装单测：链接 rl_kin（RL 静态库 + Eigen 经 rl::mdl 传递）。
+add_executable(test_rl_kinematics test_rl_kinematics.cpp)
+target_link_libraries(test_rl_kinematics PRIVATE rl_kin Qt6::Test)
+add_test(NAME test_rl_kinematics COMMAND test_rl_kinematics)
