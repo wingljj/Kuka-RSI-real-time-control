@@ -31,6 +31,7 @@ private slots:
     void onStopTracking();
     void onStartListening();
     void onStopListening();
+    void onEditParams();
 
 private:
     QWidget *buildTargetPanel();
@@ -92,6 +93,12 @@ private:
     // 是否已成功绑定。区别于 StatusSnapshot::connected（那表示已收到帧）：
     // 「已绑定但一帧未收」和「根本没绑上」对操作员是两件完全不同的事。
     bool m_listening = false;
+
+    // 控制参数：主面板只读区显示生效值，编辑移入「控制参数…」对话框。
+    // Tracking 期间对话框内参数禁用，因此这里也没有可变的编辑控件。
+    QPushButton *m_paramsBtn = nullptr;   // 打开控制参数对话框
+    // Kp/限速/累积上限 × 位置/姿态，共 6 个只读值，由 onRefresh 随 m_cfg 刷新。
+    std::array<QLabel *, 6> m_paramVal{};
 
     bool m_suppressTargetSignal = false;
 };

@@ -1,16 +1,19 @@
 #include "ui/MainWindow.h"
 
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHostAddress>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
 #include <QVBoxLayout>
-#include <QMessageBox>
 #include <cmath>
 #include "core/SessionGuard.h"
 #include "ui/ErrorChart.h"
@@ -254,6 +257,63 @@ void MainWindow::onStopListening()
     updateConnControls();
 }
 
+void MainWindow::onEditParams()
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle("控制参数");
+
+    auto *form = new QFormLayout(&dlg);
+    auto *kpP  = new QDoubleSpinBox; kpP->setRange(0.0, 100.0);  kpP->setDecimals(3);
+    auto *kpR  = new QDoubleSpinBox; kpR->setRange(0.0, 100.0);  kpR->setDecimals(3);
+    auto *vP   = new QDoubleSpinBox; vP->setRange(0.0, 10000.0); vP->setSuffix(" mm/s");
+    auto *vR   = new QDoubleSpinBox; vR->setRange(0.0, 10000.0); vR->setSuffix(" °/s");
+    auto *alP  = new QDoubleSpinBox; alP->setRange(0.0, 10000.0); alP->setSuffix(" mm");
+    auto *alR  = new QDoubleSpinBox; alR->setRange(0.0, 10000.0); alR->setSuffix(" °");
+    kpP->setValue(m_cfg.kpPos);  kpR->setValue(m_cfg.kpRot);
+    vP->setValue(m_cfg.vmaxPosMmS);  vR->setValue(m_cfg.vmaxRotDegS);
+    alP->setValue(m_cfg.accumLimitPosMm);  alR->setValue(m_cfg.accumLimitRotDeg);
+
+    form->addRow("Kp 位置", kpP);
+    form->addRow("Kp 姿态", kpR);
+    form->addRow("限速位置", vP);
+    form->addRow("限速姿态", vR);
+    form->addRow("累积上限位置", alP);
+    form->addRow("累积上限姿态", alR);
+
+    // 运行中锁定 + 显示 KRC 硬限与余量
+    const bool locked = m_state.snapshot().state == TrackState::Tracking;
+    const std::array<QWidget *, 6> fields = {kpP, kpR, vP, vR, alP, alR};
+    for (QWidget *w : fields)
+        w->setEnabled(!locked);
+    if (locked) {
+        auto *note = new QLabel("运行中：参数已锁定，停止跟踪后可修改。", &dlg);
+        note->setStyleSheet("color: #a06000;");
+        form->addRow(note);
+    } else {
+        form->addRow(new QLabel(QStringLiteral(
+            "KRC 硬限: 位置 %1 mm / 姿态 %2 °；当前主机上限 %3 / %4，余量 %5 / %6")
+            .arg(m_cfg.krcPoscorrLimitPosMm).arg(m_cfg.krcPoscorrLimitRotDeg)
+            .arg(alP->value()).arg(alR->value())
+            .arg(m_cfg.krcPoscorrLimitPosMm - alP->value())
+            .arg(m_cfg.krcPoscorrLimitRotDeg - alR->value()), &dlg));
+    }
+
+    auto *btn = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(btn, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(btn, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(btn);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    AppConfig c2 = m_cfg;
+    c2.kpPos = kpP->value();  c2.kpRot = kpR->value();
+    c2.vmaxPosMmS = vP->value();  c2.vmaxRotDegS = vR->value();
+    c2.accumLimitPosMm = alP->value();  c2.accumLimitRotDeg = alR->value();
+    m_cfg = c2;
+    QMetaObject::invokeMethod(m_worker, "applyConfig",
+                              Qt::QueuedConnection, Q_ARG(AppConfig, c2));
+}
+
 QWidget *MainWindow::buildTargetPanel()
 {
     auto *box = new QGroupBox("目标位姿 (BASE)　／　当前位姿", this);
@@ -360,41 +420,24 @@ QWidget *MainWindow::buildParamPanel()
     grid->addWidget(new QLabel("位置", box), 0, 1);
     grid->addWidget(new QLabel("姿态", box), 0, 2);
 
-    struct Row { const char *name; double pos, rot, step; int dec; };
-    const Row rows[3] = {
-        {"Kp",       m_cfg.kpPos,           m_cfg.kpRot,            0.01, 2},
-        {"限速",     m_cfg.vmaxPosMmS,      m_cfg.vmaxRotDegS,      1.0,  1},
-        {"累积上限", m_cfg.accumLimitPosMm, m_cfg.accumLimitRotDeg, 1.0,  1},
-    };
-
-    for (int r = 0; r < 3; ++r) {
-        grid->addWidget(new QLabel(rows[r].name, box), r + 1, 0);
+    const int rows = 3;
+    const char *names[rows] = {"Kp", "限速", "累积上限"};
+    for (int r = 0; r < rows; ++r) {
+        grid->addWidget(new QLabel(QLatin1String(names[r]), box), r + 1, 0);
         for (int c = 0; c < 2; ++c) {
-            auto *sp = new QDoubleSpinBox(box);
-            sp->setRange(0.0, 100000.0);
-            sp->setDecimals(rows[r].dec);
-            sp->setSingleStep(rows[r].step);
-            sp->setValue(c == 0 ? rows[r].pos : rows[r].rot);
-            sp->setKeyboardTracking(false);
-            grid->addWidget(sp, r + 1, c + 1);
-
-            connect(sp, &QDoubleSpinBox::valueChanged,
-                    this, [this, r, c](double v) {
-                AppConfig c2 = m_cfg;
-                if (r == 0) (c == 0 ? c2.kpPos : c2.kpRot) = v;
-                if (r == 1) (c == 0 ? c2.vmaxPosMmS : c2.vmaxRotDegS) = v;
-                if (r == 2) (c == 0 ? c2.accumLimitPosMm
-                                    : c2.accumLimitRotDeg) = v;
-                m_cfg = c2;
-                if (!m_worker)
-                    return;
-                // 必须排队：直连会在通信线程读 m_cfg.senType 的同时改写它。
-                QMetaObject::invokeMethod(m_worker, "applyConfig",
-                                          Qt::QueuedConnection,
-                                          Q_ARG(AppConfig, c2));
-            });
+            auto *val = new QLabel("--", box);
+            val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            grid->addWidget(val, r + 1, c + 1);
+            m_paramVal[r * 2 + c] = val;
         }
     }
+
+    // 参数编辑移入「控制参数…」对话框：Tracking 期间对话框内参数禁用，
+    // 主面板只读区仅显示生效值，由 onRefresh 随 m_cfg 刷新。
+    m_paramsBtn = new QPushButton("控制参数…", box);
+    connect(m_paramsBtn, &QPushButton::clicked,
+            this, &MainWindow::onEditParams);
+    grid->addWidget(m_paramsBtn, rows + 1, 0, 1, 3);
     return box;
 }
 
@@ -515,6 +558,14 @@ void MainWindow::onRefresh()
             .arg(s.missedCount)
             .arg(s.lifetimeLost)
             .arg(s.krcDelay));
+
+    // ── 控制参数只读区：显示 m_cfg 生效值（编辑在「控制参数…」对话框内） ──
+    m_paramVal[0]->setText(QString::number(m_cfg.kpPos, 'f', 3));
+    m_paramVal[1]->setText(QString::number(m_cfg.kpRot, 'f', 3));
+    m_paramVal[2]->setText(QString::number(m_cfg.vmaxPosMmS, 'f', 1));
+    m_paramVal[3]->setText(QString::number(m_cfg.vmaxRotDegS, 'f', 1));
+    m_paramVal[4]->setText(QString::number(m_cfg.accumLimitPosMm, 'f', 1));
+    m_paramVal[5]->setText(QString::number(m_cfg.accumLimitRotDeg, 'f', 1));
 
     // ── 使能按钮状态机 ──
     if (s.state == TrackState::Fault) {
