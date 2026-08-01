@@ -88,7 +88,7 @@ private slots:
         const StatusSnapshot snap = s.snapshot();
         QVERIFY(!snap.connected);
         QCOMPARE(snap.frameCount, quint64(0));
-        QCOMPARE(snap.state, TrackState::Idle);
+        QCOMPARE(snap.state, ControlState::Disconnected);
     }
 
     void state_publishRoundTrips()
@@ -98,7 +98,7 @@ private slots:
         in.actual = Pose{1, 2, 3, 4, 5, 6};
         in.error  = Pose{0.1, 0.2, 0.3, 0.4, 0.5, 0.6};
         in.ipoc   = 123456789ULL;
-        in.state  = TrackState::Fault;
+        in.state  = ControlState::Fault;
         in.faultReason = "boom";
         in.missedCount = 7;
         in.measuredCycleMs = 12.5;
@@ -112,7 +112,7 @@ private slots:
         QCOMPARE(out.actual.c, 6.0);
         QCOMPARE(out.error.a, 0.4);
         QCOMPARE(out.ipoc, quint64(123456789));
-        QCOMPARE(out.state, TrackState::Fault);
+        QCOMPARE(out.state, ControlState::Fault);
         QCOMPARE(out.faultReason, QString("boom"));
         QCOMPARE(out.missedCount, 7);
         QCOMPARE(out.measuredCycleMs, 12.5);

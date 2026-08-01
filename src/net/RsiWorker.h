@@ -45,7 +45,7 @@ private slots:
 
 private:
     void publishSnapshot(const Pose &actual, const Pose &err,
-                         quint64 ipoc, bool connected);
+                         quint64 ipoc, bool connected, bool wasFirstFrame);
 
     AppConfig      m_cfg;
     SharedState   *m_state = nullptr;

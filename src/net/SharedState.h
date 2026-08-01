@@ -8,6 +8,13 @@
 #include "core/PoseController.h"
 #include "core/Pose.h"
 
+// 7 态会话/控制状态（UI 显示 + 行为语义）。由 RsiWorker 在 publishSnapshot 中
+// 组合：Fault > StaleFrame > Syncing(首帧瞬间) > Tracking > Ready >
+// WaitingFirstFrame > Disconnected。TrackState 保留给 PoseController 内部使用。
+enum class ControlState {
+    Disconnected, WaitingFirstFrame, Syncing, Ready, Tracking, StaleFrame, Fault,
+};
+
 struct StatusSnapshot
 {
     Pose       actual;
@@ -15,7 +22,7 @@ struct StatusSnapshot
     Pose       error;  // 位置误差 = target − actual；姿态误差 = SO(3) 旋转向量分量（世界坐标，度）
     Pose       accum;
     quint64    ipoc            = 0;
-    TrackState state           = TrackState::Idle;
+    ControlState state         = ControlState::Disconnected;
     QString    faultReason;
     int        missedCount     = 0;
     double     measuredCycleMs = 0.0;

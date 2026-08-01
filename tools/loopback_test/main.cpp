@@ -11,12 +11,18 @@
 
 namespace {
 
-const char *stateName(TrackState s)
+// 注意：verify 脚本 grep 的 state=Fault / state=Tracking 依赖这里的字符串，
+// "Fault" 与 "Tracking" 不得改名。
+const char *stateName(ControlState s)
 {
     switch (s) {
-    case TrackState::Idle:     return "Idle";
-    case TrackState::Tracking: return "Tracking";
-    case TrackState::Fault:    return "Fault";
+    case ControlState::Disconnected:     return "Disconnected";
+    case ControlState::WaitingFirstFrame: return "WaitingFirstFrame";
+    case ControlState::Syncing:          return "Syncing";
+    case ControlState::Ready:            return "Ready";
+    case ControlState::Tracking:         return "Tracking";
+    case ControlState::StaleFrame:       return "StaleFrame";
+    case ControlState::Fault:            return "Fault";
     }
     return "?";
 }

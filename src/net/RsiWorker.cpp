@@ -177,9 +177,14 @@ void RsiWorker::onDatagram()
                 const bool genuineSessionStart =
                     !m_sinceLastFrame.isValid()
                     || m_sinceLastFrame.elapsed() >= qint64(m_cfg.sessionGapMs);
-                if (genuineSessionStart)
+                if (genuineSessionStart) {
                     m_ctl.beginSession(f.rist);
-                else
+                    // 真正的会话重启：首帧不与重启前（看门狗间隙之前）的旧帧
+                    // 比较跳变。start() 里那句"会话重启：下一帧无可比帧"的注释
+                    // 对跨间隙的首帧同样适用——不在这里清掉，第一帧就会拿
+                    // 间隙前的位姿当锚点，物理跳变判定可能误杀会话恢复帧。
+                    m_havePrevPose = false;
+                } else
                     m_ctl.resetToActual(f.rist);
                 wasFirstFrame = true;
             }
@@ -287,7 +292,7 @@ void RsiWorker::onDatagram()
         if (f.valid) {
             // 姿态误差 = SO(3) 旋转向量（世界坐标，度）——与控制器一致，奇异/边界不跳变
             const Pose err = poseops::errorPoseDeg(m_ctl.target(), f.rist);
-            publishSnapshot(f.rist, err, f.ipoc, true);
+            publishSnapshot(f.rist, err, f.ipoc, true, wasFirstFrame);
 
             ChartSample cs;
             cs.tSec = m_sessionTimer.nsecsElapsed() / 1.0e9;
@@ -308,15 +313,36 @@ void RsiWorker::onDatagram()
 }
 
 void RsiWorker::publishSnapshot(const Pose &actual, const Pose &err,
-                                quint64 ipoc, bool connected)
+                                quint64 ipoc, bool connected,
+                                bool wasFirstFrame)
 {
+    // 7 态会话/控制状态，优先级：Fault > StaleFrame > Syncing(首帧瞬间) >
+    // Tracking > Ready > WaitingFirstFrame > Disconnected。
+    // Syncing 只出现在首帧（会话/恢复的同步瞬间），下一帧立即转 Ready/Tracking。
+    ControlState cs;
+    if (m_ctl.state() == TrackState::Fault) {
+        cs = ControlState::Fault;
+    } else if (m_staleCount > 0) {
+        cs = ControlState::StaleFrame;
+    } else if (wasFirstFrame) {
+        cs = ControlState::Syncing;
+    } else if (m_ctl.state() == TrackState::Tracking) {
+        cs = ControlState::Tracking;
+    } else if (m_ipocTracker.haveFirst()) {
+        cs = ControlState::Ready;
+    } else if (m_peerLocked) {
+        cs = ControlState::WaitingFirstFrame;
+    } else {
+        cs = ControlState::Disconnected;
+    }
+
     StatusSnapshot s;
     s.actual          = actual;
     s.target          = m_ctl.target();
     s.error           = err;
     s.accum           = m_ctl.accumulated();
     s.ipoc            = ipoc;
-    s.state           = m_ctl.state();
+    s.state           = cs;
     s.faultReason     = m_ctl.faultReason();
     s.missedCount     = m_missed;
     s.measuredCycleMs = m_measuredCycleMs;

@@ -290,7 +290,7 @@ void MainWindow::onEditParams()
     form->addRow("累积上限姿态", alR);
 
     // 运行中锁定 + 显示 KRC 硬限与余量
-    const bool locked = m_state.snapshot().state == TrackState::Tracking;
+    const bool locked = m_state.snapshot().state == ControlState::Tracking;
     const std::array<QWidget *, 6> fields = {kpP, kpR, vP, vR, alP, alR};
     for (QWidget *w : fields)
         w->setEnabled(!locked);
@@ -525,31 +525,57 @@ void MainWindow::onRefresh()
     }
 
     // ── 状态卡：颜色分级，让「机器人是否真的连接/可动」一眼可判 ──
+    // 7 态 ControlState 映射：Fault 红 / StaleFrame 黄（原 degraded 条件并入，
+    // 另保留丢包/周期偏离的黄警告）/ Tracking+Ready 绿 / Syncing+
+    // WaitingFirstFrame 蓝 / Disconnected 灰。监听中但未收到任何帧时快照仍是
+    // Disconnected，此处以 m_listening 兜底保持蓝（与旧"◐ 监听中"一致）。
     QString cardText;
     bool red = false, yellow = false;
-    if (s.state == TrackState::Fault) {
+    const bool degraded =
+        s.missedCount > 0 || s.krcDelay > 0
+        || (s.measuredCycleMs > 0.0 && m_cfg.cycleMs > 0.0
+            && std::fabs(s.measuredCycleMs - m_cfg.cycleMs)
+                   > 0.10 * m_cfg.cycleMs);
+    if (s.state == ControlState::Fault) {
         red = true;
         cardText = QStringLiteral("● 故障: %1").arg(s.faultReason);
     } else if (s.connected) {
-        const bool degraded =
-            s.missedCount > 0 || s.krcDelay > 0
-            || (s.measuredCycleMs > 0.0 && m_cfg.cycleMs > 0.0
-                && std::fabs(s.measuredCycleMs - m_cfg.cycleMs)
-                       > 0.10 * m_cfg.cycleMs);
-        yellow = degraded;
-        cardText = s.state == TrackState::Tracking
-                       ? (degraded ? "● 已连接（注意）  跟踪中"
-                                   : "● 已连接  跟踪中")
-                       : (degraded ? "● 已连接（注意）" : "● 已连接");
+        switch (s.state) {
+        case ControlState::StaleFrame:
+            yellow = true;
+            cardText = QStringLiteral("● 已连接（注意）帧异常");
+            break;
+        case ControlState::Tracking:
+            yellow = degraded;
+            cardText = degraded ? "● 已连接（注意）  跟踪中"
+                                : "● 已连接  跟踪中";
+            break;
+        case ControlState::Ready:
+            yellow = degraded;
+            cardText = degraded ? "● 已连接（注意）" : "● 已连接";
+            break;
+        case ControlState::Syncing:
+            cardText = QStringLiteral("◐ 同步首帧");
+            break;
+        case ControlState::WaitingFirstFrame:
+            cardText = QStringLiteral("◐ 等待首帧");
+            break;
+        default:   // Disconnected 不会出现在已连接快照里；保守回退
+            cardText = QStringLiteral("● 已连接");
+            break;
+        }
     } else if (m_listening) {
         cardText = "◐ 监听中（等待 KRC 发帧）";
     } else {
         cardText = "○ 未监听";
     }
+    const bool blue = s.state == ControlState::Syncing
+                      || s.state == ControlState::WaitingFirstFrame
+                      || (!s.connected && m_listening);
     const char *cardColor = red    ? "#c00"
                             : yellow ? "#a06000"
+                            : blue   ? "#069"
                             : s.connected ? "#080"
-                            : m_listening ? "#069"
                                           : "#888";
     m_stateCard->setText(cardText);
     m_stateCard->setStyleSheet(
@@ -584,16 +610,23 @@ void MainWindow::onRefresh()
     m_paramVal[4]->setText(QString::number(m_cfg.accumLimitPosMm, 'f', 1));
     m_paramVal[5]->setText(QString::number(m_cfg.accumLimitRotDeg, 'f', 1));
 
-    // ── 使能按钮状态机 ──
-    if (s.state == TrackState::Fault) {
+    // ── 使能按钮状态机（7 态） ──
+    // Fault → 「归零并复位」可点；Tracking → 「已使能跟踪」禁用；
+    // Ready → 「准备跟踪」可点；其余（WaitingFirstFrame/Syncing/StaleFrame/
+    // Disconnected）→ 禁用。使能必须落在已就绪的会话上，帧异常或尚未就绪
+    // 时不允许启动跟踪。
+    if (s.state == ControlState::Fault) {
         m_enableBtn->setText("归零并复位");
         m_enableBtn->setEnabled(true);
-    } else if (s.state == TrackState::Tracking) {
+    } else if (s.state == ControlState::Tracking) {
         m_enableBtn->setText("已使能跟踪");
         m_enableBtn->setEnabled(false);
+    } else if (s.state == ControlState::Ready) {
+        m_enableBtn->setText("准备跟踪");
+        m_enableBtn->setEnabled(true);
     } else {
         m_enableBtn->setText("准备跟踪");
-        m_enableBtn->setEnabled(s.connected);
+        m_enableBtn->setEnabled(false);
     }
 
     m_chartPos->updateFrom(m_ring);
@@ -628,7 +661,7 @@ void MainWindow::onPrepareTracking()
         return;
     const StatusSnapshot s = m_state.snapshot();
 
-    if (s.state == TrackState::Fault) {
+    if (s.state == ControlState::Fault) {
         // 故障锁存：必须归零并复位才能重新使能
         QMetaObject::invokeMethod(m_worker, "resetToActual",
                                   Qt::QueuedConnection);
