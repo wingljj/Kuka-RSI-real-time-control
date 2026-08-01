@@ -1,5 +1,6 @@
 #pragma once
 #include <QElapsedTimer>
+#include <array>
 #include <QHostAddress>
 #include <QObject>
 #include <QTimer>
@@ -75,6 +76,14 @@ private:
     QElapsedTimer m_sinceLastFrame;   // 最后一次收到有效帧的时刻
     bool          m_cycleTimerValid = false;
     double        m_measuredCycleMs = 0.0;
+
+    // 诊断：累计丢包（会话内只增不减）、最近增量、周期直方（定容，实时无分配）
+    quint64 m_lifetimeLost = 0;
+    Pose    m_lastDelta;
+    static constexpr int kCycleHist = 256;
+    std::array<double, kCycleHist> m_cycleHist{};
+    int m_cycleHead  = 0;
+    int m_cycleCount = 0;
 
     Pose m_lastActual;   // 最近一帧的实际位姿，供 resetToActual() 槽使用
 };

@@ -22,6 +22,13 @@ struct StatusSnapshot
     double     maxReplyUs      = 0.0;
     quint64    frameCount      = 0;
     bool       connected       = false;
+    quint32    peerIp4      = 0;    // 对端 IPv4（0=未锁定）
+    quint16    peerPort     = 0;    // 对端端口（0=未锁定）
+    quint64    lifetimeLost = 0;    // 累计丢包（区别于连续 missedCount）
+    Pose       lastDelta;           // 最近一帧 RKorr 增量
+    double     cycleMeanMs  = 0.0;  // 周期均值（最近 256 样本窗口）
+    double     cycleMaxMs   = 0.0;  // 周期最大
+    double     cycleP99Ms   = 0.0;  // 周期 P99
     quint64    krcDelay        = 0;   // KRC 统计的迟到/丢失回包数（<Delay D=...>）
     int        peerRejected    = 0;   // 被对端锁定丢弃的异源帧数
     int        sendFails       = 0;   // writeDatagram 连续失败计数

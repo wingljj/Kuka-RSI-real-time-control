@@ -3,6 +3,7 @@
 #include <QNetworkDatagram>
 #include <QVariant>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include "core/RsiCodec.h"
 
@@ -51,6 +52,10 @@ void RsiWorker::start()
     m_maxReplyUs      = 0.0;
     m_cycleTimerValid = false;
     m_measuredCycleMs = 0.0;
+    m_lifetimeLost = 0;
+    m_lastDelta    = Pose{};
+    m_cycleHead    = 0;
+    m_cycleCount   = 0;
     // 注意：m_sinceLastFrame 在 start() 和 stop() 里都刻意不动——它必须跨越
     // 一次 teardown 存活，下个 start() 才能分辨"真正的会话重启"与"快速的
     // stop()→start()"。进程启动后的首个 start() 时它从未 start 过，isValid()
@@ -178,6 +183,10 @@ void RsiWorker::onDatagram()
 
             if (m_cycleTimerValid) {
                 m_measuredCycleMs = m_cycleTimer.nsecsElapsed() / 1.0e6;
+                m_cycleHist[m_cycleHead] = m_measuredCycleMs;
+                m_cycleHead = (m_cycleHead + 1) % kCycleHist;
+                if (m_cycleCount < kCycleHist)
+                    ++m_cycleCount;
             }
             m_cycleTimer.start();
             m_cycleTimerValid = true;
@@ -196,10 +205,12 @@ void RsiWorker::onDatagram()
                 break;
             case IpocEvent::Gap:
                 m_missed += int(ev.gapCount);
+                m_lifetimeLost += quint64(ev.gapCount);
                 break;
             case IpocEvent::Duplicate:
             case IpocEvent::Backward:
                 ++m_missed;
+                ++m_lifetimeLost;
                 break;
             case IpocEvent::First:
                 break;
@@ -223,7 +234,10 @@ void RsiWorker::onDatagram()
                 delta = m_ctl.step(f.rist);
         } else {
             ++m_missed;
+            ++m_lifetimeLost;
         }
+
+        m_lastDelta = delta;
 
         const QByteArray sen =
             RsiCodec::buildSen(delta, echoIpoc, m_cfg.senType);
@@ -288,5 +302,27 @@ void RsiWorker::publishSnapshot(const Pose &actual, const Pose &err,
     s.sendFails       = m_sendFails;
     s.frameCount      = m_frameCount;
     s.connected       = connected;
+    s.peerIp4      = m_peerLocked ? m_peerAddr.toIPv4Address() : 0;
+    s.peerPort     = m_peerPort;
+    s.lifetimeLost = m_lifetimeLost;
+    s.lastDelta    = m_lastDelta;
+    if (m_cycleCount > 0) {
+        // 拷贝到定容临时数组：nth_element 原地改，不能碰历史。无堆分配。
+        const int n = m_cycleCount;
+        std::array<double, kCycleHist> h{};
+        double sum = 0.0, mx = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double v =
+                m_cycleHist[(m_cycleHead - n + i + kCycleHist) % kCycleHist];
+            h[i] = v;
+            sum += v;
+            mx = std::max(mx, v);
+        }
+        s.cycleMeanMs = sum / n;
+        s.cycleMaxMs  = mx;
+        const int p   = std::max(0, (n * 99) / 100 - 1);
+        std::nth_element(h.begin(), h.begin() + p, h.begin() + n);
+        s.cycleP99Ms  = h[p];
+    }
     m_state->publish(s);
 }
