@@ -166,10 +166,18 @@ Pose PoseController::step(const Pose &actual)
         d.b = (invE[1][0]*dRot[0] + invE[1][1]*dRot[1] + invE[1][2]*dRot[2]) * kRadToDeg;
         d.c = (invE[2][0]*dRot[0] + invE[2][1]*dRot[1] + invE[2][2]*dRot[2]) * kRadToDeg;
     } else {
-        // B≈±90° 奇异：E⁻¹ 退化。一阶近似（旋转向量分量当欧拉增量）+ 已被范数限幅。
-        d.a = dRot[0] * kRadToDeg;
-        d.b = dRot[1] * kRadToDeg;
-        d.c = dRot[2] * kRadToDeg;
+        // B≈±84° 以外：E⁻¹ 含 1/cosB 无界。用阻尼 E⁻¹（1/cosB → 1/max(|cosB|,0.1)，
+        // 保号）替代一阶近似——一阶近似忽略欧拉耦合、方向错误，会让 B 卡在阈值
+        // 边界无法推进（实测卡在 -84.3°）。阻尼 E⁻¹ 方向始终正确、增益 ≤10×，
+        // 已被范数限幅兜底。
+        const double aR = actual.a * kDegToRad, bR = actual.b * kDegToRad;
+        const double sa = std::sin(aR), ca = std::cos(aR), sb = std::sin(bR);
+        const double cbS = std::cos(bR);
+        const double cbD = std::copysign(std::max(std::fabs(cbS), 0.1), cbS);
+        const double tb = sb / cbD;
+        d.a = (tb * ca * dRot[0] + tb * sa * dRot[1] + dRot[2]) * kRadToDeg;
+        d.b = (-sa * dRot[0] + ca * dRot[1]) * kRadToDeg;
+        d.c = (ca / cbD * dRot[0] + sa / cbD * dRot[1]) * kRadToDeg;
     }
 
     // 与 buildSen 的 4 位小数量化对齐：幅值小于线上量化步长的增量会被格式化
