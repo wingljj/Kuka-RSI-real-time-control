@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 #include "core/Pose.h"
 #include "tools/krc_simulator/kinematics.h"
 
@@ -15,6 +16,12 @@
 // - 内部对象为静态单例（进程生命周期），仅限模拟器单线程使用。
 namespace rlk {
 
+// 单个 body / 帧的世界位姿（mm + 四元数，正解后有效）。
+struct BodyPose { double x = 0, y = 0, z = 0; double qw = 1, qx = 0, qy = 0, qz = 0; };
+
+// 机器人骨架（body0..bodyN 世界系位姿 + TCP）。
+struct Skeleton { std::vector<BodyPose> bodies; BodyPose tcp; };
+
 // 加载 rlmdl 模型；成功 true。路径为空用默认模型
 // （D:/QTproj/rl/rl-master/3dmodel/robot.rlmdl.xml）。
 // 失败时清空已加载状态（后续 forward/inverse 返回零值/false）。
@@ -29,5 +36,10 @@ bool inverse(const Pose &target, double qRad[6]);
 
 // 关节限位（rad），loadModel 成功时从模型 joint 读取并缓存。
 const kr210::JointLimits &limits();
+
+// 机器人骨架（body0..bodyN 世界系位姿 + TCP，mm + 四元数）。
+// 前置：forward() 已调用（其内部 forwardPosition() 已计算所有 body 帧）。
+// 模型未加载返回空 Skeleton（bodies 为空）。
+Skeleton skeleton();
 
 } // namespace rlk

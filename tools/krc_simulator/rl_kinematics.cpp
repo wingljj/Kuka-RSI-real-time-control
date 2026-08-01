@@ -168,4 +168,32 @@ const kr210::JointLimits &limits()
     return g_limits;
 }
 
+Skeleton skeleton()
+{
+    Skeleton s;
+    if (!g_loaded || !g_model)
+        return s;
+
+    for (std::size_t i = 0; i < g_model->getBodies(); ++i) {
+        const rl::math::Transform &t = g_model->getBodyFrame(i);
+        BodyPose p;
+        p.x = t.translation().x() * 1000.0;
+        p.y = t.translation().y() * 1000.0;
+        p.z = t.translation().z() * 1000.0;
+        const Eigen::Quaterniond q(t.rotation());
+        p.qw = q.w(); p.qx = q.x(); p.qy = q.y(); p.qz = q.z();
+        s.bodies.push_back(p);
+    }
+
+    // TCP = operational frame 0（与 forward() 同源）
+    const rl::math::Transform &tcp = g_kinematic->getOperationalPosition(0);
+    BodyPose &tp = s.tcp;
+    tp.x = tcp.translation().x() * 1000.0;
+    tp.y = tcp.translation().y() * 1000.0;
+    tp.z = tcp.translation().z() * 1000.0;
+    const Eigen::Quaterniond qt(tcp.rotation());
+    tp.qw = qt.w(); tp.qx = qt.x(); tp.qy = qt.y(); tp.qz = qt.z();
+    return s;
+}
+
 } // namespace rlk

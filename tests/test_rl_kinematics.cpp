@@ -126,6 +126,52 @@ private slots:
         QVERIFY(std::abs(lim.min[5] + 2700.0 * d2r) < 1e-9);  // j5 ±2700°
         QVERIFY(std::abs(lim.max[5] - 2700.0 * d2r) < 1e-9);
     }
+
+    void skeleton_size()
+    {
+        QVERIFY(rlk::loadModel(modelPath()));
+        rlk::forward((const double[6]){0, 0, 0, 0, 0, 0});  // 触发 forwardPosition()
+        const rlk::Skeleton s = rlk::skeleton();
+        QCOMPARE(int(s.bodies.size()), 7);  // Comau Racer 7-1.4: body0..body6
+    }
+
+    void skeleton_body0_isOrigin()
+    {
+        QVERIFY(rlk::loadModel(modelPath()));
+        rlk::forward((const double[6]){0, 0, 0, 0, 0, 0});
+        const rlk::Skeleton s = rlk::skeleton();
+        QVERIFY(std::abs(s.bodies[0].x) < 1e-6);
+        QVERIFY(std::abs(s.bodies[0].y) < 1e-6);
+        QVERIFY(std::abs(s.bodies[0].z) < 1e-6);  // fixed0 = identity
+    }
+
+    void skeleton_body1_atQzero()
+    {
+        QVERIFY(rlk::loadModel(modelPath()));
+        rlk::forward((const double[6]){0, 0, 0, 0, 0, 0});
+        const rlk::Skeleton s = rlk::skeleton();
+        // body1 = fixed1 (+0.43 z) + joint0(identity, q=0) + fixed2 (Rx(-90°), trans (150,0,0))
+        // → world (150, 0, 430) mm
+        QVERIFY2(std::abs(s.bodies[1].x - 150.0) < 2.0,
+                 qPrintable(QStringLiteral("body1.x %1").arg(s.bodies[1].x)));
+        QVERIFY2(std::abs(s.bodies[1].y - 0.0) < 2.0,
+                 qPrintable(QStringLiteral("body1.y %1").arg(s.bodies[1].y)));
+        QVERIFY2(std::abs(s.bodies[1].z - 430.0) < 2.0,
+                 qPrintable(QStringLiteral("body1.z %1").arg(s.bodies[1].z)));
+    }
+
+    void skeleton_lastBody_eq_tcp()
+    {
+        QVERIFY(rlk::loadModel(modelPath()));
+        const double qHome[6] = {0, 0, -M_PI / 2.0, 0, 0, 0};
+        rlk::forward(qHome);
+        const rlk::Skeleton s = rlk::skeleton();
+        // body6 (fixed9 = identity) = frame8 = operational frame 0 = TCP
+        const rlk::BodyPose &b6 = s.bodies[6];
+        QVERIFY(std::abs(b6.x - s.tcp.x) < 1e-3);
+        QVERIFY(std::abs(b6.y - s.tcp.y) < 1e-3);
+        QVERIFY(std::abs(b6.z - s.tcp.z) < 1e-3);
+    }
 };
 
 QTEST_MAIN(TestRlKin)

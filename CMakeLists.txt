@@ -11,7 +11,7 @@ set(CMAKE_AUTOMOC ON)
 # 失败。Qt 走 CMAKE_PREFIX_PATH，不受影响（见 docs/rl-build-notes.md）。
 set(CMAKE_FIND_USE_REGISTRY OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Charts Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Charts Test OpenGLWidgets)
 
 add_library(rsi_core STATIC
     src/core/AppConfig.cpp

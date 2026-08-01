@@ -16,6 +16,8 @@ fi
 # 此为无条件依赖：调用者设 QTBIN 时仍可能缺 libxml2，故独立于上方守卫。
 export UCRT=/c/msys64/ucrt64/bin
 export PATH="$UCRT:$PATH"
+# QApplication（--viz 模式或无头模式都）需要 qwindows 平台插件
+export QT_PLUGIN_PATH=/d/Software/QT/content/6.5.3/mingw_64/plugins
 
 BUILD=build
 HOST=127.0.0.1

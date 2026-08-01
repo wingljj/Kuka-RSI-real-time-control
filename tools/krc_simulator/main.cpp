@@ -6,12 +6,13 @@
 // /--ignore-replies/--send-delay，用于验证主机的异常处理路径。
 // 会话/时序增强：--restart-at-ms/--restart-gap-ms（KRL 重启：停发 + IPOC/q
 // 复位）、--ipoc-wrap-at（IPOC 回绕）、--jitter-us（节拍抖动）。
-#include <QCoreApplication>
+#include <QApplication>
 #include <QCommandLineParser>
 #include <QElapsedTimer>
 #include <QHostAddress>
 #include <QNetworkDatagram>
 #include <QThread>
+#include <QTimer>
 #include <QUdpSocket>
 #include <QtGlobal>
 #include <algorithm>
@@ -24,6 +25,7 @@
 #include "core/RsiCodec.h"
 #include "tools/krc_simulator/kinematics.h"
 #include "tools/krc_simulator/rl_kinematics.h"
+#include "tools/krc_simulator/RobotView.h"
 
 namespace {
 
@@ -114,11 +116,260 @@ bool active(int everyN, int i)
     return everyN > 0 && i > 0 && (i % everyN == 0);
 }
 
+// 模拟器的全部可变状态——抽取出来供 headless 和 viz 双驱动共享。
+struct SimContext {
+    double q[6] = {0, 0, 0, 0, 0, 0};
+    kr210::JointLimits lim{};
+    Pose pose{};
+    Pose prevDx{};
+
+    double cartLim[12]{};
+    bool cartLimitsSet = false;
+
+    double maxVelPos = 0, maxVelRot = 0;
+    double maxAccelPos = 0, maxAccelRot = 0;
+
+    int dupN = 0, gapN = 0, backN = 0, dropN = 0, reorderN = 0, lateN = 0;
+    bool ignore = false;
+    quint64 delayBase = 0;
+
+    int restartAtMs = 0, restartGapMs = 0;
+    quint64 wrapAt = 0;
+    int jitterUs = 0;
+    bool injected = false;
+
+    quint64 ipoc = 1000;
+    quint64 lastSent = 0;
+    quint64 delay = 0;
+
+    int replies = 0, ipocMismatch = 0, missed = 0;
+    quint64 wrapCount = 0;
+    double maxRttUs = 0.0, sumRttUs = 0.0;
+
+    QElapsedTimer pace;
+
+    QByteArray heldRob;
+    quint64 heldIpoc = 0;
+    bool heldValid = false;
+
+    std::deque<quint64> sentIpocs;
+
+    bool restartTriggered = false;
+    qint64 gapUntilMs = -1;
+    double initQ[6] = {0, 0, 0, 0, 0, 0};
+};
+
 } // namespace
+
+// 无窗口驱动：当前阻塞式 for 循环，逐帧节拍 + waitForReadyRead + 收包。
+// 行为与旧代码逐字节一致——这是回归合约，viz 模式不影响此路径。
+static int runHeadless(SimContext &ctx, double cycleMs, int cycles,
+                       QUdpSocket &sock, const QHostAddress &host, quint16 port)
+{
+    // cycles == 0 → 无限运行（直到 Ctrl+C / 关窗）。双击场景希望一直发帧，
+    // 而不想看到"运行 2 分钟自动退出"。int 溢出需 ~2^31 帧 ≈ 9 年，不现实。
+    for (int i = 0; cycles == 0 || i < cycles; ++i) {
+        // 无限模式下每 500 周期打一次进度，让控制台可见模拟器仍在发帧
+        if (cycles == 0 && i % 500 == 0) {
+            std::printf("i=%d replies=%d missed=%d ipoc_mismatch=%d\n",
+                        i, ctx.replies, ctx.missed, ctx.ipocMismatch);
+            std::fflush(stdout);
+        }
+        // 等到本周期的标称发送时刻（--jitter-us 给节拍加 ±N µs 抖动）
+        const qint64 dueNs = qint64(double(i) * cycleMs * 1.0e6)
+                             + (ctx.jitterUs > 0 ? (std::rand() % (2 * ctx.jitterUs + 1) - ctx.jitterUs) * 1000 : 0);
+        while (ctx.pace.nsecsElapsed() < dueNs) {
+            const qint64 remainMs = (dueNs - ctx.pace.nsecsElapsed()) / 1000000;
+            if (remainMs > 1)
+                QThread::msleep(1);
+        }
+
+        // 会话重启：到 restartAtMs 进入静默 gap。gap 期间不发帧、不推进 IPOC、
+        // 不处理回包（重排缓冲与回显队列都保持不动），但节拍照走。
+        const qint64 nowMs = ctx.pace.nsecsElapsed() / 1000000;
+        if (ctx.restartAtMs > 0 && !ctx.restartTriggered && nowMs >= ctx.restartAtMs) {
+            ctx.restartTriggered = true;      // 一次性门闩：只重启一次
+            ctx.gapUntilMs = nowMs + ctx.restartGapMs;
+            std::fprintf(stderr, "session restart at %lld ms\n", nowMs);
+        }
+        const bool inGap = (ctx.gapUntilMs >= 0 && nowMs < ctx.gapUntilMs);
+        if (inGap) {
+            continue;
+        }
+        if (ctx.restartTriggered && ctx.gapUntilMs >= 0 && nowMs >= ctx.gapUntilMs) {
+            // gap 结束：复位会话（IPOC 重置 + q 复位 + delay 重置），并清空
+            // 重排缓冲与回显队列——新会话从全新账本开始，不留上一会话残留
+            // （否则复位后的首帧回显会被错配到旧队列，误报 ipoc_mismatch）。
+            ctx.ipoc = 1000;
+            std::copy(ctx.initQ, ctx.initQ + 6, ctx.q);
+            ctx.pose = rlk::forward(ctx.q);
+            ctx.delay = ctx.delayBase;
+            ctx.heldValid = false;
+            ctx.heldRob.clear();
+            ctx.sentIpocs.clear();
+            ctx.gapUntilMs = -1;
+            std::fprintf(stderr, "session resumed\n");
+        }
+
+        const bool dup     = active(ctx.dupN, i);
+        const bool gap     = active(ctx.gapN, i);
+        const bool back    = active(ctx.backN, i);
+        const bool drop    = active(ctx.dropN, i);
+        const bool reorder = active(ctx.reorderN, i);
+        const bool late    = active(ctx.lateN, i);
+
+        // 决定本帧 IPOC：dup 重发上一帧；back 回退；gap 前向跳号。
+        quint64 sendIpoc = ctx.ipoc;
+        if (dup)         sendIpoc = ctx.lastSent;
+        else if (back)   sendIpoc = (ctx.lastSent > 0) ? ctx.lastSent - 1 : 0;
+        else if (gap)    sendIpoc = ctx.ipoc + ctx.gapN;
+
+        const QByteArray rob = buildRob(ctx.pose, sendIpoc, ctx.delay, ctx.q);
+
+        auto sendFrame = [&](const QByteArray &rob2, quint64 frameIpoc) {
+            if (late)
+                QThread::msleep(ctx.lateN);
+            sock.writeDatagram(rob2, host, port);
+            if (!ctx.ignore)
+                ctx.sentIpocs.push_back(frameIpoc);
+        };
+
+        if (reorder) {
+            // 本帧缓冲，下周期后发（真乱序）
+            ctx.heldRob   = rob;
+            ctx.heldIpoc  = sendIpoc;
+            ctx.heldValid = true;
+        } else {
+            if (!drop)
+                sendFrame(rob, sendIpoc);          // 本帧先发
+            if (ctx.heldValid) {
+                sendFrame(ctx.heldRob, ctx.heldIpoc);      // 缓冲帧后发（真乱序）
+                ctx.heldValid = false;
+            }
+        }
+
+        // 推进序列：dup 不推进（下帧还发同一个）；其余推进。
+        if (!dup) {
+            ctx.lastSent = sendIpoc;
+            ctx.ipoc     = sendIpoc + 1;
+        }
+
+        // 32 位回绕模拟：IPOC 达到 wrapAt 后回到 0（模拟真实 KRC 的溢出回绕）。
+        // 每次回绕使下一帧以 IPOC 0 发出——主机把 0 当解析失败哨兵回显
+        // lastGood 而非 0，于是合法地产生一次 ipoc_mismatch（主机滚动溢出的
+        // 固有局限）。计入 wrapCount，由 PASS 门按预期量放宽（见文件末尾）。
+        if (ctx.wrapAt > 0 && ctx.ipoc >= ctx.wrapAt) {
+            ctx.ipoc = 0;
+            ++ctx.wrapCount;
+        }
+
+        QElapsedTimer rtt;
+        rtt.start();
+        // 等待本周期内的回包。注意不能用 waitForReadyRead 的返回值当作
+        // "收到回复"：端口关闭时 Windows 的 ICMP port-unreachable 也会让它
+        // 返回 true，那样该周期既不计 replies 也不计 timeouts，
+        // cycles == replies + missed 就不再成立。只认解析成功的 <Sen>。
+        if (!ctx.ignore) {
+            const int budgetMs = std::max(1, int(cycleMs));
+            bool got = false;
+            if (sock.waitForReadyRead(budgetMs)) {
+                while (sock.hasPendingDatagrams()) {
+                    const QByteArray d = sock.receiveDatagram().data();
+                    Pose korr;
+                    quint64 echoed = 0;
+                    if (parseSen(d, &korr, &echoed)) {
+                        ++ctx.replies;
+                        got = true;
+                        if (!ctx.sentIpocs.empty()) {
+                            if (echoed != ctx.sentIpocs.front())
+                                ++ctx.ipocMismatch;
+                            ctx.sentIpocs.pop_front();
+                        }
+                        // 关节模型：笛卡尔 RKorr → 限制 → 目标位姿 → RL 一次逆解
+                        // → q → 正解回报（目标位姿法，替代逐周期雅可比伪逆）。
+                        Pose dx = korr;                     // 笛卡尔增量（mm, °）
+                        kr210::limitCartDelta(&dx, ctx.prevDx,
+                                              ctx.maxVelPos, ctx.maxVelRot,
+                                              ctx.maxAccelPos, ctx.maxAccelRot,
+                                              cycleMs / 1000.0);
+                        // 目标位姿 = 当前位姿（正解）+ 限制后的增量。
+                        Pose target = ctx.pose;
+                        target.x += dx.x;
+                        target.y += dx.y;
+                        target.z += dx.z;
+                        target.a += dx.a;
+                        target.b += dx.b;
+                        target.c += dx.c;
+                        // 笛卡尔额外约束：clamp 目标位姿再逆解（模拟「机器人被
+                        // 笛卡尔限位挡住」——主机看到 RIst 停在限位）。
+                        if (ctx.cartLimitsSet) {
+                            target.x = std::clamp(target.x, ctx.cartLim[0], ctx.cartLim[1]);
+                            target.y = std::clamp(target.y, ctx.cartLim[2], ctx.cartLim[3]);
+                            target.z = std::clamp(target.z, ctx.cartLim[4], ctx.cartLim[5]);
+                            target.a = std::clamp(target.a, ctx.cartLim[6], ctx.cartLim[7]);
+                            target.b = std::clamp(target.b, ctx.cartLim[8], ctx.cartLim[9]);
+                            target.c = std::clamp(target.c, ctx.cartLim[10], ctx.cartLim[11]);
+                        }
+                        double qNew[6];
+                        if (rlk::inverse(target, qNew)) {
+                            for (int i = 0; i < 6; ++i) {
+                                // 关节限位 clamp（与 RL 内部限位双重保险；
+                                // --joint-limits 覆盖本地副本后在此生效）
+                                ctx.q[i] = std::clamp(qNew[i], ctx.lim.min[i], ctx.lim.max[i]);
+                            }
+                        }
+                        // 逆解失败（目标不可达）保持旧 q（安全回退）。
+                        ctx.pose = rlk::forward(ctx.q);             // RIst = 真实几何正解
+                        ctx.prevDx = dx;
+                    }
+                }
+            }
+            if (got) {
+                const double us = rtt.nsecsElapsed() / 1000.0;
+                ctx.maxRttUs = std::max(ctx.maxRttUs, us);
+                ctx.sumRttUs += us;
+            } else {
+                ++ctx.missed;
+            }
+        } else {
+            // 模拟 SENTYPE 错配：KRC 静默丢弃每一帧回包，主机毫无察觉，
+            // 只有 KRC 自己的 Delay 计数在涨。这里递增 delay，触发主机
+            // 的"KRC Delay 连续 3 帧递增 → Fault"运行中保护。
+            ++ctx.missed;
+            ctx.delay += 1;
+        }
+    }
+
+    std::printf("cycles=%d replies=%d missed=%d ipoc_mismatch=%d delay=%llu\n",
+                cycles, ctx.replies, ctx.missed, ctx.ipocMismatch,
+                static_cast<unsigned long long>(ctx.delay));
+    std::printf("rtt_avg_us=%.1f rtt_max_us=%.1f\n",
+                ctx.replies ? ctx.sumRttUs / ctx.replies : 0.0, ctx.maxRttUs);
+    std::printf("final_pose X=%.3f Y=%.3f Z=%.3f A=%.3f B=%.3f C=%.3f\n",
+                ctx.pose.x, ctx.pose.y, ctx.pose.z, ctx.pose.a, ctx.pose.b, ctx.pose.c);
+
+    // 主机必须始终原样回显 IPOC（即使对异常帧回零增量）。无注入时还要求
+    // 每帧都回包；有注入时丢包是预期行为，只查回显正确。
+    // --ipoc-wrap-at 模拟真实 KRC 的 32 位溢出回绕：主机把 IPOC 0 当作解析
+    // 失败哨兵（RsiWorker 对 ipoc==0 回显 lastGood 而非 0），所以每次回绕的
+    // 那帧必然被记一次 ipoc_mismatch——这是主机对滚动溢出的固有局限，不是
+    // 链路错误。计数实际回绕次数，允许等量的预期不匹配；超过才算失败。
+    const quint64 expectedMismatch = ctx.wrapAt > 0 ? ctx.wrapCount : 0;
+    const bool pass = ctx.ipocMismatch <= expectedMismatch
+                      && (ctx.injected || ctx.replies == cycles);
+    if (ctx.wrapAt > 0) {
+        std::printf("ipoc_wrap_at=%llu wraps=%llu (each wrap-to-0 yields one "
+                    "expected ipoc_mismatch: host IPOC-0 sentinel)\n",
+                    static_cast<unsigned long long>(ctx.wrapAt),
+                    static_cast<unsigned long long>(ctx.wrapCount));
+    }
+    std::printf("%s\n", pass ? "PASS" : "FAIL");
+    return pass ? 0 : 1;
+}
 
 int main(int argc, char **argv)
 {
-    QCoreApplication app(argc, argv);
+    QApplication app(argc, argv);
     QCommandLineParser p;
     p.addHelpOption();
     // 默认 127.0.0.1（本机回环，不依赖 VMnet、不被防火墙挡）：双击即与本机
@@ -154,13 +405,14 @@ int main(int argc, char **argv)
     QCommandLineOption oMaxAccelRot("max-accel-rot", "cartesian rotation acceleration limit deg/s2 (0=off)", "deg/s2", "0");
     QCommandLineOption oModel("model", "RL rlmdl model path (Comau Racer 7-1.4)", "path",
                               "D:/QTproj/rl/rl-master/3dmodel/robot.rlmdl.xml");
+    QCommandLineOption oViz("viz", "show live 3D robot view (requires OpenGL)", "");
     QCommandLineOption oSelfTest("self-test", "run forward-kinematics self-test and exit", "");
     p.addOptions({oHost, oPort, oCycle, oCount, oDup, oGap, oBack,
                   oDrop, oReorder, oLate, oIgnore, oDelay,
                   oRestartAt, oRestartGap, oIpocWrap, oJitter,
                   oInitJoints, oJointLimits, oCartLimits,
                   oMaxVelPos, oMaxVelRot, oMaxAccelPos, oMaxAccelRot,
-                  oModel, oSelfTest});
+                  oModel, oViz, oSelfTest});
     p.process(app);
 
     const QHostAddress host(p.value(oHost));
@@ -168,25 +420,27 @@ int main(int argc, char **argv)
     const double cycleMs = p.value(oCycle).toDouble();
     const int cycles     = p.value(oCount).toInt();
 
-    const int dupN     = p.value(oDup).toInt();
-    const int gapN     = p.value(oGap).toInt();
-    const int backN    = p.value(oBack).toInt();
-    const int dropN    = p.value(oDrop).toInt();
-    const int reorderN = p.value(oReorder).toInt();
-    const int lateN    = p.value(oLate).toInt();
-    const bool ignore  = p.isSet(oIgnore);
-    const quint64 delayBase = p.value(oDelay).toULongLong();
+    SimContext ctx;
+    ctx.dupN     = p.value(oDup).toInt();
+    ctx.gapN     = p.value(oGap).toInt();
+    ctx.backN    = p.value(oBack).toInt();
+    ctx.dropN    = p.value(oDrop).toInt();
+    ctx.reorderN = p.value(oReorder).toInt();
+    ctx.lateN    = p.value(oLate).toInt();
+    ctx.ignore   = p.isSet(oIgnore);
+    ctx.delayBase = p.value(oDelay).toULongLong();
+    ctx.delay    = ctx.delayBase;
 
-    const int restartAtMs = p.value(oRestartAt).toInt();   // 0=off
-    const int restartGapMs = p.value(oRestartGap).toInt();
-    const quint64 wrapAt  = p.value(oIpocWrap).toULongLong(); // 0=off
-    const int jitterUs    = p.value(oJitter).toInt();         // 0=off
+    ctx.restartAtMs = p.value(oRestartAt).toInt();   // 0=off
+    ctx.restartGapMs = p.value(oRestartGap).toInt();
+    ctx.wrapAt  = p.value(oIpocWrap).toULongLong(); // 0=off
+    ctx.jitterUs    = p.value(oJitter).toInt();         // 0=off
 
     // restartAtMs 会在 gap 期间停发帧 → replies < cycles，属于注入路径，
     // 需放宽 replies==cycles 的严格检查。wrap/jitter 不丢帧，不进 injected。
-    const bool injected = dupN > 0 || gapN > 0 || backN > 0 || dropN > 0
-                          || reorderN > 0 || lateN > 0 || ignore
-                          || restartAtMs > 0;
+    ctx.injected = ctx.dupN > 0 || ctx.gapN > 0 || ctx.backN > 0 || ctx.dropN > 0
+                   || ctx.reorderN > 0 || ctx.lateN > 0 || ctx.ignore
+                   || ctx.restartAtMs > 0;
 
     // 加载 RL 运动学模型（Comau Racer 7-1.4，--model 可覆盖路径）。
     // 模型是正逆解的前提，加载失败直接退出（后续 forward/inverse 返回零值/false，
@@ -237,20 +491,18 @@ int main(int argc, char **argv)
     // 关节状态：默认 Comau 零位全 0（q=0 → 基座系 [20, 0, 1804]；KR210 的
     // 默认位形 q3=30° 超出 Comau 的 [-170°, 0°] 量程，不能再用），
     // 或 --init-joints。内部一律 rad。
-    double q[6] = {0, 0, 0, 0, 0, 0};
-    kr210::JointLimits lim = rlk::limits();     // 本地副本，--joint-limits 可覆盖
-    Pose pose = rlk::forward(q);                // RIst 初值 = 真实几何正解
-    Pose prevDx{};                              // 加速度限制的上一周期增量
+    ctx.lim = rlk::limits();                    // 本地副本，--joint-limits 可覆盖
+    ctx.pose = rlk::forward(ctx.q);             // RIst 初值 = 真实几何正解
 
     // --init-joints：6 个度值 → rad。
     if (p.isSet(oInitJoints)) {
         const QStringList toks = p.value(oInitJoints).split(' ', Qt::SkipEmptyParts);
         bool ok = toks.size() == 6;
         for (int i = 0; i < 6 && ok; ++i) {
-            q[i] = toks[i].toDouble(&ok) * M_PI / 180.0;
+            ctx.q[i] = toks[i].toDouble(&ok) * M_PI / 180.0;
             // toDouble 会接受 "nan"/"inf"，NaN 随后会传播进 forward()/final_pose
             // （主机 toDouble 失败 → 每帧 invalid），必须显式挡掉。
-            if (ok && !std::isfinite(q[i]))
+            if (ok && !std::isfinite(ctx.q[i]))
                 ok = false;
         }
         if (!ok) {
@@ -258,19 +510,17 @@ int main(int argc, char **argv)
                          qPrintable(p.value(oInitJoints)));
             return 2;
         }
-        pose = rlk::forward(q);
+        ctx.pose = rlk::forward(ctx.q);
     }
 
     // --cart-limits：12 个值（xmin xmax ymin ymax zmin zmax amin amax bmin bmax cmin cmax）。
-    double cartLim[12];
-    bool cartLimitsSet = false;
     if (p.isSet(oCartLimits)) {
         const QStringList toks = p.value(oCartLimits).split(' ', Qt::SkipEmptyParts);
         bool ok = toks.size() == 12;
         for (int i = 0; i < 12 && ok; ++i) {
-            cartLim[i] = toks[i].toDouble(&ok);
+            ctx.cartLim[i] = toks[i].toDouble(&ok);
             // toDouble 会接受 "nan"/"inf"，NaN 让 min>max 恒假且 clamp 传播 NaN。
-            if (ok && !std::isfinite(cartLim[i]))
+            if (ok && !std::isfinite(ctx.cartLim[i]))
                 ok = false;
         }
         if (!ok) {
@@ -279,14 +529,14 @@ int main(int argc, char **argv)
             return 2;
         }
         for (int i = 0; i < 6; ++i) {
-            if (cartLim[2 * i] > cartLim[2 * i + 1]) {
+            if (ctx.cartLim[2 * i] > ctx.cartLim[2 * i + 1]) {
                 std::fprintf(stderr, "bad --cart-limits \"%s\": axis %d min %.3f > max %.3f\n",
                              qPrintable(p.value(oCartLimits)), i + 1,
-                             cartLim[2 * i], cartLim[2 * i + 1]);
+                             ctx.cartLim[2 * i], ctx.cartLim[2 * i + 1]);
                 return 2;
             }
         }
-        cartLimitsSet = true;
+        ctx.cartLimitsSet = true;
     }
 
     // --joint-limits：12 个度值（min1 max1 ... min6 max6）→ rad。
@@ -294,11 +544,11 @@ int main(int argc, char **argv)
         const QStringList toks = p.value(oJointLimits).split(' ', Qt::SkipEmptyParts);
         bool ok = toks.size() == 12;
         for (int i = 0; i < 6 && ok; ++i) {
-            lim.min[i] = toks[2 * i].toDouble(&ok) * M_PI / 180.0;
+            ctx.lim.min[i] = toks[2 * i].toDouble(&ok) * M_PI / 180.0;
             if (ok)
-                lim.max[i] = toks[2 * i + 1].toDouble(&ok) * M_PI / 180.0;
+                ctx.lim.max[i] = toks[2 * i + 1].toDouble(&ok) * M_PI / 180.0;
             // toDouble 会接受 "nan"/"inf"，NaN 让 min>max 恒假且 clamp 传播 NaN。
-            if (ok && (!std::isfinite(lim.min[i]) || !std::isfinite(lim.max[i])))
+            if (ok && (!std::isfinite(ctx.lim.min[i]) || !std::isfinite(ctx.lim.max[i])))
                 ok = false;
         }
         if (!ok) {
@@ -308,10 +558,10 @@ int main(int argc, char **argv)
         }
         // min > max 会让后续 std::clamp 进入未定义行为，直接拒绝。
         for (int i = 0; i < 6; ++i) {
-            if (lim.min[i] > lim.max[i]) {
+            if (ctx.lim.min[i] > ctx.lim.max[i]) {
                 std::fprintf(stderr, "bad --joint-limits \"%s\": joint %d min %.3f > max %.3f (deg)\n",
                              qPrintable(p.value(oJointLimits)), i + 1,
-                             lim.min[i] * 180.0 / M_PI, lim.max[i] * 180.0 / M_PI);
+                             ctx.lim.min[i] * 180.0 / M_PI, ctx.lim.max[i] * 180.0 / M_PI);
                 return 2;
             }
         }
@@ -322,252 +572,183 @@ int main(int argc, char **argv)
     if (p.isSet(oInitJoints)) {
         bool clamped = false;
         for (int i = 0; i < 6; ++i) {
-            const double nq = std::clamp(q[i], lim.min[i], lim.max[i]);
-            clamped = clamped || nq != q[i];
-            q[i] = nq;
+            const double nq = std::clamp(ctx.q[i], ctx.lim.min[i], ctx.lim.max[i]);
+            clamped = clamped || nq != ctx.q[i];
+            ctx.q[i] = nq;
         }
         if (clamped) {
             std::fprintf(stderr, "note: --init-joints clamped into joint limits\n");
-            pose = rlk::forward(q);
+            ctx.pose = rlk::forward(ctx.q);
         }
     }
 
     // 速度/加速度限制（0 = 不限制），传入 limitCartDelta。
-    const double maxVelPos   = p.value(oMaxVelPos).toDouble();
-    const double maxVelRot   = p.value(oMaxVelRot).toDouble();
-    const double maxAccelPos = p.value(oMaxAccelPos).toDouble();
-    const double maxAccelRot = p.value(oMaxAccelRot).toDouble();
+    ctx.maxVelPos   = p.value(oMaxVelPos).toDouble();
+    ctx.maxVelRot   = p.value(oMaxVelRot).toDouble();
+    ctx.maxAccelPos = p.value(oMaxAccelPos).toDouble();
+    ctx.maxAccelRot = p.value(oMaxAccelRot).toDouble();
 
-    quint64 ipoc = 1000;
-    quint64 lastSent = 0;
-    quint64 delay    = delayBase;
+    // 会话重启初始位形——在 --init-joints 与 clamp 处理之后捕获。
+    std::copy(ctx.q, ctx.q + 6, ctx.initQ);
 
-    int replies = 0, ipocMismatch = 0, missed = 0;
-    quint64 wrapCount = 0;               // --ipoc-wrap-at 实际回绕次数
-    double maxRttUs = 0.0, sumRttUs = 0.0;
+    ctx.pace.start();
 
-    // 真实 KRC 按固定节拍发帧。若不设节拍而是收到回复就立刻发下一帧，
-    // 面对快速主机会全速空转——那测的是吞吐，不是"能否在周期内回复"，
-    // 而且主机侧实测出来的周期也不再是 cycleMs。
-    QElapsedTimer pace;
-    pace.start();
+    const bool viz = p.isSet(oViz);
+    if (!viz) {
+        return runHeadless(ctx, cycleMs, cycles, sock, host, port);
+    }
 
-    QByteArray heldRob;          // --reorder 缓冲的上周期帧
-    quint64    heldIpoc = 0;
-    bool       heldValid = false;
+    // --viz 模式：QTimer 驱动的事件循环 + 3D 机器人视图
+    RobotView view;
+    view.resize(900, 700);
+    view.setWindowTitle("Comau Racer 7-1.4 — KRC Simulator (RL)");
+    view.show();
 
-    // 发出的帧按序入队，收到回包弹队首比对 IPOC 回显。UDP 保序，乱序/重复
-    // 注入下仍能精确判定主机是否原样回显。--ignore-replies 时不消费，故不入队。
-    std::deque<quint64> sentIpocs;
+    int vizCycle = 0;
+    qint64 nextDueNs = 0;
 
-    // 会话重启状态：restartAtMs 处停发 restartGapMs 毫秒（不发帧、不推进 IPOC、
-    // 不处理回包，但节拍照走），随后复位会话——IPOC 回到 1000、q 回到初始位形、
-    // Delay 回到基值，模拟 KRL 程序重启 / 新 RSI 会话。initQ 在 --init-joints
-    // 与 clamp 处理之后捕获，保证复位到最终生效的初始位形。
-    // restartTriggered 是"已触发过"的一次性门闩，恢复后不再清回，避免 gap
-    // 结束后立刻再触发一次；gapUntilMs < 0 表示当前不在 gap 中 / 无待恢复。
-    bool restartTriggered = false;
-    qint64 gapUntilMs = -1;
-    double initQ[6];
-    std::copy(q, q + 6, initQ);
+    // timer 间隔选 cycleMs/2（不超过 4ms），纯 poll 不引入显著抖动
+    QTimer tick;
+    tick.setTimerType(Qt::PreciseTimer);
 
-    // cycles == 0 → 无限运行（直到 Ctrl+C / 关窗）。双击场景希望一直发帧，
-    // 而不想看到"运行 2 分钟自动退出"。int 溢出需 ~2^31 帧 ≈ 9 年，不现实。
-    for (int i = 0; cycles == 0 || i < cycles; ++i) {
-        // 无限模式下每 500 周期打一次进度，让控制台可见模拟器仍在发帧
-        if (cycles == 0 && i % 500 == 0) {
-            std::printf("i=%d replies=%d missed=%d ipoc_mismatch=%d\n",
-                        i, replies, missed, ipocMismatch);
-            std::fflush(stdout);
-        }
-        // 等到本周期的标称发送时刻（--jitter-us 给节拍加 ±N µs 抖动）
-        const qint64 dueNs = qint64(double(i) * cycleMs * 1.0e6)
-                             + (jitterUs > 0 ? (std::rand() % (2 * jitterUs + 1) - jitterUs) * 1000 : 0);
-        while (pace.nsecsElapsed() < dueNs) {
-            const qint64 remainMs = (dueNs - pace.nsecsElapsed()) / 1000000;
-            if (remainMs > 1)
-                QThread::msleep(1);
-        }
+    QObject::connect(&tick, &QTimer::timeout, [&]() {
+        // 发送到期帧
+        while ((cycles == 0 || vizCycle < cycles)) {
+            const qint64 dueNs = qint64(double(vizCycle) * cycleMs * 1.0e6)
+                                 + (ctx.jitterUs > 0 ? (std::rand() % (2 * ctx.jitterUs + 1) - ctx.jitterUs) * 1000 : 0);
+            if (ctx.pace.nsecsElapsed() < dueNs)
+                break;
 
-        // 会话重启：到 restartAtMs 进入静默 gap。gap 期间不发帧、不推进 IPOC、
-        // 不处理回包（重排缓冲与回显队列都保持不动），但节拍照走。
-        const qint64 nowMs = pace.nsecsElapsed() / 1000000;
-        if (restartAtMs > 0 && !restartTriggered && nowMs >= restartAtMs) {
-            restartTriggered = true;      // 一次性门闩：只重启一次
-            gapUntilMs = nowMs + restartGapMs;
-            std::fprintf(stderr, "session restart at %lld ms\n", nowMs);
-        }
-        const bool inGap = (gapUntilMs >= 0 && nowMs < gapUntilMs);
-        if (inGap) {
-            continue;
-        }
-        if (restartTriggered && gapUntilMs >= 0 && nowMs >= gapUntilMs) {
-            // gap 结束：复位会话（IPOC 重置 + q 复位 + delay 重置），并清空
-            // 重排缓冲与回显队列——新会话从全新账本开始，不留上一会话残留
-            // （否则复位后的首帧回显会被错配到旧队列，误报 ipoc_mismatch）。
-            ipoc = 1000;
-            std::copy(initQ, initQ + 6, q);
-            pose = rlk::forward(q);
-            delay = delayBase;
-            heldValid = false;
-            heldRob.clear();
-            sentIpocs.clear();
-            gapUntilMs = -1;
-            std::fprintf(stderr, "session resumed\n");
-        }
-
-        const bool dup     = active(dupN, i);
-        const bool gap     = active(gapN, i);
-        const bool back    = active(backN, i);
-        const bool drop    = active(dropN, i);
-        const bool reorder = active(reorderN, i);
-        const bool late    = active(lateN, i);
-
-        // 决定本帧 IPOC：dup 重发上一帧；back 回退；gap 前向跳号。
-        quint64 sendIpoc = ipoc;
-        if (dup)         sendIpoc = lastSent;
-        else if (back)   sendIpoc = (lastSent > 0) ? lastSent - 1 : 0;
-        else if (gap)    sendIpoc = ipoc + gapN;
-
-        const QByteArray rob = buildRob(pose, sendIpoc, delay, q);
-
-        auto sendFrame = [&](const QByteArray &rob2, quint64 frameIpoc) {
-            if (late)
-                QThread::msleep(lateN);
-            sock.writeDatagram(rob2, host, port);
-            if (!ignore)
-                sentIpocs.push_back(frameIpoc);
-        };
-
-        if (reorder) {
-            // 本帧缓冲，下周期后发（真乱序）
-            heldRob   = rob;
-            heldIpoc  = sendIpoc;
-            heldValid = true;
-        } else {
-            if (!drop)
-                sendFrame(rob, sendIpoc);          // 本帧先发
-            if (heldValid) {
-                sendFrame(heldRob, heldIpoc);      // 缓冲帧后发（真乱序）
-                heldValid = false;
+            // --- 以下与 runHeadless 的循环体逐行相同（send 部分） ---
+            if (cycles == 0 && vizCycle % 500 == 0) {
+                std::printf("i=%d replies=%d missed=%d ipoc_mismatch=%d\n",
+                            vizCycle, ctx.replies, ctx.missed, ctx.ipocMismatch);
+                std::fflush(stdout);
             }
-        }
-
-        // 推进序列：dup 不推进（下帧还发同一个）；其余推进。
-        if (!dup) {
-            lastSent = sendIpoc;
-            ipoc     = sendIpoc + 1;
-        }
-
-        // 32 位回绕模拟：IPOC 达到 wrapAt 后回到 0（模拟真实 KRC 的溢出回绕）。
-        // 每次回绕使下一帧以 IPOC 0 发出——主机把 0 当解析失败哨兵回显
-        // lastGood 而非 0，于是合法地产生一次 ipoc_mismatch（主机滚动溢出的
-        // 固有局限）。计入 wrapCount，由 PASS 门按预期量放宽（见文件末尾）。
-        if (wrapAt > 0 && ipoc >= wrapAt) {
-            ipoc = 0;
-            ++wrapCount;
-        }
-
-        QElapsedTimer rtt;
-        rtt.start();
-        // 等待本周期内的回包。注意不能用 waitForReadyRead 的返回值当作
-        // "收到回复"：端口关闭时 Windows 的 ICMP port-unreachable 也会让它
-        // 返回 true，那样该周期既不计 replies 也不计 timeouts，
-        // cycles == replies + missed 就不再成立。只认解析成功的 <Sen>。
-        if (!ignore) {
-            const int budgetMs = std::max(1, int(cycleMs));
-            bool got = false;
-            if (sock.waitForReadyRead(budgetMs)) {
-                while (sock.hasPendingDatagrams()) {
-                    const QByteArray d = sock.receiveDatagram().data();
-                    Pose korr;
-                    quint64 echoed = 0;
-                    if (parseSen(d, &korr, &echoed)) {
-                        ++replies;
-                        got = true;
-                        if (!sentIpocs.empty()) {
-                            if (echoed != sentIpocs.front())
-                                ++ipocMismatch;
-                            sentIpocs.pop_front();
-                        }
-                        // 关节模型：笛卡尔 RKorr → 限制 → 目标位姿 → RL 一次逆解
-                        // → q → 正解回报（目标位姿法，替代逐周期雅可比伪逆）。
-                        Pose dx = korr;                     // 笛卡尔增量（mm, °）
-                        kr210::limitCartDelta(&dx, prevDx,
-                                              maxVelPos, maxVelRot,
-                                              maxAccelPos, maxAccelRot,
-                                              cycleMs / 1000.0);
-                        // 目标位姿 = 当前位姿（正解）+ 限制后的增量。
-                        Pose target = pose;
-                        target.x += dx.x;
-                        target.y += dx.y;
-                        target.z += dx.z;
-                        target.a += dx.a;
-                        target.b += dx.b;
-                        target.c += dx.c;
-                        // 笛卡尔额外约束：clamp 目标位姿再逆解（模拟「机器人被
-                        // 笛卡尔限位挡住」——主机看到 RIst 停在限位）。
-                        if (cartLimitsSet) {
-                            target.x = std::clamp(target.x, cartLim[0], cartLim[1]);
-                            target.y = std::clamp(target.y, cartLim[2], cartLim[3]);
-                            target.z = std::clamp(target.z, cartLim[4], cartLim[5]);
-                            target.a = std::clamp(target.a, cartLim[6], cartLim[7]);
-                            target.b = std::clamp(target.b, cartLim[8], cartLim[9]);
-                            target.c = std::clamp(target.c, cartLim[10], cartLim[11]);
-                        }
-                        double qNew[6];
-                        if (rlk::inverse(target, qNew)) {
-                            for (int i = 0; i < 6; ++i) {
-                                // 关节限位 clamp（与 RL 内部限位双重保险；
-                                // --joint-limits 覆盖本地副本后在此生效）
-                                q[i] = std::clamp(qNew[i], lim.min[i], lim.max[i]);
-                            }
-                        }
-                        // 逆解失败（目标不可达）保持旧 q（安全回退）。
-                        pose = rlk::forward(q);             // RIst = 真实几何正解
-                        prevDx = dx;
-                    }
+            const qint64 nowMs = ctx.pace.nsecsElapsed() / 1000000;
+            if (ctx.restartAtMs > 0 && !ctx.restartTriggered && nowMs >= ctx.restartAtMs) {
+                ctx.restartTriggered = true;
+                ctx.gapUntilMs = nowMs + ctx.restartGapMs;
+                std::fprintf(stderr, "session restart at %lld ms\n", nowMs);
+            }
+            const bool inGap = (ctx.gapUntilMs >= 0 && nowMs < ctx.gapUntilMs);
+            if (!inGap) {
+                if (ctx.restartTriggered && ctx.gapUntilMs >= 0 && nowMs >= ctx.gapUntilMs) {
+                    ctx.ipoc = 1000;
+                    std::copy(ctx.initQ, ctx.initQ + 6, ctx.q);
+                    ctx.pose = rlk::forward(ctx.q);
+                    ctx.delay = ctx.delayBase;
+                    ctx.heldValid = false;
+                    ctx.heldRob.clear();
+                    ctx.sentIpocs.clear();
+                    ctx.gapUntilMs = -1;
+                    std::fprintf(stderr, "session resumed\n");
                 }
+                const bool dup     = active(ctx.dupN, vizCycle);
+                const bool gap     = active(ctx.gapN, vizCycle);
+                const bool back    = active(ctx.backN, vizCycle);
+                const bool drop    = active(ctx.dropN, vizCycle);
+                const bool reorder = active(ctx.reorderN, vizCycle);
+                const bool late    = active(ctx.lateN, vizCycle);
+                quint64 sendIpoc = ctx.ipoc;
+                if (dup)         sendIpoc = ctx.lastSent;
+                else if (back)   sendIpoc = (ctx.lastSent > 0) ? ctx.lastSent - 1 : 0;
+                else if (gap)    sendIpoc = ctx.ipoc + ctx.gapN;
+                const QByteArray rob = buildRob(ctx.pose, sendIpoc, ctx.delay, ctx.q);
+                auto sendFrame = [&](const QByteArray &r, quint64 ip) {
+                    if (late) QThread::msleep(ctx.lateN);
+                    sock.writeDatagram(r, host, port);
+                    if (!ctx.ignore) ctx.sentIpocs.push_back(ip);
+                };
+                if (reorder) {
+                    ctx.heldRob = rob; ctx.heldIpoc = sendIpoc; ctx.heldValid = true;
+                } else {
+                    if (!drop) sendFrame(rob, sendIpoc);
+                    if (ctx.heldValid) { sendFrame(ctx.heldRob, ctx.heldIpoc); ctx.heldValid = false; }
+                }
+                if (!dup) { ctx.lastSent = sendIpoc; ctx.ipoc = sendIpoc + 1; }
+                if (ctx.wrapAt > 0 && ctx.ipoc >= ctx.wrapAt) { ctx.ipoc = 0; ++ctx.wrapCount; }
             }
-            if (got) {
+            ++vizCycle;
+        }
+        nextDueNs = qint64(double(vizCycle) * cycleMs * 1.0e6);
+
+        // 收包（非阻塞 drain）
+        if (!ctx.ignore) {
+            while (sock.hasPendingDatagrams()) {
+                const QByteArray d = sock.receiveDatagram().data();
+                Pose korr;
+                quint64 echoed = 0;
+                if (!parseSen(d, &korr, &echoed))
+                    continue;
+                ++ctx.replies;
+                if (!ctx.sentIpocs.empty()) {
+                    if (echoed != ctx.sentIpocs.front())
+                        ++ctx.ipocMismatch;
+                    ctx.sentIpocs.pop_front();
+                }
+                QElapsedTimer rtt;
+                rtt.start();
+                Pose dx = korr;
+                kr210::limitCartDelta(&dx, ctx.prevDx,
+                                      ctx.maxVelPos, ctx.maxVelRot,
+                                      ctx.maxAccelPos, ctx.maxAccelRot,
+                                      cycleMs / 1000.0);
+                Pose target = ctx.pose;
+                target.x += dx.x; target.y += dx.y; target.z += dx.z;
+                target.a += dx.a; target.b += dx.b; target.c += dx.c;
+                if (ctx.cartLimitsSet) {
+                    target.x = std::clamp(target.x, ctx.cartLim[0], ctx.cartLim[1]);
+                    target.y = std::clamp(target.y, ctx.cartLim[2], ctx.cartLim[3]);
+                    target.z = std::clamp(target.z, ctx.cartLim[4], ctx.cartLim[5]);
+                    target.a = std::clamp(target.a, ctx.cartLim[6], ctx.cartLim[7]);
+                    target.b = std::clamp(target.b, ctx.cartLim[8], ctx.cartLim[9]);
+                    target.c = std::clamp(target.c, ctx.cartLim[10], ctx.cartLim[11]);
+                }
+                double qNew[6];
+                if (rlk::inverse(target, qNew)) {
+                    for (int i = 0; i < 6; ++i)
+                        ctx.q[i] = std::clamp(qNew[i], ctx.lim.min[i], ctx.lim.max[i]);
+                }
+                ctx.pose = rlk::forward(ctx.q);
+                ctx.prevDx = dx;
                 const double us = rtt.nsecsElapsed() / 1000.0;
-                maxRttUs = std::max(maxRttUs, us);
-                sumRttUs += us;
-            } else {
-                ++missed;
+                ctx.maxRttUs = std::max(ctx.maxRttUs, us);
+                ctx.sumRttUs += us;
             }
         } else {
-            // 模拟 SENTYPE 错配：KRC 静默丢弃每一帧回包，主机毫无察觉，
-            // 只有 KRC 自己的 Delay 计数在涨。这里递增 delay，触发主机
-            // 的"KRC Delay 连续 3 帧递增 → Fault"运行中保护。
-            ++missed;
-            delay += 1;
+            // ignore 模式：drain 但不消费（等 host 超时判 missed）
+            while (sock.hasPendingDatagrams())
+                sock.receiveDatagram();
         }
-    }
 
-    std::printf("cycles=%d replies=%d missed=%d ipoc_mismatch=%d delay=%llu\n",
-                cycles, replies, missed, ipocMismatch,
-                static_cast<unsigned long long>(delay));
-    std::printf("rtt_avg_us=%.1f rtt_max_us=%.1f\n",
-                replies ? sumRttUs / replies : 0.0, maxRttUs);
-    std::printf("final_pose X=%.3f Y=%.3f Z=%.3f A=%.3f B=%.3f C=%.3f\n",
-                pose.x, pose.y, pose.z, pose.a, pose.b, pose.c);
+        // 更新 3D 视图
+        if (ctx.pose.x != 0 || ctx.pose.y != 0 || ctx.pose.z != 0) {
+            const rlk::Skeleton skel = rlk::skeleton();
+            double qDeg[6];
+            for (int i = 0; i < 6; ++i)
+                qDeg[i] = ctx.q[i] * 180.0 / M_PI;
+            view.updateRobot(skel, qDeg);
+        }
+        view.setCycleInfo(vizCycle, ctx.replies, ctx.missed);
 
-    // 主机必须始终原样回显 IPOC（即使对异常帧回零增量）。无注入时还要求
-    // 每帧都回包；有注入时丢包是预期行为，只查回显正确。
-    // --ipoc-wrap-at 模拟真实 KRC 的 32 位溢出回绕：主机把 IPOC 0 当作解析
-    // 失败哨兵（RsiWorker 对 ipoc==0 回显 lastGood 而非 0），所以每次回绕的
-    // 那帧必然被记一次 ipoc_mismatch——这是主机对滚动溢出的固有局限，不是
-    // 链路错误。计数实际回绕次数，允许等量的预期不匹配；超过才算失败。
-    const quint64 expectedMismatch = wrapAt > 0 ? wrapCount : 0;
-    const bool pass = ipocMismatch <= expectedMismatch
-                      && (injected || replies == cycles);
-    if (wrapAt > 0) {
-        std::printf("ipoc_wrap_at=%llu wraps=%llu (each wrap-to-0 yields one "
-                    "expected ipoc_mismatch: host IPOC-0 sentinel)\n",
-                    static_cast<unsigned long long>(wrapAt),
-                    static_cast<unsigned long long>(wrapCount));
-    }
-    std::printf("%s\n", pass ? "PASS" : "FAIL");
-    return pass ? 0 : 1;
+        // 完成条件（cycles > 0 时）
+        if (cycles > 0 && vizCycle >= cycles && ctx.sentIpocs.empty()) {
+            tick.stop();
+            std::printf("cycles=%d replies=%d missed=%d ipoc_mismatch=%d delay=%llu\n",
+                        cycles, ctx.replies, ctx.missed, ctx.ipocMismatch,
+                        static_cast<unsigned long long>(ctx.delay));
+            std::printf("rtt_avg_us=%.1f rtt_max_us=%.1f\n",
+                        ctx.replies ? ctx.sumRttUs / ctx.replies : 0.0, ctx.maxRttUs);
+            std::printf("final_pose X=%.3f Y=%.3f Z=%.3f A=%.3f B=%.3f C=%.3f\n",
+                        ctx.pose.x, ctx.pose.y, ctx.pose.z, ctx.pose.a, ctx.pose.b, ctx.pose.c);
+            const quint64 em = ctx.wrapAt > 0 ? ctx.wrapCount : 0;
+            const bool pass = ctx.ipocMismatch <= em && (ctx.injected || ctx.replies == cycles);
+            std::printf("%s\n", pass ? "PASS" : "FAIL");
+            QApplication::quit();
+        }
+    });
+
+    tick.start(std::max(1, int(std::min(4.0, cycleMs * 0.5))));
+    return app.exec();
 }
