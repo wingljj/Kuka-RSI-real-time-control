@@ -27,3 +27,12 @@
 - 实测周期回填 `cycle_ms`（联锁会校验偏差 ≤ 10%）
 - KRC `<Delay>` 全程为 0（非 0 即链路异常，联锁会 Fault）
 - 五层限值梯度仍单调
+
+## 本轮新增验证项
+
+| 场景 | 工具 | 预期 | 判定 |
+|---|---|---|---|
+| 姿态多圈累计 | `test_pose_controller` rotatedOverLimit_firesViaCommandedSumEvenIfRistWraps | commandedSum 兜底触发 Fault | 单测 PASS |
+| 目标平滑 | `test_pose_controller` smoothing_* 4 用例 | 阶跃削平 / τ=0 直通 / reset 同步 / 稳态不变 | 单测 PASS |
+| UI 状态卡 | 手动驱动 GUI | 颜色分级 + 诊断字段 | 手动 |
+| 两阶段使能 | 手动驱动 GUI | 准备→确认→已使能；Fault→归零并复位 | 手动 |
