@@ -11,6 +11,7 @@
 #include <QVBoxLayout>
 #include <QMessageBox>
 #include <cmath>
+#include "core/SessionGuard.h"
 #include "ui/ErrorChart.h"
 
 namespace {
@@ -74,6 +75,12 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     bar->addWidget(m_safetyNote);
 
     outer->addLayout(bar);
+
+    m_interlockLabel = new QLabel(this);
+    m_interlockLabel->setStyleSheet("color: #b00; font-weight: bold;");
+    m_interlockLabel->setWordWrap(true);
+    m_interlockLabel->hide();
+    outer->addWidget(m_interlockLabel);
 
     // 可压缩的内容放进滚动区：窗口再小也能滚到，而顶部的状态栏与控制栏始终
     // 可见。这样"看得到状态、按得到停止"就不再是一个取决于屏幕尺寸的巧合。
@@ -217,6 +224,8 @@ void MainWindow::onStartListening()
     m_cfg.listenPort = quint16(m_portSpin->value());
     // 先把新地址推给通信线程，再让它绑定。两者都走同一条队列，投递顺序
     // 因此有保证——不必担心 start() 抢在 applyConfig() 之前拿到旧地址。
+    if (m_interlockLabel)
+        m_interlockLabel->hide();
     QMetaObject::invokeMethod(m_worker, "applyConfig",
                               Qt::QueuedConnection, Q_ARG(AppConfig, m_cfg));
     QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
@@ -411,11 +420,14 @@ void MainWindow::onRefresh()
     else if (s.state == TrackState::Fault)
         st += "  故障: " + s.faultReason;
     st += QStringLiteral("   IPOC %1   周期 %2 ms   最大回包 %3 µs"
-                         "   丢包 %4")
+                         "   丢包 %4   KRC丢包 %5   异源 %6   发送失败 %7")
               .arg(s.ipoc)
               .arg(s.measuredCycleMs, 0, 'f', 1)
               .arg(s.maxReplyUs, 0, 'f', 0)
-              .arg(s.missedCount);
+              .arg(s.missedCount)
+              .arg(s.krcDelay)
+              .arg(s.peerRejected)
+              .arg(s.sendFails);
     // Fault 是锁存的：PoseController::setTracking(true) 在 Fault 下不会转
     // Tracking，必须先经「归零到当前位姿」清除。所以此时勾选框若还打着勾，
     // 显示的就是一个与机器状态不符的谎言——强制取消勾选。
@@ -454,6 +466,22 @@ void MainWindow::onTrackingToggled(bool on)
 {
     if (!m_worker)
         return;
+    if (on) {
+        // 联锁：硬拦截无覆盖。不通过就不置勾，红字列出全部原因。
+        const StatusSnapshot s = m_state.snapshot();
+        const QStringList blocked =
+            SessionGuard::enableChecks(m_cfg, s.measuredCycleMs);
+        if (!blocked.isEmpty()) {
+            m_trackCheck->blockSignals(true);
+            m_trackCheck->setChecked(false);
+            m_trackCheck->blockSignals(false);
+            m_interlockLabel->setText(QStringLiteral("使能被拦截：\n")
+                                      + blocked.join(QLatin1Char('\n')));
+            m_interlockLabel->show();
+            return;
+        }
+        m_interlockLabel->hide();
+    }
     // 必须排队：直连会在通信线程 step() 读状态的同时改写它。
     QMetaObject::invokeMethod(m_worker, "setTracking",
                               Qt::QueuedConnection, Q_ARG(bool, on));

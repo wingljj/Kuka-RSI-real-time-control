@@ -70,6 +70,9 @@ private:
     QCheckBox *m_trackCheck = nullptr;
     QLabel    *m_safetyNote = nullptr;
 
+    // 联锁拦截原因（红字）。硬拦截：使能不通过时置红字，无覆盖入口。
+    QLabel *m_interlockLabel = nullptr;
+
     // 连接配置与手动监听控制。没有这些的话 bindFailed 是个死局：
     // 弹一次对话框之后应用永久停在未连接，只能改 JSON 再重启。
     QLineEdit  *m_ipEdit    = nullptr;
