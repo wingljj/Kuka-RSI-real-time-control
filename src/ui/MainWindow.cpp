@@ -56,12 +56,14 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
             this, &MainWindow::onZeroToActual);
     bar->addWidget(zeroBtn);
 
-    // 两段式使能：构造时不勾选，连接本身不会启动运动。操作员先看读数是否
-    // 合理，再手动勾选。任何"连上就自动使能"的便利都不可接受。
-    m_trackCheck = new QCheckBox("使能跟踪", this);
-    connect(m_trackCheck, &QCheckBox::toggled,
-            this, &MainWindow::onTrackingToggled);
-    bar->addWidget(m_trackCheck);
+    // 两阶段使能：构造时按钮置灰，连接本身不会启动运动。操作员先看读数是否
+    // 合理，再点「准备跟踪」经确认框后启用。任何"连上就自动使能"的便利都
+    // 不可接受。
+    m_enableBtn = new QPushButton("准备跟踪", this);
+    m_enableBtn->setEnabled(false);   // 首帧前不可用
+    connect(m_enableBtn, &QPushButton::clicked,
+            this, &MainWindow::onPrepareTracking);
+    bar->addWidget(m_enableBtn);
 
     auto *stopBtn = new QPushButton("停止跟踪", this);
     connect(stopBtn, &QPushButton::clicked,
@@ -245,10 +247,8 @@ void MainWindow::onStopListening()
         return;
     QMetaObject::invokeMethod(m_worker, "stop", Qt::QueuedConnection);
     m_listening = false;
-    // socket 一关就不可能再有回包，跟踪也就无从谈起。让勾选框如实反映这点，
-    // 而不是留一个打着勾的控件覆盖一台已经断开的机器。
-    if (m_trackCheck)
-        m_trackCheck->setChecked(false);
+    // socket 一关就不可能再有回包，跟踪也就无从谈起。按钮状态由 onRefresh
+    // 依据 s.connected 统一刷新，这里不必手动置灰。
     updateConnControls();
 }
 
@@ -481,11 +481,17 @@ void MainWindow::onRefresh()
             .arg(s.lifetimeLost)
             .arg(s.krcDelay));
 
-    // Fault 是锁存的：PoseController::setTracking(true) 在 Fault 下不会转
-    // Tracking，必须先经「归零到当前位姿」清除。所以此时勾选框若还打着勾，
-    // 显示的就是一个与机器状态不符的谎言——强制取消勾选。
-    if (s.state == TrackState::Fault && m_trackCheck->isChecked())
-        m_trackCheck->setChecked(false);
+    // ── 使能按钮状态机 ──
+    if (s.state == TrackState::Fault) {
+        m_enableBtn->setText("归零并复位");
+        m_enableBtn->setEnabled(true);
+    } else if (s.state == TrackState::Tracking) {
+        m_enableBtn->setText("已使能跟踪");
+        m_enableBtn->setEnabled(false);
+    } else {
+        m_enableBtn->setText("准备跟踪");
+        m_enableBtn->setEnabled(s.connected);
+    }
 
     m_chart->updateFrom(m_ring);
 }
@@ -510,32 +516,54 @@ void MainWindow::onZeroToActual()
         m_targetSlider[i]->setValue(int(v[i] * 10.0));
     }
     m_suppressTargetSignal = false;
-    m_trackCheck->setChecked(false);
 }
 
-void MainWindow::onTrackingToggled(bool on)
+void MainWindow::onPrepareTracking()
 {
     if (!m_worker)
         return;
-    if (on) {
-        // 联锁：硬拦截无覆盖。不通过就不置勾，红字列出全部原因。
-        const StatusSnapshot s = m_state.snapshot();
-        const QStringList blocked =
-            SessionGuard::enableChecks(m_cfg, s.measuredCycleMs);
-        if (!blocked.isEmpty()) {
-            m_trackCheck->blockSignals(true);
-            m_trackCheck->setChecked(false);
-            m_trackCheck->blockSignals(false);
-            m_interlockLabel->setText(QStringLiteral("使能被拦截：\n")
-                                      + blocked.join(QLatin1Char('\n')));
-            m_interlockLabel->show();
-            return;
-        }
-        m_interlockLabel->hide();
+    const StatusSnapshot s = m_state.snapshot();
+
+    if (s.state == TrackState::Fault) {
+        // 故障锁存：必须归零并复位才能重新使能
+        QMetaObject::invokeMethod(m_worker, "resetToActual",
+                                  Qt::QueuedConnection);
+        return;   // 按钮文本由 onRefresh 统一刷新
     }
-    // 必须排队：直连会在通信线程 step() 读状态的同时改写它。
+
+    // 联锁：硬拦截无覆盖
+    const QStringList blocked =
+        SessionGuard::enableChecks(m_cfg, s.measuredCycleMs);
+    if (!blocked.isEmpty()) {
+        m_interlockLabel->setText(QStringLiteral("使能被拦截：\n")
+                                  + blocked.join(QLatin1Char('\n')));
+        m_interlockLabel->show();
+        return;
+    }
+    m_interlockLabel->hide();
+
+    // 两阶段确认：操作员核对 BASE/TOOL、目标位姿、限值余量
+    const Pose t = s.target;
+    const QMessageBox::StandardButton r = QMessageBox::question(
+        this, "确认使能跟踪",
+        QStringLiteral(
+            "使能前请确认：\n"
+            "1. 示教器当前 BASE / TOOL 正确\n"
+            "2. 目标位姿符合预期\n"
+            "3. 限值余量足够（累积 %1 / 上限 %2）\n\n"
+            "当前目标: X %3  Y %4  Z %5  A %6  B %7  C %8\n\n"
+            "继续？")
+            .arg(s.accum.x, 0, 'f', 1)
+            .arg(m_cfg.accumLimitPosMm, 0, 'f', 1)
+            .arg(t.x, 0, 'f', 1).arg(t.y, 0, 'f', 1)
+            .arg(t.z, 0, 'f', 1).arg(t.a, 0, 'f', 1)
+            .arg(t.b, 0, 'f', 1).arg(t.c, 0, 'f', 1),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (r != QMessageBox::Yes)
+        return;
+
     QMetaObject::invokeMethod(m_worker, "setTracking",
-                              Qt::QueuedConnection, Q_ARG(bool, on));
+                              Qt::QueuedConnection, Q_ARG(bool, true));
 }
 
 void MainWindow::onStopTracking()
@@ -544,6 +572,6 @@ void MainWindow::onStopTracking()
     // 但通信线程一个周期都不停地继续回包。停止回包会让 RSI 判定通信故障
     // 并直接错误停机（第 4 层），那不是"停下"而是"摔停"。
     // 真正的急停只有示教器上的物理按钮，界面上的红字提示说的就是这件事。
-    m_trackCheck->setChecked(false);
+    // 软停止走 onZeroToActual（目标归零 → 误差零 → 停），按钮状态由 onRefresh 管。
     onZeroToActual();
 }

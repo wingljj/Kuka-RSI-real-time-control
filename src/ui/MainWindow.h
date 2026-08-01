@@ -1,5 +1,4 @@
 #pragma once
-#include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -27,7 +26,7 @@ private slots:
     void onRefresh();
     void onTargetEdited();
     void onZeroToActual();
-    void onTrackingToggled(bool on);
+    void onPrepareTracking();
     void onStopTracking();
     void onStartListening();
     void onStopListening();
@@ -68,8 +67,7 @@ private:
     QLabel *m_stateDetail = nullptr;   // 次行诊断详情
     ErrorChart *m_chart   = nullptr;
 
-    // 两段式使能：连接不等于运动，操作员确认数值后才勾选。
-    QCheckBox *m_trackCheck = nullptr;
+    QPushButton *m_enableBtn = nullptr;   // 两阶段使能：准备→确认→已使能
     QLabel    *m_safetyNote = nullptr;
 
     // 联锁拦截原因（红字）。硬拦截：使能不通过时置红字，无覆盖入口。
