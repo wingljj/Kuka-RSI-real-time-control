@@ -72,9 +72,11 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 
     bar->addStretch();
     m_safetyNote = new QLabel(
-        "「停止跟踪」是软停止，不是急停。急停只能用示教器上的物理急停按钮。",
+        "⚠ 软件停止 = 目标归零并继续回包。急停只有示教器上的物理急停按钮。",
         this);
-    m_safetyNote->setStyleSheet("color: #b00; font-weight: bold;");
+    m_safetyNote->setStyleSheet(
+        "background-color: #fdd; color: #900; font-weight: bold; "
+        "padding: 4px 8px; border: 1px solid #c00;");
     // 刻意不开 setWordWrap：关闭自动换行时 QLabel::minimumSizeHint() 等于整段
     // 文本的宽度，布局因此不可能把这条提示截断——窗口只会拒绝再变窄。开了
     // 换行反而允许标签被压成一行高度而把后半句藏掉，那是安全提示最坏的失效
