@@ -1,5 +1,6 @@
 // 假 KRC：按固定周期发 <Rob>、收 <Sen>，验证上位机的实时行为。
-// 把收到的 RKorr 累加到自身位姿，模拟 RELATIVE 修正语义。
+// 关节模型：q[6] 状态，收到的 RKorr（笛卡尔增量）经 limitCartDelta 限制 +
+// 雅可比伪逆 solveDelta 转关节增量并 clamp 到限位，forward 正解回报 RIst/AIPos。
 // 支持故障注入：--ipoc-dup/--ipoc-gap/--ipoc-back/--drop/--reorder/--late-ms
 // /--ignore-replies/--send-delay，用于验证主机的异常处理路径。
 #include <QCoreApplication>
@@ -14,15 +15,17 @@
 #include <cmath>
 #include <cstdio>
 #include <deque>
+#include <QStringList>
 #include "core/Pose.h"
 #include "core/RsiCodec.h"
+#include "tools/krc_simulator/kinematics.h"
 
 namespace {
 
-QByteArray buildRob(const Pose &p, quint64 ipoc, quint64 delay)
+QByteArray buildRob(const Pose &p, quint64 ipoc, quint64 delay, const double *q)
 {
     QByteArray s;
-    s.reserve(320);
+    s.reserve(480);
     s += "<Rob Type=\"KUKA\">\n<RIst";
     const char *k[6] = {" X=\"", " Y=\"", " Z=\"",
                         " A=\"", " B=\"", " C=\""};
@@ -42,7 +45,25 @@ QByteArray buildRob(const Pose &p, quint64 ipoc, quint64 delay)
     s += QByteArray::number(delay);
     s += "\"/>\n<IPOC>";
     s += QByteArray::number(ipoc);
-    s += "</IPOC>\n</Rob>";
+    s += "</IPOC>";
+    // 关节角（rad → 度）。真实 KRC 的 ethernet.xml 会请求 AIPos/ASPos。
+    s += "\n<AIPos";
+    for (int i = 0; i < 6; ++i) {
+        s += " A";
+        s += QByteArray::number(i + 1);
+        s += "=\"";
+        s += QByteArray::number(q[i] * 180.0 / M_PI, 'f', 4);
+        s += '"';
+    }
+    s += "/>\n<ASPos";
+    for (int i = 0; i < 6; ++i) {
+        s += " A";
+        s += QByteArray::number(i + 1);
+        s += "=\"";
+        s += QByteArray::number(q[i] * 180.0 / M_PI, 'f', 4);
+        s += '"';
+    }
+    s += "/>\n</Rob>";
     return s;
 }
 
@@ -107,8 +128,19 @@ int main(int argc, char **argv)
     QCommandLineOption oLate("late-ms", "every Nth frame delay N ms", "n", "0");
     QCommandLineOption oIgnore("ignore-replies", "drop replies and raise Delay", "");
     QCommandLineOption oDelay("send-delay", "fixed Delay value in every frame", "n", "0");
+    QCommandLineOption oInitJoints("init-joints", "initial joint angles deg \"q1..q6\"", "q", "");
+    QCommandLineOption oJointLimits("joint-limits", "override joint limits deg \"min1 max1 ... min6 max6\"", "s", "");
+    QCommandLineOption oCartLimits("cart-limits", "cartesian pose ranges \"xmin xmax ... cmin cmax\"", "s", "");
+    QCommandLineOption oMaxVelPos("max-vel-pos", "cartesian position velocity limit mm/s (0=off)", "mm/s", "0");
+    QCommandLineOption oMaxVelRot("max-vel-rot", "cartesian rotation velocity limit deg/s (0=off)", "deg/s", "0");
+    QCommandLineOption oMaxAccelPos("max-accel-pos", "cartesian position acceleration limit mm/s2 (0=off)", "mm/s2", "0");
+    QCommandLineOption oMaxAccelRot("max-accel-rot", "cartesian rotation acceleration limit deg/s2 (0=off)", "deg/s2", "0");
+    QCommandLineOption oSelfTest("self-test", "run forward-kinematics self-test and exit", "");
     p.addOptions({oHost, oPort, oCycle, oCount, oDup, oGap, oBack,
-                  oDrop, oReorder, oLate, oIgnore, oDelay});
+                  oDrop, oReorder, oLate, oIgnore, oDelay,
+                  oInitJoints, oJointLimits, oCartLimits,
+                  oMaxVelPos, oMaxVelRot, oMaxAccelPos, oMaxAccelRot,
+                  oSelfTest});
     p.process(app);
 
     const QHostAddress host(p.value(oHost));
@@ -128,6 +160,28 @@ int main(int argc, char **argv)
     const bool injected = dupN > 0 || gapN > 0 || backN > 0 || dropN > 0
                           || reorderN > 0 || lateN > 0 || ignore;
 
+    if (p.isSet(oSelfTest)) {
+        // 正解一致性：已知位形的期望位姿。zero-pose z = d1−d4+d6 = 675−1200+240 = −285。
+        struct Case { double q[6]; double x, y, z, a, b, c; };
+        const Case cases[] = {
+            { {0, 0, 0, 0, 0, 0}, 1541.0, 0.0, -285.0, 0, 0, 0 },
+            // 更多位形可由 Task 1 单测值补充
+        };
+        for (const auto &c : cases) {
+            const Pose got = kr210::forward(c.q);
+            if (std::fabs(got.x - c.x) > 1e-6 || std::fabs(got.y - c.y) > 1e-6
+                || std::fabs(got.z - c.z) > 1e-6
+                || std::fabs(got.a - c.a) > 1e-6
+                || std::fabs(got.b - c.b) > 1e-6
+                || std::fabs(got.c - c.c) > 1e-6) {
+                std::fprintf(stderr, "self-test FAIL\n");
+                return 2;
+            }
+        }
+        std::printf("self-test OK\n");
+        return 0;
+    }
+
     QUdpSocket sock;
     if (!sock.bind(QHostAddress::AnyIPv4, 0)) {
         std::fprintf(stderr, "simulator bind failed: %s\n",
@@ -135,7 +189,50 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    Pose pose{1250.0, 0.0, 1000.0, 0.0, 90.0, 0.0};
+    // 关节状态：默认工作位形（腕部非奇异 σ_min≈0.87；原 [0,-45,45,0,0,0] 腕部奇异），
+    // 或 --init-joints。内部一律 rad。
+    double q[6] = {0, -60.0 * M_PI / 180.0, 30.0 * M_PI / 180.0,
+                   0, 90.0 * M_PI / 180.0, 0};
+    kr210::JointLimits lim = kr210::limits();   // 本地副本，--joint-limits 可覆盖
+    Pose pose = kr210::forward(q);              // RIst 初值 = 真实几何正解
+    Pose prevDx{};                              // 加速度限制的上一周期增量
+
+    // --init-joints：6 个度值 → rad。
+    if (p.isSet(oInitJoints)) {
+        const QStringList toks = p.value(oInitJoints).split(' ', Qt::SkipEmptyParts);
+        bool ok = toks.size() == 6;
+        for (int i = 0; i < 6 && ok; ++i)
+            q[i] = toks[i].toDouble(&ok) * M_PI / 180.0;
+        if (!ok) {
+            std::fprintf(stderr, "bad --init-joints \"%s\" (need 6 deg values)\n",
+                         qPrintable(p.value(oInitJoints)));
+            return 2;
+        }
+        pose = kr210::forward(q);
+    }
+
+    // --joint-limits：12 个度值（min1 max1 ... min6 max6）→ rad。
+    if (p.isSet(oJointLimits)) {
+        const QStringList toks = p.value(oJointLimits).split(' ', Qt::SkipEmptyParts);
+        bool ok = toks.size() == 12;
+        for (int i = 0; i < 6 && ok; ++i) {
+            lim.min[i] = toks[2 * i].toDouble(&ok) * M_PI / 180.0;
+            if (ok)
+                lim.max[i] = toks[2 * i + 1].toDouble(&ok) * M_PI / 180.0;
+        }
+        if (!ok) {
+            std::fprintf(stderr, "bad --joint-limits \"%s\" (need 12 deg values)\n",
+                         qPrintable(p.value(oJointLimits)));
+            return 2;
+        }
+    }
+
+    // 速度/加速度限制（0 = 不限制），传入 limitCartDelta。
+    const double maxVelPos   = p.value(oMaxVelPos).toDouble();
+    const double maxVelRot   = p.value(oMaxVelRot).toDouble();
+    const double maxAccelPos = p.value(oMaxAccelPos).toDouble();
+    const double maxAccelRot = p.value(oMaxAccelRot).toDouble();
+
     quint64 ipoc = 1000;
     quint64 lastSent = 0;
     quint64 delay    = delayBase;
@@ -179,7 +276,7 @@ int main(int argc, char **argv)
         else if (back)   sendIpoc = (lastSent > 0) ? lastSent - 1 : 0;
         else if (gap)    sendIpoc = ipoc + gapN;
 
-        const QByteArray rob = buildRob(pose, sendIpoc, delay);
+        const QByteArray rob = buildRob(pose, sendIpoc, delay, q);
 
         auto sendFrame = [&](const QByteArray &rob2, quint64 frameIpoc) {
             if (late)
@@ -231,11 +328,22 @@ int main(int argc, char **argv)
                                 ++ipocMismatch;
                             sentIpocs.pop_front();
                         }
-                        // RELATIVE：增量累加到当前位姿
-                        pose.x += korr.x; pose.y += korr.y; pose.z += korr.z;
-                        pose.a = wrap180(pose.a + korr.a);
-                        pose.b = wrap180(pose.b + korr.b);
-                        pose.c = wrap180(pose.c + korr.c);
+                        // 关节模型：笛卡尔 RKorr → 限制 → 雅可比伪逆 → q → 正解回报
+                        Pose dx = korr;                     // 笛卡尔增量（mm, °）
+                        kr210::limitCartDelta(&dx, prevDx,
+                                              maxVelPos, maxVelRot,
+                                              maxAccelPos, maxAccelRot,
+                                              cycleMs / 1000.0);
+                        double dq[6];
+                        if (kr210::solveDelta(q, dx, dq)) {
+                            for (int i = 0; i < 6; ++i) {
+                                q[i] += dq[i];
+                                // 关节限位 clamp
+                                q[i] = std::clamp(q[i], lim.min[i], lim.max[i]);
+                            }
+                        }
+                        pose = kr210::forward(q);           // RIst = 真实几何正解
+                        prevDx = dx;
                     }
                 }
             }
