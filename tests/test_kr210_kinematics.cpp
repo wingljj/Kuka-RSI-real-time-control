@@ -165,12 +165,18 @@ private slots:
 
     void limitCartDelta_accelClamps()
     {
-        Pose dx{0.6, 0, 0, 0, 0, 0};             // 已达速度限
-        const Pose prev{0.6, 0, 0, 0, 0, 0};     // 上一周期也是 0.6（匀速）
-        // 加速度限 1000 mm/s²：变化 ≤ 1000×0.012² = 0.144/周期
+        // 加速度限制：|Δ − Δprev| ≤ acc（每分量）。带内增量保持不变。
+        // acc = 1000 mm/s² × 0.012² = 0.144/周期。
+        // 同向续行：Δprev=0.6，Δ=0.6，变化 0 ≤ 0.144 → 保持 0.6（不衰减）。
+        Pose dx{0.6, 0, 0, 0, 0, 0};
+        const Pose prev{0.6, 0, 0, 0, 0, 0};
         kr210::limitCartDelta(&dx, prev, 1000.0, 1000.0, 1000.0, 1000.0, 0.012);
-        QVERIFY(qAbs(dx.x - (0.6 - 0.144)) < 1e-9);  // 被压回 0.456
-        QVERIFY(qAbs(dx.x - 0.456) < 1e-9);
+        QCOMPARE(dx.x, 0.6);
+        // 反向：Δprev=−0.6，Δ=0.6，变化 1.2 > 0.144 → 压回 −0.6+0.144 = −0.456
+        Pose dxr{0.6, 0, 0, 0, 0, 0};
+        const Pose prevr{-0.6, 0, 0, 0, 0, 0};
+        kr210::limitCartDelta(&dxr, prevr, 1000.0, 1000.0, 1000.0, 1000.0, 0.012);
+        QVERIFY(qAbs(dxr.x - (-0.456)) < 1e-9);
     }
 
     void limitCartDelta_zeroLimits_passthrough()

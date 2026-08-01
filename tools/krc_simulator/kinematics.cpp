@@ -236,21 +236,22 @@ void limitCartDelta(Pose *dx, const Pose &prevDx,
     dx->a = clampTo(dx->a, maxVelRot * cycleS);
     dx->b = clampTo(dx->b, maxVelRot * cycleS);
     dx->c = clampTo(dx->c, maxVelRot * cycleS);
-    // 加速度限制（基于上一周期增量，允许反向）
+    // 加速度限制（基于上一周期增量，允许反向）：|Δ − Δprev| ≤ acc，即
+    // Δ ∈ [Δprev − acc, Δprev + acc]。单带 clamp；限位 0（acc=0）时直通。
+    // 注意不能用两次对称 clampTo：clampTo(v, prev+acc) 再 clampTo(v, prev−acc)
+    // 会复合为 |v| ≤ prev−acc，对同向续行过夹（匀速 0.6→0.456→…→停）、
+    // 对反向欠夹。
     const double accPos = maxAccelPos * cycleS * cycleS;
     const double accRot = maxAccelRot * cycleS * cycleS;
-    dx->x = clampTo(dx->x, prevDx.x + accPos);
-    dx->x = clampTo(dx->x, prevDx.x - accPos);
-    dx->y = clampTo(dx->y, prevDx.y + accPos);
-    dx->y = clampTo(dx->y, prevDx.y - accPos);
-    dx->z = clampTo(dx->z, prevDx.z + accPos);
-    dx->z = clampTo(dx->z, prevDx.z - accPos);
-    dx->a = clampTo(dx->a, prevDx.a + accRot);
-    dx->a = clampTo(dx->a, prevDx.a - accRot);
-    dx->b = clampTo(dx->b, prevDx.b + accRot);
-    dx->b = clampTo(dx->b, prevDx.b - accRot);
-    dx->c = clampTo(dx->c, prevDx.c + accRot);
-    dx->c = clampTo(dx->c, prevDx.c - accRot);
+    auto clampBand = [](double v, double lo, double hi) {
+        return hi <= lo ? v : std::clamp(v, lo, hi);
+    };
+    dx->x = clampBand(dx->x, prevDx.x - accPos, prevDx.x + accPos);
+    dx->y = clampBand(dx->y, prevDx.y - accPos, prevDx.y + accPos);
+    dx->z = clampBand(dx->z, prevDx.z - accPos, prevDx.z + accPos);
+    dx->a = clampBand(dx->a, prevDx.a - accRot, prevDx.a + accRot);
+    dx->b = clampBand(dx->b, prevDx.b - accRot, prevDx.b + accRot);
+    dx->c = clampBand(dx->c, prevDx.c - accRot, prevDx.c + accRot);
 }
 
 } // namespace kr210
