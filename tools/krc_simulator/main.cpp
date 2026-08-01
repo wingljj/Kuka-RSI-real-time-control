@@ -211,6 +211,30 @@ int main(int argc, char **argv)
         pose = kr210::forward(q);
     }
 
+    // --cart-limits：12 个值（xmin xmax ymin ymax zmin zmax amin amax bmin bmax cmin cmax）。
+    double cartLim[12];
+    bool cartLimitsSet = false;
+    if (p.isSet(oCartLimits)) {
+        const QStringList toks = p.value(oCartLimits).split(' ', Qt::SkipEmptyParts);
+        bool ok = toks.size() == 12;
+        for (int i = 0; i < 12 && ok; ++i)
+            cartLim[i] = toks[i].toDouble(&ok);
+        if (!ok) {
+            std::fprintf(stderr, "bad --cart-limits \"%s\" (need 12 values)\n",
+                         qPrintable(p.value(oCartLimits)));
+            return 2;
+        }
+        for (int i = 0; i < 6; ++i) {
+            if (cartLim[2 * i] > cartLim[2 * i + 1]) {
+                std::fprintf(stderr, "bad --cart-limits \"%s\": axis %d min %.3f > max %.3f\n",
+                             qPrintable(p.value(oCartLimits)), i + 1,
+                             cartLim[2 * i], cartLim[2 * i + 1]);
+                return 2;
+            }
+        }
+        cartLimitsSet = true;
+    }
+
     // --joint-limits：12 个度值（min1 max1 ... min6 max6）→ rad。
     if (p.isSet(oJointLimits)) {
         const QStringList toks = p.value(oJointLimits).split(' ', Qt::SkipEmptyParts);
@@ -224,6 +248,30 @@ int main(int argc, char **argv)
             std::fprintf(stderr, "bad --joint-limits \"%s\" (need 12 deg values)\n",
                          qPrintable(p.value(oJointLimits)));
             return 2;
+        }
+        // min > max 会让后续 std::clamp 进入未定义行为，直接拒绝。
+        for (int i = 0; i < 6; ++i) {
+            if (lim.min[i] > lim.max[i]) {
+                std::fprintf(stderr, "bad --joint-limits \"%s\": joint %d min %.3f > max %.3f (deg)\n",
+                             qPrintable(p.value(oJointLimits)), i + 1,
+                             lim.min[i] * 180.0 / M_PI, lim.max[i] * 180.0 / M_PI);
+                return 2;
+            }
+        }
+    }
+
+    // --init-joints 越过限位时 clamp 进限位（防护：避免初始位形越界）。
+    // 在 --joint-limits 解析之后执行，用的是覆盖后的限位。
+    if (p.isSet(oInitJoints)) {
+        bool clamped = false;
+        for (int i = 0; i < 6; ++i) {
+            const double nq = std::clamp(q[i], lim.min[i], lim.max[i]);
+            clamped = clamped || nq != q[i];
+            q[i] = nq;
+        }
+        if (clamped) {
+            std::fprintf(stderr, "note: --init-joints clamped into joint limits\n");
+            pose = kr210::forward(q);
         }
     }
 
@@ -343,6 +391,16 @@ int main(int argc, char **argv)
                             }
                         }
                         pose = kr210::forward(q);           // RIst = 真实几何正解
+                        // 笛卡尔额外约束：clamp 回报的 RIst。只 clamp 回报值，
+                        // q 继续（模拟「机器人被笛卡尔限位挡住」——主机看到 RIst 停在限位）。
+                        if (cartLimitsSet) {
+                            pose.x = std::clamp(pose.x, cartLim[0], cartLim[1]);
+                            pose.y = std::clamp(pose.y, cartLim[2], cartLim[3]);
+                            pose.z = std::clamp(pose.z, cartLim[4], cartLim[5]);
+                            pose.a = std::clamp(pose.a, cartLim[6], cartLim[7]);
+                            pose.b = std::clamp(pose.b, cartLim[8], cartLim[9]);
+                            pose.c = std::clamp(pose.c, cartLim[10], cartLim[11]);
+                        }
                         prevDx = dx;
                     }
                 }
