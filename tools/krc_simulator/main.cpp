@@ -125,7 +125,7 @@ int main(int argc, char **argv)
     QCommandLineOption oPort("port", "host port", "n", "59152");
     QCommandLineOption oCycle("cycle-ms", "cycle", "ms", "12.0");
     // 默认 10000 帧 ≈ 2 分钟：双击 exe 也能看到效果，不至于 6 秒闪退。
-    QCommandLineOption oCount("cycles", "cycle count", "n", "10000");
+    QCommandLineOption oCount("cycles", "cycle count (0 = run forever)", "n", "0");
     QCommandLineOption oDup("ipoc-dup", "every Nth frame resend previous IPOC", "n", "0");
     QCommandLineOption oGap("ipoc-gap", "every Nth frame jump N IPOC", "n", "0");
     QCommandLineOption oBack("ipoc-back", "every Nth frame send IPOC-1", "n", "0");
@@ -350,7 +350,15 @@ int main(int argc, char **argv)
     double initQ[6];
     std::copy(q, q + 6, initQ);
 
-    for (int i = 0; i < cycles; ++i) {
+    // cycles == 0 → 无限运行（直到 Ctrl+C / 关窗）。双击场景希望一直发帧，
+    // 而不想看到"运行 2 分钟自动退出"。int 溢出需 ~2^31 帧 ≈ 9 年，不现实。
+    for (int i = 0; cycles == 0 || i < cycles; ++i) {
+        // 无限模式下每 500 周期打一次进度，让控制台可见模拟器仍在发帧
+        if (cycles == 0 && i % 500 == 0) {
+            std::printf("i=%d replies=%d missed=%d ipoc_mismatch=%d\n",
+                        i, replies, missed, ipocMismatch);
+            std::fflush(stdout);
+        }
         // 等到本周期的标称发送时刻（--jitter-us 给节拍加 ±N µs 抖动）
         const qint64 dueNs = qint64(double(i) * cycleMs * 1.0e6)
                              + (jitterUs > 0 ? (std::rand() % (2 * jitterUs + 1) - jitterUs) * 1000 : 0);

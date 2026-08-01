@@ -15,11 +15,11 @@ echo    --max-vel-pos 20 --max-accel-pos 2000   速度/加速度限制
 echo    --restart-at-ms 3000 --restart-gap-ms 2200   会话重启
 echo    --joint-limits "0 0 -60 -60 30 30 0 0 90 90 0 0"   关节限位钉死
 echo    --ipoc-wrap-at 1012    IPOC 回绕
-echo    --cycles N             发帧数（默认 20000 ≈ 4 分钟）
+echo    --cycles N             发帧数（0 = 一直运行，默认；Ctrl+C 停止）
 echo ============================================================
 echo.
 
-"%~dp0..\build\tools\krc_simulator\krc_simulator.exe" --host 127.0.0.1 --port 59152 --cycles 20000 %*
+"%~dp0..\build\tools\krc_simulator\krc_simulator.exe" --host 127.0.0.1 --port 59152 --cycles 0 %*
 
 echo.
 echo 运行结束（若想跑不同参数，改上面的命令或双击后追加）。
