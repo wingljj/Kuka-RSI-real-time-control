@@ -1,6 +1,7 @@
 // 假 KRC：按固定周期发 <Rob>、收 <Sen>，验证上位机的实时行为。
-// 关节模型：q[6] 状态，收到的 RKorr（笛卡尔增量）经 limitCartDelta 限制 +
-// 雅可比伪逆 solveDelta 转关节增量并 clamp 到限位，forward 正解回报 RIst/AIPos。
+// 关节模型：q[6] 状态，收到的 RKorr（笛卡尔增量）经 limitCartDelta 限制后
+// 叠加到当前位姿得目标位姿，RL（rlk）逆解一次得 q（失败回零增量），
+// clamp 到限位，forward 正解回报 RIst/AIPos。
 // 支持故障注入：--ipoc-dup/--ipoc-gap/--ipoc-back/--drop/--reorder/--late-ms
 // /--ignore-replies/--send-delay，用于验证主机的异常处理路径。
 // 会话/时序增强：--restart-at-ms/--restart-gap-ms（KRL 重启：停发 + IPOC/q
@@ -22,6 +23,7 @@
 #include "core/Pose.h"
 #include "core/RsiCodec.h"
 #include "tools/krc_simulator/kinematics.h"
+#include "tools/krc_simulator/rl_kinematics.h"
 
 namespace {
 
@@ -150,13 +152,15 @@ int main(int argc, char **argv)
     QCommandLineOption oMaxVelRot("max-vel-rot", "cartesian rotation velocity limit deg/s (0=off)", "deg/s", "0");
     QCommandLineOption oMaxAccelPos("max-accel-pos", "cartesian position acceleration limit mm/s2 (0=off)", "mm/s2", "0");
     QCommandLineOption oMaxAccelRot("max-accel-rot", "cartesian rotation acceleration limit deg/s2 (0=off)", "deg/s2", "0");
+    QCommandLineOption oModel("model", "RL rlmdl model path (Comau Racer 7-1.4)", "path",
+                              "D:/QTproj/rl/rl-master/3dmodel/robot.rlmdl.xml");
     QCommandLineOption oSelfTest("self-test", "run forward-kinematics self-test and exit", "");
     p.addOptions({oHost, oPort, oCycle, oCount, oDup, oGap, oBack,
                   oDrop, oReorder, oLate, oIgnore, oDelay,
                   oRestartAt, oRestartGap, oIpocWrap, oJitter,
                   oInitJoints, oJointLimits, oCartLimits,
                   oMaxVelPos, oMaxVelRot, oMaxAccelPos, oMaxAccelRot,
-                  oSelfTest});
+                  oModel, oSelfTest});
     p.process(app);
 
     const QHostAddress host(p.value(oHost));
@@ -184,21 +188,38 @@ int main(int argc, char **argv)
                           || reorderN > 0 || lateN > 0 || ignore
                           || restartAtMs > 0;
 
+    // 加载 RL 运动学模型（Comau Racer 7-1.4，--model 可覆盖路径）。
+    // 模型是正逆解的前提，加载失败直接退出（后续 forward/inverse 返回零值/false，
+    // 静默运行会把模拟器变成死机，必须显式失败）。
+    const QString modelPath = p.value(oModel);
+    if (!rlk::loadModel(modelPath.toStdString())) {
+        std::fprintf(stderr, "failed to load RL model: %s\n",
+                     qPrintable(modelPath));
+        return 2;
+    }
+
     if (p.isSet(oSelfTest)) {
-        // 正解一致性：已知位形的期望位姿。zero-pose z = d1−d4+d6 = 675−1200+240 = −285。
+        // 正解一致性：已知位形的期望位姿（RL-T1 实测，docs/rl-build-notes.md）。
+        // Comau Racer 7-1.4 与 KR210 不同：q=0 的 TCP 是 [20, 0, 1804]，
+        // 模型的 home 位形 q=(0,0,-90°,0,0,0) 才是 [934, 0, 1150]
+        // （姿态四元数 (0.707, 0, 0.707, 0) = Ry(90°) → B=90°）。
         struct Case { double q[6]; double x, y, z, a, b, c; };
         const Case cases[] = {
-            { {0, 0, 0, 0, 0, 0}, 1541.0, 0.0, -285.0, 0, 0, 0 },
+            { {0, 0, 0, 0, 0, 0},            20.0, 0.0, 1804.0, 0, 0, 0 },
+            { {0, 0, -90.0 * M_PI / 180.0,
+               0, 0, 0},                     934.0, 0.0, 1150.0, 0, 90, 0 },
             // 更多位形可由 Task 1 单测值补充
         };
         for (const auto &c : cases) {
-            const Pose got = kr210::forward(c.q);
+            const Pose got = rlk::forward(c.q);
             if (std::fabs(got.x - c.x) > 1e-6 || std::fabs(got.y - c.y) > 1e-6
                 || std::fabs(got.z - c.z) > 1e-6
                 || std::fabs(got.a - c.a) > 1e-6
                 || std::fabs(got.b - c.b) > 1e-6
                 || std::fabs(got.c - c.c) > 1e-6) {
-                std::fprintf(stderr, "self-test FAIL\n");
+                std::fprintf(stderr, "self-test FAIL got X=%.6f Y=%.6f Z=%.6f "
+                            "A=%.6f B=%.6f C=%.6f\n",
+                            got.x, got.y, got.z, got.a, got.b, got.c);
                 return 2;
             }
         }
@@ -213,12 +234,12 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    // 关节状态：默认工作位形（腕部非奇异 σ_min≈0.87；原 [0,-45,45,0,0,0] 腕部奇异），
+    // 关节状态：默认 Comau 零位全 0（q=0 → 基座系 [20, 0, 1804]；KR210 的
+    // 默认位形 q3=30° 超出 Comau 的 [-170°, 0°] 量程，不能再用），
     // 或 --init-joints。内部一律 rad。
-    double q[6] = {0, -60.0 * M_PI / 180.0, 30.0 * M_PI / 180.0,
-                   0, 90.0 * M_PI / 180.0, 0};
-    kr210::JointLimits lim = kr210::limits();   // 本地副本，--joint-limits 可覆盖
-    Pose pose = kr210::forward(q);              // RIst 初值 = 真实几何正解
+    double q[6] = {0, 0, 0, 0, 0, 0};
+    kr210::JointLimits lim = rlk::limits();     // 本地副本，--joint-limits 可覆盖
+    Pose pose = rlk::forward(q);                // RIst 初值 = 真实几何正解
     Pose prevDx{};                              // 加速度限制的上一周期增量
 
     // --init-joints：6 个度值 → rad。
@@ -237,7 +258,7 @@ int main(int argc, char **argv)
                          qPrintable(p.value(oInitJoints)));
             return 2;
         }
-        pose = kr210::forward(q);
+        pose = rlk::forward(q);
     }
 
     // --cart-limits：12 个值（xmin xmax ymin ymax zmin zmax amin amax bmin bmax cmin cmax）。
@@ -307,7 +328,7 @@ int main(int argc, char **argv)
         }
         if (clamped) {
             std::fprintf(stderr, "note: --init-joints clamped into joint limits\n");
-            pose = kr210::forward(q);
+            pose = rlk::forward(q);
         }
     }
 
@@ -386,7 +407,7 @@ int main(int argc, char **argv)
             // （否则复位后的首帧回显会被错配到旧队列，误报 ipoc_mismatch）。
             ipoc = 1000;
             std::copy(initQ, initQ + 6, q);
-            pose = kr210::forward(q);
+            pose = rlk::forward(q);
             delay = delayBase;
             heldValid = false;
             heldRob.clear();
@@ -469,31 +490,41 @@ int main(int argc, char **argv)
                                 ++ipocMismatch;
                             sentIpocs.pop_front();
                         }
-                        // 关节模型：笛卡尔 RKorr → 限制 → 雅可比伪逆 → q → 正解回报
+                        // 关节模型：笛卡尔 RKorr → 限制 → 目标位姿 → RL 一次逆解
+                        // → q → 正解回报（目标位姿法，替代逐周期雅可比伪逆）。
                         Pose dx = korr;                     // 笛卡尔增量（mm, °）
                         kr210::limitCartDelta(&dx, prevDx,
                                               maxVelPos, maxVelRot,
                                               maxAccelPos, maxAccelRot,
                                               cycleMs / 1000.0);
-                        double dq[6];
-                        if (kr210::solveDelta(q, dx, dq)) {
+                        // 目标位姿 = 当前位姿（正解）+ 限制后的增量。
+                        Pose target = pose;
+                        target.x += dx.x;
+                        target.y += dx.y;
+                        target.z += dx.z;
+                        target.a += dx.a;
+                        target.b += dx.b;
+                        target.c += dx.c;
+                        // 笛卡尔额外约束：clamp 目标位姿再逆解（模拟「机器人被
+                        // 笛卡尔限位挡住」——主机看到 RIst 停在限位）。
+                        if (cartLimitsSet) {
+                            target.x = std::clamp(target.x, cartLim[0], cartLim[1]);
+                            target.y = std::clamp(target.y, cartLim[2], cartLim[3]);
+                            target.z = std::clamp(target.z, cartLim[4], cartLim[5]);
+                            target.a = std::clamp(target.a, cartLim[6], cartLim[7]);
+                            target.b = std::clamp(target.b, cartLim[8], cartLim[9]);
+                            target.c = std::clamp(target.c, cartLim[10], cartLim[11]);
+                        }
+                        double qNew[6];
+                        if (rlk::inverse(target, qNew)) {
                             for (int i = 0; i < 6; ++i) {
-                                q[i] += dq[i];
-                                // 关节限位 clamp
-                                q[i] = std::clamp(q[i], lim.min[i], lim.max[i]);
+                                // 关节限位 clamp（与 RL 内部限位双重保险；
+                                // --joint-limits 覆盖本地副本后在此生效）
+                                q[i] = std::clamp(qNew[i], lim.min[i], lim.max[i]);
                             }
                         }
-                        pose = kr210::forward(q);           // RIst = 真实几何正解
-                        // 笛卡尔额外约束：clamp 回报的 RIst。只 clamp 回报值，
-                        // q 继续（模拟「机器人被笛卡尔限位挡住」——主机看到 RIst 停在限位）。
-                        if (cartLimitsSet) {
-                            pose.x = std::clamp(pose.x, cartLim[0], cartLim[1]);
-                            pose.y = std::clamp(pose.y, cartLim[2], cartLim[3]);
-                            pose.z = std::clamp(pose.z, cartLim[4], cartLim[5]);
-                            pose.a = std::clamp(pose.a, cartLim[6], cartLim[7]);
-                            pose.b = std::clamp(pose.b, cartLim[8], cartLim[9]);
-                            pose.c = std::clamp(pose.c, cartLim[10], cartLim[11]);
-                        }
+                        // 逆解失败（目标不可达）保持旧 q（安全回退）。
+                        pose = rlk::forward(q);             // RIst = 真实几何正解
                         prevDx = dx;
                     }
                 }

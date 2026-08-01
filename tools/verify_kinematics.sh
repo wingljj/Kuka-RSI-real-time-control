@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# KR210 运动学 + 真实约束端到端验证：用 krc_simulator 的关节模型（正解回报
-# RIst/AIPos/ASPos）驱动 loopback_test。覆盖：运动学自检、默认闭环、关节限位、
-# 速度限制、会话重启。全部通过返回 0。
+# RL(Comau Racer 7-1.4) 运动学 + 真实约束端到端验证：用 krc_simulator 的
+# 关节模型（正解回报 RIst/AIPos/ASPos）驱动 loopback_test。覆盖：运动学自检、
+# 默认闭环、关节限位、速度限制、会话重启。全部通过返回 0。
 # 用法: bash tools/verify_kinematics.sh
 # 脚本自动配置 Qt 运行环境；若调用者已设 QTBIN/MINGW/NINJA 则尊重其取值。
 set -u
 cd "$(dirname "$0")/.."
 
 # 运行环境：默认本项目路径；若调用者已设 QTBIN/MINGW/NINJA 则尊重之。
+# UCRT 提供 libxml2-2.dll —— RL(rl::mdl) 的运行时依赖，模拟器正逆解必须。
 if [ -z "${QTBIN:-}" ]; then
     export MINGW=/d/Software/QT/content/Tools/mingw1120_64/bin
     export NINJA=/d/Software/QT/content/Tools/Ninja
     export QTBIN=/d/Software/QT/content/6.5.3/mingw_64/bin
-    export PATH="$MINGW:$NINJA:$QTBIN:$PATH"
+    export UCRT=/c/msys64/ucrt64/bin
+    export PATH="$MINGW:$NINJA:$QTBIN:$UCRT:$PATH"
 fi
 
 BUILD=build
@@ -89,11 +91,15 @@ check_lb "默认闭环主机收满帧" normal "frames=$CYCLES"
 # 3. 关节限位：所有关节锁死在初始位形（相当于物理挡块把机器人顶住），主机给
 #    X 目标 → 关节 clamp 挡住修正，位姿不再前移，err X 保持非零不收敛；位移
 #    =0 不触发 POSCORR 限位，主机保持 Tracking（不 Fault）。
-#    注：单关节"靠近限位"挡不住 X——A1 量程 ±185°，伪逆可绕行，误差仍会收敛；
+#    注：单关节"靠近限位"挡不住 X——A1 量程 ±165°，IK 可绕行，误差仍会收敛；
 #    把限位带宽收敛为 0 才能确定性地验证"限位挡住机器人"。
+#    初始位形必须用 Comau 有效位形（原来 KR210 的 0/-60/30/0/90/0 里 q3=30°
+#    超出 Comau [-170°,0°]；且 q5=90° 靠近腕部奇异、远离 rlk 的 IK 种子
+#    home/q=0，会导致每次逆解耗尽全部种子超时 ≈1s/周期，模拟器完全跟不上）。
+#    全零位形在种子附近，IK 亚毫秒级收敛，clamp 后机器人被锁死，行为确定。
 run joint "--track 10" \
-    --init-joints "0 -60 30 0 90 0" \
-    --joint-limits "0 0 -60 -60 30 30 0 0 90 90 0 0"
+    --init-joints "0 0 0 0 0 0" \
+    --joint-limits "0 0 0 0 0 0 0 0 0 0 0 0"
 JERR=$(err_final joint)
 if [ -n "$JERR" ] && awk -v v="$JERR" 'BEGIN{exit !(v!=0)}'; then
     echo "PASS  关节限位下误差不收敛（err X=$JERR，限位挡住机器人）"
