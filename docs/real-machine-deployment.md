@@ -128,16 +128,34 @@ RSI 超时停机告终。这也是为什么 `SEND` 里请求了 `<Delay>`（见 
 
 ---
 
-## 7. 已知缺口（联机前值得权衡）
+## 7. 联锁与已知缺口
 
-- **`<Delay>` 没有解析。** ethernet.xml 已请求它，但上位机没读。它是 KRC 自己统计
-  的丢包数，唯一能让你看见「KRC 认为我丢包了」的量。
-- **`writeDatagram` 返回值被丢弃**，发送失败不计数。
-- **没有对端校验**：任何发到监听端口的报文都被当 KRC 的帧。现场最可能触发的是
-  模拟器还挂在端口上。
-- **实测周期未与配置周期交叉校验**，第 5 节第 7 步靠人不忘。
-- **`session_gap_ms` 没有范围校验**，被写成 0 会重开"比 KRC 超时更短的间隙清零
-  安全账本"的漏洞。
+上位机现在带启动联锁（硬拦截，无覆盖）：使能跟踪前自动校验，不通过则状态栏
+红字列出原因并拒绝勾选。联锁检查项：
+
+- `cycle_ms` > 0
+- `session_gap_ms` > `krc_timeout_cycles × cycle_ms`（配置里 `krc_timeout_cycles`
+  默认 100，即 100 个 IPO 周期）
+- 主机 `accum_limit_pos_mm/rot_deg` < `krc_poscorr_limit_pos_mm/rot_deg`
+  （默认 25/25，即 KRC POSCORR 累积限值）。**当前 `config/rsi_config.json`
+  的 1000/100 会被主动拦下——首次联机前必须按应用需要调回安全值。**
+- `sen_type` 非空
+- 实测周期与 `cycle_ms` 偏差 ≤ 10%
+
+运行中保护：Tracking 期间 KRC 回报的 `<Delay>` 连续 3 帧递增 → 自动转 Fault。
+这是 SENTYPE 错配（KRC 静默丢弃回包、主机显示丢包 0）的唯一可见征兆。
+
+新增配置字段（均已在 `config/rsi_config.json`）：
+`krc_timeout_cycles`、`krc_poscorr_limit_pos_mm/rot_deg`、`rx_buffer_bytes`。
+
+通信健壮性验证工具：`tools/verify_robustness.sh`（故障注入端到端）与
+`tools/pcap_replay.py`（真实抓包回放），矩阵见
+[docs/verification-matrix.md](verification-matrix.md)。
+
+已知缺口（保留）：
+- **BASE/TOOL 无自动校验**：RSI 帧不含该信息，仅能靠 KRL 程序固定编号 +
+  人工核对（§5 第 2 步）。
+- QoS、CPU 亲和性、线程实时优先级未做（Windows 收益甚微）。
 
 ---
 
