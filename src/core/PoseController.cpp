@@ -160,11 +160,19 @@ Pose PoseController::step(const Pose &actual)
     const double posNorm = std::hypot(m_displacement.x,
                                       m_displacement.y,
                                       m_displacement.z);
-    // 姿态保持逐轴最大值：A/B/C 是欧拉角，三者的欧氏范数没有物理意义，
-    // 而 POSCORR 的姿态限值本身也是按轴给出的。
-    const double rotMax = std::max({std::fabs(m_displacement.a),
-                                    std::fabs(m_displacement.b),
-                                    std::fabs(m_displacement.c)});
+    // 姿态监控取两源保守值：
+    //  (1) RIst 锚点位移逐轴最大 —— RIst 姿态角本身可能折返（±180°），主机
+    //      无法得知真实累计圈数，仅靠它会在多圈旋转时漏掉；
+    //  (2) 主机未折返累计命令增量（commandedSum）逐轴最大 —— 不折返，反映
+    //      "主机以为发出去了多少修正"。
+    // 取二者较大。高估是安全方向：宁可因丢包导致的高估提前 Fault，也不漏报。
+    const double rotDisp = std::max({std::fabs(m_displacement.a),
+                                     std::fabs(m_displacement.b),
+                                     std::fabs(m_displacement.c)});
+    const double rotCmd  = std::max({std::fabs(m_accum.a),
+                                     std::fabs(m_accum.b),
+                                     std::fabs(m_accum.c)});
+    const double rotMax  = std::max(rotDisp, rotCmd);
 
     // 限值同样不信任配置：负的累积限值会让 posNorm(>=0) > limit 恒真，
     // 零误差时也立刻故障。与 vmax/cycleMs 的处理保持一致。
@@ -182,7 +190,7 @@ Pose PoseController::step(const Pose &actual)
     if (rotMax > accumLimRot) {
         m_state = TrackState::Fault;
         m_faultReason = QStringLiteral(
-            "accumulated rotation %1 deg exceeds limit %2 deg")
+            "max per-axis accumulated rotation %1 deg exceeds limit %2 deg")
             .arg(rotMax, 0, 'f', 3)
             .arg(accumLimRot, 0, 'f', 3);
         return Pose{};

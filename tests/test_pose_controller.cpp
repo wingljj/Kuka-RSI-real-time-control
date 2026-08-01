@@ -450,6 +450,27 @@ private slots:
         pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
         QCOMPARE(pc.state(), TrackState::Idle);
     }
+
+    void rotatedOverLimit_firesViaCommandedSumEvenIfRistWraps()
+    {
+        // RIst 姿态角折返/不跟随：若机器人未跟随命令（丢包或卡住），RIst
+        // 位移停在锚点附近，主机从 RIst 看不出已累计的修正量。
+        // commandedSum（不折返）反映"主机以为发出去了多少修正"，必须兜底：
+        // 0.6°/cycle，200° 需 ~334 周期。
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.accumLimitRotDeg = 200.0;   // 高于单圈 180°，让 RIst 折返不触发
+        c.vmaxRotDegS      = 50.0;    // 12ms → 0.6°/cycle，200° 需 ~334 周期
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0, 220, 0, 0});
+        Pose actual{0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 500 && pc.state() == TrackState::Tracking; ++i)
+            pc.step(actual);              // RIst 不跟随：位移恒 0，命令持续累计
+        QCOMPARE(pc.state(), TrackState::Fault);
+        QVERIFY(pc.faultReason().contains("rotation"));
+    }
 };
 
 QTEST_MAIN(TestPoseController)
