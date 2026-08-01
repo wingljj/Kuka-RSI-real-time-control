@@ -114,58 +114,16 @@ private slots:
         // 命令和仍是三步之和
         QVERIFY(qAbs(pc.commandedSum().x - 1.8) < 1e-9);  // 3 * 0.6
         // 锚点位移按每周期开始时的 actual 度量，故天然滞后一个周期：
-        // 第 3 步开始时机器人只走了 2 * 0.6。这个滞后是有意的——只有
-        // 控制器真正回传了新的 RIst，第 2 层才认这笔修正。
+        // 第 3 步开始时机器人只走了 2 * 0.6。这个滞后是有意的——位移账本
+        // 只认控制器真正回传的新 RIst，不认主机"以为发出去了"的命令。
         QVERIFY(qAbs(pc.accumulated().x - 1.2) < 1e-9);   // 2 * 0.6
     }
 
-    void accumOverLimit_entersFaultAndStopsMoving()
+    void resetToActual_clearsTargetButKeepsAccum()
     {
         PoseController pc;
         AppConfig c = testCfg();
-        c.accumLimitPosMm = 1.0;     // 两步就越限
-        pc.configure(c);
-        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
-        pc.setTracking(true);
-        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-
-        Pose actual{0, 0, 0, 0, 0, 0};
-        for (int i = 0; i < 5; ++i) {
-            const Pose d = pc.step(actual);
-            actual.x += d.x;
-        }
-        QCOMPARE(pc.state(), TrackState::Fault);
-        QVERIFY(!pc.faultReason().isEmpty());
-        // Fault 后必须返回零增量
-        QCOMPARE(pc.step(actual).x, 0.0);
-        // 锚点位移滞后一个周期，故越限时最多超出一个单周期步长（0.6mm）才被拦下
-        QVERIFY(qAbs(pc.accumulated().x) <= 1.0 + 0.6 + 1e-9);
-    }
-
-    void rotationAccumHasOwnLimit()
-    {
-        PoseController pc;
-        AppConfig c = testCfg();
-        c.accumLimitRotDeg = 0.2;    // 姿态先越限
-        c.accumLimitPosMm  = 1000.0; // 位置不越限
-        pc.configure(c);
-        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
-        pc.setTracking(true);
-        pc.setTarget(Pose{0, 0, 0, 90, 0, 0});
-
-        Pose actual{0, 0, 0, 0, 0, 0};
-        for (int i = 0; i < 5; ++i) {
-            const Pose d = pc.step(actual);
-            actual.a += d.a;
-        }
-        QCOMPARE(pc.state(), TrackState::Fault);
-    }
-
-    void resetToActual_clearsFaultAndTargetButKeepsAccum()
-    {
-        PoseController pc;
-        AppConfig c = testCfg();
-        c.accumLimitPosMm = 1.0;
+        c.accumLimitPosMm = 1.0;     // 很小的限值：超越它不再触发 Fault
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
@@ -173,24 +131,25 @@ private slots:
         Pose actual{0, 0, 0, 0, 0, 0};
         for (int i = 0; i < 5; ++i)
             actual.x += pc.step(actual).x;
-        QCOMPARE(pc.state(), TrackState::Fault);
 
-        // 归零前的累积量必须非零，否则本用例无从证明「保留」
-        const double accumBefore = pc.accumulated().x;
+        // 第 2 层已移除：累积越限只记账、不故障——状态仍为 Tracking，增量继续流动
+        QCOMPARE(pc.state(), TrackState::Tracking);
+        QVERIFY(pc.faultReason().isEmpty());
+        // 归零前的命令账本必须非零，否则本用例无从证明「保留」
+        const double accumBefore = pc.commandedSum().x;
         QVERIFY(qAbs(accumBefore) > 1e-9);
 
         pc.resetToActual(Pose{7, 8, 9, 0, 0, 0});
         QCOMPARE(pc.state(), TrackState::Idle);
         QVERIFY(pc.faultReason().isEmpty());
         QCOMPARE(pc.target().x, 7.0);      // 目标 = 实际，误差归零
-        // 【关键】KRC 侧已施加的修正不会消失，累积量必须原样保留
-        QCOMPARE(pc.accumulated().x, accumBefore);
+        // 【关键】KRC 侧已施加的修正不会消失，命令账本必须原样保留
+        QCOMPARE(pc.commandedSum().x, accumBefore);
 
-        // 【关键之二】会话锚点也必须原样保留：再走一个周期，位移仍以
-        // 原锚点（0）度量，而不是以 resetToActual 传入的 {7,8,9} 度量。
+        // 【关键之二】会话锚点也必须原样保留：再走一个周期，位移仍以原锚点（0）
+        // 度量，而不是以 resetToActual 传入的 {7,8,9} 度量——位移随 actual 前进。
         pc.setTracking(true);
         pc.step(actual);
-        QCOMPARE(pc.accumulated().x, accumBefore);
         QVERIFY(qAbs(pc.accumulated().x - actual.x) < 1e-9);
     }
 
@@ -198,7 +157,7 @@ private slots:
     {
         PoseController pc;
         AppConfig c = testCfg();
-        c.accumLimitPosMm = 1.0;
+        c.accumLimitPosMm = 1.0;     // 很小的限值：超越它不再触发 Fault
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
@@ -206,8 +165,10 @@ private slots:
         Pose actual{0, 0, 0, 0, 0, 0};
         for (int i = 0; i < 5; ++i)
             actual.x += pc.step(actual).x;
-        QCOMPARE(pc.state(), TrackState::Fault);
+        // 第 2 层已移除：越限仍保持 Tracking，只验证账本确实累计了
+        QCOMPARE(pc.state(), TrackState::Tracking);
         QVERIFY(qAbs(pc.accumulated().x) > 1e-9);
+        QVERIFY(qAbs(pc.commandedSum().x) > 1e-9);
 
         // 仅 RSI 会话重启才可清零累积量
         pc.beginSession(Pose{7, 8, 9, 0, 0, 0});
@@ -215,26 +176,7 @@ private slots:
         QVERIFY(pc.faultReason().isEmpty());
         QCOMPARE(pc.target().x, 7.0);
         QCOMPARE(pc.accumulated().x, 0.0);
-    }
-
-    void faultCannotBeReEnabledWithoutReset()
-    {
-        PoseController pc;
-        AppConfig c = testCfg();
-        c.accumLimitPosMm = 1.0;
-        pc.configure(c);
-        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
-        pc.setTracking(true);
-        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        Pose actual{0, 0, 0, 0, 0, 0};
-        for (int i = 0; i < 5; ++i)
-            actual.x += pc.step(actual).x;
-        QCOMPARE(pc.state(), TrackState::Fault);
-
-        // 锁存的核心保证：不经 resetToActual 不得重新使能
-        pc.setTracking(true);
-        QCOMPARE(pc.state(), TrackState::Fault);
-        QCOMPARE(pc.step(actual).x, 0.0);
+        QCOMPARE(pc.commandedSum().x, 0.0);
     }
 
     void nonFinitePoseEntersFault()
@@ -249,39 +191,8 @@ private slots:
         QCOMPARE(d.x, 0.0);
         QCOMPARE(pc.state(), TrackState::Fault);
         QVERIFY(!pc.faultReason().isEmpty());
-        // 累积量绝不能被 NaN 污染，否则第 2 层永久失效
+        // 累积量绝不能被 NaN 污染，否则显示账本与实际同步性都会失真
         QVERIFY(std::isfinite(pc.accumulated().x));
-    }
-
-    void diagonalAccumUsesEuclideanNorm()
-    {
-        PoseController pc;
-        AppConfig c = testCfg();
-        c.accumLimitPosMm = 1.0;      // 范数上限 1mm
-        c.vmaxPosMmS      = 1000.0;   // 放开单周期限幅，便于快速累积
-        pc.configure(c);
-        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
-        pc.setTracking(true);
-        // 三轴各 0.7mm：逐轴判限会放过（0.7 < 1），欧氏范数 1.21 必须拦下。
-        // 位移以控制器回传的 actual 度量，所以必须把运动喂回 actual。
-        pc.setTarget(Pose{0.7, 0.7, 0.7, 0, 0, 0});
-        Pose actual{0, 0, 0, 0, 0, 0};
-        for (int i = 0; i < 10 && pc.state() == TrackState::Tracking; ++i) {
-            const Pose d = pc.step(actual);
-            actual.x += d.x;
-            actual.y += d.y;
-            actual.z += d.z;
-        }
-        QCOMPARE(pc.state(), TrackState::Fault);
-        // 被拦下的那一刻，逐轴都还在限内，只有欧氏范数越限——这正是本用例
-        // 要钉住的性质（逐轴判限会放过它，合成位移就能顶穿 POSCORR 的硬限）。
-        QVERIFY(qAbs(pc.displacement().x) < 1.0);
-        QVERIFY(qAbs(pc.displacement().y) < 1.0);
-        QVERIFY(qAbs(pc.displacement().z) < 1.0);
-        QVERIFY(std::hypot(pc.displacement().x,
-                           pc.displacement().y,
-                           pc.displacement().z) > 1.0);
-        QVERIFY(pc.faultReason().contains("displacement from session anchor"));
     }
 
     void negativeVmaxDoesNotInvertDirection()
@@ -359,22 +270,8 @@ private slots:
         const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
         QCOMPARE(d.x, 0.0);
         QCOMPARE(pc.state(), TrackState::Fault);
-        // 累积量绝不能被污染，否则第 2 层永久失效
+        // 累积量绝不能被污染，否则显示账本与实际同步性都会失真
         QVERIFY(std::isfinite(pc.accumulated().x));
-    }
-
-    void negativeAccumLimitDoesNotFaultAtZeroError()
-    {
-        PoseController pc;
-        AppConfig c = testCfg();
-        c.accumLimitPosMm = -30.0;     // 误填负号
-        pc.configure(c);
-        pc.beginSession(Pose{5, 0, 0, 0, 0, 0});
-        pc.setTracking(true);
-        // 误差为 0、累积为 0，不该因负限值立刻故障
-        const Pose d = pc.step(Pose{5, 0, 0, 0, 0, 0});
-        QCOMPARE(d.x, 0.0);
-        QCOMPARE(pc.state(), TrackState::Tracking);
     }
 
     void subQuantumIncrementDoesNotAccumulate()
@@ -450,26 +347,6 @@ private slots:
         QCOMPARE(pc.state(), TrackState::Fault);
         pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
         QCOMPARE(pc.state(), TrackState::Idle);
-    }
-
-    void rotatedOverLimit_firesViaCommandedSumWhenRistDoesNotFollow()
-    {
-        // 机器人未跟随命令（丢包或卡住）：RIst 位移停在锚点附近，主机从 RIst
-        // 看不出已累计的修正量。commandedSum（不折返）反映"主机以为发出去了多少
-        // 修正"，必须兜底：0.6°/cycle，200° 需 ~334 周期。
-        PoseController pc;
-        AppConfig c = testCfg();
-        c.accumLimitRotDeg = 200.0;   // 高于单圈 180°，让 RIst 折返不触发
-        c.vmaxRotDegS      = 50.0;    // 12ms → 0.6°/cycle，200° 需 ~334 周期
-        pc.configure(c);
-        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
-        pc.setTracking(true);
-        pc.setTarget(Pose{0, 0, 0, 220, 0, 0});
-        Pose actual{0, 0, 0, 0, 0, 0};
-        for (int i = 0; i < 500 && pc.state() == TrackState::Tracking; ++i)
-            pc.step(actual);              // RIst 不跟随：位移恒 0，命令持续累计
-        QCOMPARE(pc.state(), TrackState::Fault);
-        QVERIFY(pc.faultReason().contains("rotation"));
     }
 
     void smoothing_progressivelyApproachesStepTarget()

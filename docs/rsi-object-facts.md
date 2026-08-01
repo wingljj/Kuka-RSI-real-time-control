@@ -148,20 +148,23 @@ StopType 枚举：InfoMessage=0  PathNormal=1  Velocity=2  PathFast=3  ExitMoveC
 若它其实支持 `.rsix`（RSI 5.0+），桌面那份 `ROS_RSI_CONTEXT.rsix` 可以作为直接
 基底改用，只需把 `ConfigFile` 指向我们的 `_ethernet.xml`、并按 §9 重定限值。
 
-## 9. 限值该怎么定（四层要一起定，不能各自为政）
+## 9. 限值该怎么定（KRC 侧三层要一起定，不能各自为政）
 
-POSCORR 的出厂默认只有 ±5mm / 5°，远低于我们主机侧第 2 层的 30mm。若照默认部署，
-RSI 会先在 5mm 拒绝，主机的 30mm 永远不会触发 —— 四层防线退化成一层。
+POSCORR 的出厂默认只有 ±5mm / 5°。若照默认部署，RSI 会先在 5mm 拒绝，
+层 3~5 的梯度就无从谈起。
 
 建议自内向外拉开梯度（联机后按实测调）：
 
 | 层 | 位置 | 建议值 |
 |---|---|---|
 | 1 单周期增量 | 主机 `vmax × cycle` | 50 mm/s × 12ms = 0.6 mm |
-| 2 累积位移 | 主机 `accum_limit_pos_mm` | 30 mm（欧氏范数） |
+| ~~2 累积位移~~（**已移除**，仅显示） | 主机 `accum_limit_pos_mm` | 不再判限 |
 | 3 分量限幅 | `Limit` 对象 | ±35 mm / ±35° |
 | 4 PosCorr 限值 | `LowerLim/UpperLim`、`MaxRotAngle` | ±40 mm / 40° |
 | 5 监控停机 | `PosCorrMon` `MaxTrans`/`MaxRotAngle` | 45 mm / 45° |
+
+主机侧第 2 层（累积位移保护）已按用户决定移除（2026-08-01），`accum_limit_*`
+仅供 UI 显示，不再判限。**KRC 侧层 4/5（PosCorr / PosCorrMon）是唯一兜底。**
 
 关键约束：**层号越大值必须越大**，否则内层永不触发。设计文档里写的
 "POSCORR ~50mm 硬限"来自论坛，实际是可配置的 `LowerLim/UpperLim`，

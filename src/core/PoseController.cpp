@@ -175,48 +175,9 @@ Pose PoseController::step(const Pose &actual)
         return Pose{};
     }
 
-    // 位置用欧几里得范数：逐轴判限会让三轴同时到限时的合成位移达到
-    // √3 × limit（30mm → 51.96mm），越过 POSCORR 的 ~50mm 硬限，使第 2 层
-    // 形同虚设、第一个停机的反而是第 4 层 RSI 错误停机。
-    const double posNorm = std::hypot(m_displacement.x,
-                                      m_displacement.y,
-                                      m_displacement.z);
-    // 姿态监控取两源保守值：
-    //  (1) RIst 锚点位移逐轴最大 —— RIst 姿态角本身可能折返（±180°），主机
-    //      无法得知真实累计圈数，仅靠它会在多圈旋转时漏掉；
-    //  (2) 主机未折返累计命令增量（commandedSum）逐轴最大 —— 不折返，反映
-    //      "主机以为发出去了多少修正"。
-    // 取二者较大。高估是安全方向：宁可因丢包导致的高估提前 Fault，也不漏报。
-    const double rotDisp = std::max({std::fabs(m_displacement.a),
-                                     std::fabs(m_displacement.b),
-                                     std::fabs(m_displacement.c)});
-    const double rotCmd  = std::max({std::fabs(m_accum.a),
-                                     std::fabs(m_accum.b),
-                                     std::fabs(m_accum.c)});
-    const double rotMax  = std::max(rotDisp, rotCmd);
-
-    // 限值同样不信任配置：负的累积限值会让 posNorm(>=0) > limit 恒真，
-    // 零误差时也立刻故障。与 vmax/cycleMs 的处理保持一致。
-    const double accumLimPos = std::fabs(m_cfg.accumLimitPosMm);
-    const double accumLimRot = std::fabs(m_cfg.accumLimitRotDeg);
-
-    if (posNorm > accumLimPos) {
-        m_state = TrackState::Fault;
-        m_faultReason = QStringLiteral(
-            "displacement from session anchor %1 mm exceeds limit %2 mm")
-            .arg(posNorm, 0, 'f', 3)
-            .arg(accumLimPos, 0, 'f', 3);
-        return Pose{};
-    }
-    if (rotMax > accumLimRot) {
-        m_state = TrackState::Fault;
-        m_faultReason = QStringLiteral(
-            "max per-axis accumulated rotation %1 deg exceeds limit %2 deg")
-            .arg(rotMax, 0, 'f', 3)
-            .arg(accumLimRot, 0, 'f', 3);
-        return Pose{};
-    }
-
+    // 【第 2 层已按用户决定移除（2026-08-01）】：不再检查累积位移/命令和是否越限。
+    // m_displacement / m_accum 仍计算并暴露（accumulated()/commandedSum()），
+    // 仅供 UI「累积修正」显示。KRC 侧层 4/5（POSCORR ±25 / POSCORRMON 45）是唯一兜底。
     m_accum = next;
     return d;
 }

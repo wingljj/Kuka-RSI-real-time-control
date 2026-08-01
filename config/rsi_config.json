@@ -1,6 +1,8 @@
 {
   "_comment": [
-    "主机累积上限默认 20mm / 20 度（须 < KRC POSCORR 限值 25mm / 25 度，否则联锁拦截）。",
+    "accum_limit_pos_mm / accum_limit_rot_deg 仅作 UI「累积修正」显示参考：",
+    "第 2 层（主机累积位移/命令和越限保护）已按用户决定移除（2026-08-01），",
+    "不再判限、不参与联锁、不产生 Fault。",
     "真正的天花板在 KRC 侧，那是删不掉的：",
     "    Limit 对象  ±35mm    POSCORR ±40mm    POSCORRMON 45mm",
     "撞上它们的表现是控制器报错停机（示教器跳错误、程序中断），",

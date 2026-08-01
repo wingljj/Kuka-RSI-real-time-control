@@ -80,18 +80,21 @@ Windows 账号密码与示教器管理员密码 `kuka` 不是一回事）或 RDP
 第三项最阴险：上位机会显示"已连接、丢包 0"，而 KRC 那边一帧回包都没收下，
 最终以 RSI 超时停机告终。这也是为什么要解析 `<Delay>`（见 §8）。
 
-## 5. 五层限值必须自内向外单调放大
+## 5. KRC 侧限值必须自内向外单调放大
 
 | 层 | 位置 | 当前值 |
 |---|---|---|
 | 1 单周期增量 | 上位机 `vmax × cycle` | 50 mm/s × 12ms = 0.6 mm |
-| 2 累积位移 | 上位机 `accum_limit_pos_mm` / `_rot_deg` | 30 mm（欧氏范数）/ 15° |
+| ~~2 累积位移~~（**已移除**，仅显示） | 上位机 `accum_limit_pos_mm` / `_rot_deg` | 不再判限 |
 | 3 分量限幅 | `PoseTrack.rsi.xml` 的 `Limit_*` | ±35 mm / ±35° |
 | 4 POSCORR 限值 | `POSCORR1` 的 `LowerLim/UpperLim`、`MaxRotAngle` | ±40 mm / 40° |
 | 5 监控停机 | `POSCORRMON1` 的 `MaxTrans`/`MaxRotAngle` | 45 mm / 45° |
 
+主机侧第 2 层（累积位移保护）已按用户决定移除（2026-08-01），`accum_limit_*`
+仅供 UI 显示，不再判限。**KRC 侧层 4/5（POSCORR / POSCORRMON）是唯一兜底。**
+
 **POSCORR 的出厂默认只有 ±5mm / 5°。** 若照默认部署，RSI 会先在 5mm 拒绝，
-上位机那 30mm 永远不会触发，五层退化成一层。上表已经把梯度拉开。
+层 3~5 的梯度就无从谈起。上表已经把梯度拉开。
 
 调整时保持单调：任何一层比它内侧的小，内侧那层就永远不会触发。
 

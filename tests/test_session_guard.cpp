@@ -3,15 +3,15 @@
 
 namespace {
 
-// 通过全部静态联锁的基准配置。注意默认 AppConfig 的 accumLimitPosMm=30 >
-// krcPoscorrLimitPosMm=25，会被拦——必须显式调到安全值。
+// 通过全部静态联锁的基准配置。accumLimit 已不参与联锁（第 2 层移除，2026-08-01），
+// 这里仍显式给出 20/20 仅供 UI 显示参考。
 AppConfig good()
 {
     AppConfig c = AppConfig::defaults();
     c.cycleMs           = 12.0;
     c.sessionGapMs      = 2000.0;    // > 100 × 12 = 1200
-    c.accumLimitPosMm   = 20.0;      // < 25
-    c.accumLimitRotDeg  = 20.0;      // < 25
+    c.accumLimitPosMm   = 20.0;      // 仅 UI 显示参考
+    c.accumLimitRotDeg  = 20.0;      // 仅 UI 显示参考
     c.senType           = "ImFree";
     return c;
 }
@@ -58,22 +58,6 @@ private slots:
         const QStringList r = SessionGuard::staticChecks(c);
         QVERIFY(!r.isEmpty());
         QVERIFY(r.join('\n').contains("krc_timeout_cycles"));
-    }
-
-    void accumLimitOverKrc_fails()
-    {
-        AppConfig c = good();
-        c.accumLimitPosMm = 30.0;    // 默认值 > 25
-        const QStringList r = SessionGuard::staticChecks(c);
-        QVERIFY(!r.isEmpty());
-        QVERIFY(r.join('\n').contains("accum_limit_pos_mm"));
-    }
-
-    void accumRotLimitOverKrc_fails()
-    {
-        AppConfig c = good();
-        c.accumLimitRotDeg = 30.0;
-        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
     }
 
     void senTypeEmpty_fails()

@@ -28,18 +28,8 @@ QStringList SessionGuard::staticChecks(const AppConfig &cfg)
                 .arg(cfg.cycleMs)
                 .arg(cfg.krcTimeoutCycles * cfg.cycleMs);
 
-    // 主机累计限值必须小于 KRC 侧 POSCORR 累积限值，否则第 2 层先于第 4 层触发，
-    // 梯度就反了。当前配置 accum_limit_pos_mm=1000 会被此规则主动拦下。
-    if (!(cfg.accumLimitPosMm < cfg.krcPoscorrLimitPosMm))
-        out << QStringLiteral(
-            "accum_limit_pos_mm=%1 must be < KRC poscorr limit %2")
-                .arg(cfg.accumLimitPosMm)
-                .arg(cfg.krcPoscorrLimitPosMm);
-    if (!(cfg.accumLimitRotDeg < cfg.krcPoscorrLimitRotDeg))
-        out << QStringLiteral(
-            "accum_limit_rot_deg=%1 must be < KRC poscorr limit %2")
-                .arg(cfg.accumLimitRotDeg)
-                .arg(cfg.krcPoscorrLimitRotDeg);
+    // 【第 2 层已按用户决定移除（2026-08-01）】：accumLimit 不再参与联锁。
+    // KRC 侧层 4/5（POSCORR ±25 / POSCORRMON 45）是唯一兜底。
 
     if (cfg.senType.trimmed().isEmpty())
         out << QStringLiteral("sen_type must be non-empty");

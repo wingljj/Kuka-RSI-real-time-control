@@ -119,9 +119,11 @@ Gap/Duplicate/Backward 帧**不**清零 `m_missed`（仅 Normal 帧清零）。
 - `cycleMs > 0`
 - `sessionGapMs > krc_timeout_cycles × cycleMs`（且 `sessionGapMs > 0`）——
   堵住 `session_gap_ms=0` 重开安全账本漏洞
-- `accumLimitPosMm < krc_poscorr_limit_pos_mm` 且
-  `accumLimitRotDeg < krc_poscorr_limit_rot_deg`——主机累计限值必须小于 KRC POSCORR
-  限值。当前配置 `accum_limit_pos_mm=1000` 会被主动拦下，强迫收敛
+- ~~`accumLimit < krc_poscorr_limit` 规则~~ —— **已按用户决定移除（2026-08-01）**。
+  第 2 层「主机累积位移/命令和越限保护」被完全移除（含 `PoseController::step` 的
+  位移 Fault 与联锁对应规则）。主机不再有累积位移预警，KRC 侧层 4/5
+  （POSCORR ±25 / POSCORRMON 45）是唯一兜底。`accumLimit`/`krcPoscorrLimit` 字段
+  保留仅供 UI 显示参考。
 - `senType` 非空（防拼出 `<Sen Type="">`；不做已知集合白名单，尊重用户决定）
 - 实测周期 vs 配置周期偏差 ≤ 10%（会话开始后才有实测值，使能时评估）
 
@@ -194,8 +196,7 @@ Delay 增长"，驱动运行中保护。
 ## 测试
 
 - 新增 `tests/test_ipoc_tracker.cpp`：分类矩阵全覆盖 + `gapCount` 精确值断言。
-- 新增 `tests/test_session_guard.cpp`：静态联锁逐条（含 `session_gap_ms=0`、
-  `accum_limit=1000` 被拦的用例）。
+- 新增 `tests/test_session_guard.cpp`：静态联锁逐条（含 `session_gap_ms=0` 用例）。
 - 扩展 `tests/test_rsi_codec.cpp`：`<Delay D="n"/>` 解析、缺失 Delay 不影响 `valid`。
 - 端到端：bash 验证脚本跑 `krc_simulator --ipoc-dup/--drop/...` + `loopback_test`，
   断言主机行为。
