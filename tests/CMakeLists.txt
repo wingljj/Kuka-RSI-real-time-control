@@ -21,3 +21,7 @@ add_test(NAME test_shared_state COMMAND test_shared_state)
 add_executable(test_ipoc_tracker test_ipoc_tracker.cpp)
 target_link_libraries(test_ipoc_tracker PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_ipoc_tracker COMMAND test_ipoc_tracker)
+
+add_executable(test_session_guard test_session_guard.cpp)
+target_link_libraries(test_session_guard PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_session_guard COMMAND test_session_guard)

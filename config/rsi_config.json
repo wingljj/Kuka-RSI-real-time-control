@@ -14,14 +14,18 @@
     "每个增量会是三倍大——这是首次联机最该先核对的一个数。"
   ],
   "network": {
-    "listen_ip":   "192.168.44.1",
-    "listen_port": 59152
+    "listen_ip":       "192.168.44.1",
+    "listen_port":     59152,
+    "rx_buffer_bytes": 1048576
   },
   "rsi": {
-    "cycle_ms":            12.0,
-    "session_gap_ms":      2000.0,
-    "sen_type":            "ImFree",
-    "watchdog_miss_limit": 3
+    "cycle_ms":                 12.0,
+    "session_gap_ms":           2000.0,
+    "sen_type":                 "ImFree",
+    "watchdog_miss_limit":      3,
+    "krc_timeout_cycles":       100,
+    "krc_poscorr_limit_pos_mm": 25.0,
+    "krc_poscorr_limit_rot_deg": 25.0
   },
   "control": {
     "kp_pos":              0.10,

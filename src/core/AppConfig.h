@@ -11,6 +11,12 @@ struct AppConfig
     QString senType           = "ImFree";
     int     watchdogMissLimit = 3;
 
+    // 联锁与运行时保护（见 SessionGuard）：
+    int     krcTimeoutCycles      = 100;       // KRC ETHERNET Timeout（周期数）
+    double  krcPoscorrLimitPosMm  = 25.0;      // KRC POSCORR 位置累积限值
+    double  krcPoscorrLimitRotDeg = 25.0;      // KRC POSCORR 姿态累积限值
+    int     rxBufferBytes         = 1048576;   // socket 接收缓冲（字节）
+
     // 判定"这是一个全新的 RSI 会话"所需的静默时长。必须显著大于 KRC 侧
     // ETHERNET 对象的 Timeout（计划值 100 个 IPO 周期，12ms 周期下约 1200ms）：
     // 只要主机的判定阈值低于 KRC 的容忍度，就存在一个窗口——KRC 认为会话

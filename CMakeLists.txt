@@ -12,6 +12,7 @@ add_library(rsi_core STATIC
     src/core/IpocTracker.cpp
     src/core/RsiCodec.cpp
     src/core/PoseController.cpp
+    src/core/SessionGuard.cpp
 )
 target_include_directories(rsi_core PUBLIC src)
 target_link_libraries(rsi_core PUBLIC Qt6::Core)
