@@ -27,7 +27,8 @@ Quat quatFromRotVec(const double rotVec[3]);
 
 // ZYX 欧拉角速率矩阵逆 E⁻¹(A,B,C)（3×3）：[Ȧ,Ḃ,Ċ] = E⁻¹·ω。
 // E = [[0,-sA,cA·cB],[0,cA,sA·cB],[1,0,-sB]]，det=-cosB。
-// |cosB| < 1e-9（B≈±90° 奇异）返回 false。
+// |cosB| < 0.1（B 超出 ~±84°，E⁻¹ 含 1/cosB 放大无界）返回 false；
+// 调用方应回退到有界的一阶近似，避免近奇异下 RKorr 欧拉增量发散。
 bool invEulerRate(double aDeg, double bDeg, double cDeg, double out3x3[3][3]);
 
 } // namespace poseops

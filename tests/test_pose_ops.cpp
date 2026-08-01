@@ -102,7 +102,11 @@ private slots:
     void invEulerRate_singular_returnsFalse()
     {
         double m[3][3];
-        QVERIFY(!poseops::invEulerRate(0, 90, 0, m));   // B=90 奇异
+        QVERIFY(!poseops::invEulerRate(0, 90, 0, m));   // B=90 严格奇异
+        // 近奇异（B=85，|cosB|≈0.087 < 0.1）：E⁻¹ 放大无界，必须拒绝以回退一阶近似
+        QVERIFY(!poseops::invEulerRate(0, 85, 0, m));
+        // 安全区边界外一档（B=80，|cosB|≈0.17 > 0.1）：仍可用
+        QVERIFY(poseops::invEulerRate(0, 80, 0, m));
     }
 };
 QTEST_MAIN(TestPoseOps)

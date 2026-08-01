@@ -95,8 +95,12 @@ bool invEulerRate(double aDeg, double bDeg, double cDeg, double out3x3[3][3])
     const double a = aDeg * kDegToRad, b = bDeg * kDegToRad;
     const double sa = std::sin(a), ca = std::cos(a);
     const double sb = std::sin(b), cb = std::cos(b);
-    if (std::fabs(cb) < 1e-9)
-        return false;   // B≈±90° 奇异
+    // 安全阈值：|cosB| < 0.1（B 超出 ~±84°）即拒绝，而非只在 |cosB| < 1e-9
+    // 的严格奇异点。E⁻¹ 含 1/cosB 项，B=89.99° 时 d.a/d.c 会放大到 ~687°/周期，
+    // 世界系范数限幅只限世界运动、限不住发出去的欧拉增量（还会计入 m_accum）。
+    // 提前回退让调用方用有界的一阶近似，才是「奇异区退化、不发散」的完整语义。
+    if (std::fabs(cb) < 0.1)
+        return false;   // B≈±84° 外：E⁻¹ 放大无界
     const double tb = sb / cb;
     // E⁻¹（world ZYX）：[Ȧ,Ḃ,Ċ] = E⁻¹·ω
     out3x3[0][0] =  tb*ca;  out3x3[0][1] =  tb*sa;  out3x3[0][2] = 1.0;
