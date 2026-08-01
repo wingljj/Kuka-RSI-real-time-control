@@ -3,6 +3,8 @@
 // 雅可比伪逆 solveDelta 转关节增量并 clamp 到限位，forward 正解回报 RIst/AIPos。
 // 支持故障注入：--ipoc-dup/--ipoc-gap/--ipoc-back/--drop/--reorder/--late-ms
 // /--ignore-replies/--send-delay，用于验证主机的异常处理路径。
+// 会话/时序增强：--restart-at-ms/--restart-gap-ms（KRL 重启：停发 + IPOC/q
+// 复位）、--ipoc-wrap-at（IPOC 回绕）、--jitter-us（节拍抖动）。
 #include <QCoreApplication>
 #include <QCommandLineParser>
 #include <QElapsedTimer>
@@ -14,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <QStringList>
 #include "core/Pose.h"
@@ -128,6 +131,10 @@ int main(int argc, char **argv)
     QCommandLineOption oLate("late-ms", "every Nth frame delay N ms", "n", "0");
     QCommandLineOption oIgnore("ignore-replies", "drop replies and raise Delay", "");
     QCommandLineOption oDelay("send-delay", "fixed Delay value in every frame", "n", "0");
+    QCommandLineOption oRestartAt("restart-at-ms", "stop sending N ms after launch (0=off)", "ms", "0");
+    QCommandLineOption oRestartGap("restart-gap-ms", "hold the pause N ms before resuming with IPOC/q reset", "ms", "0");
+    QCommandLineOption oIpocWrap("ipoc-wrap-at", "wrap IPOC counter back to 0 when it reaches N (0=off)", "n", "0");
+    QCommandLineOption oJitter("jitter-us", "add ±N us random jitter to send cadence (0=off)", "us", "0");
     QCommandLineOption oInitJoints("init-joints", "initial joint angles deg \"q1..q6\"", "q", "");
     QCommandLineOption oJointLimits("joint-limits", "override joint limits deg \"min1 max1 ... min6 max6\"", "s", "");
     QCommandLineOption oCartLimits("cart-limits", "cartesian pose ranges \"xmin xmax ... cmin cmax\"", "s", "");
@@ -138,6 +145,7 @@ int main(int argc, char **argv)
     QCommandLineOption oSelfTest("self-test", "run forward-kinematics self-test and exit", "");
     p.addOptions({oHost, oPort, oCycle, oCount, oDup, oGap, oBack,
                   oDrop, oReorder, oLate, oIgnore, oDelay,
+                  oRestartAt, oRestartGap, oIpocWrap, oJitter,
                   oInitJoints, oJointLimits, oCartLimits,
                   oMaxVelPos, oMaxVelRot, oMaxAccelPos, oMaxAccelRot,
                   oSelfTest});
@@ -157,8 +165,16 @@ int main(int argc, char **argv)
     const bool ignore  = p.isSet(oIgnore);
     const quint64 delayBase = p.value(oDelay).toULongLong();
 
+    const int restartAtMs = p.value(oRestartAt).toInt();   // 0=off
+    const int restartGapMs = p.value(oRestartGap).toInt();
+    const quint64 wrapAt  = p.value(oIpocWrap).toULongLong(); // 0=off
+    const int jitterUs    = p.value(oJitter).toInt();         // 0=off
+
+    // restartAtMs 会在 gap 期间停发帧 → replies < cycles，属于注入路径，
+    // 需放宽 replies==cycles 的严格检查。wrap/jitter 不丢帧，不进 injected。
     const bool injected = dupN > 0 || gapN > 0 || backN > 0 || dropN > 0
-                          || reorderN > 0 || lateN > 0 || ignore;
+                          || reorderN > 0 || lateN > 0 || ignore
+                          || restartAtMs > 0;
 
     if (p.isSet(oSelfTest)) {
         // 正解一致性：已知位形的期望位姿。zero-pose z = d1−d4+d6 = 675−1200+240 = −285。
@@ -302,13 +318,52 @@ int main(int argc, char **argv)
     // 注入下仍能精确判定主机是否原样回显。--ignore-replies 时不消费，故不入队。
     std::deque<quint64> sentIpocs;
 
+    // 会话重启状态：restartAtMs 处停发 restartGapMs 毫秒（不发帧、不推进 IPOC、
+    // 不处理回包，但节拍照走），随后复位会话——IPOC 回到 1000、q 回到初始位形、
+    // Delay 回到基值，模拟 KRL 程序重启 / 新 RSI 会话。initQ 在 --init-joints
+    // 与 clamp 处理之后捕获，保证复位到最终生效的初始位形。
+    // restartTriggered 是"已触发过"的一次性门闩，恢复后不再清回，避免 gap
+    // 结束后立刻再触发一次；gapUntilMs < 0 表示当前不在 gap 中 / 无待恢复。
+    bool restartTriggered = false;
+    qint64 gapUntilMs = -1;
+    double initQ[6];
+    std::copy(q, q + 6, initQ);
+
     for (int i = 0; i < cycles; ++i) {
-        // 等到本周期的标称发送时刻
-        const qint64 dueNs = qint64(double(i) * cycleMs * 1.0e6);
+        // 等到本周期的标称发送时刻（--jitter-us 给节拍加 ±N µs 抖动）
+        const qint64 dueNs = qint64(double(i) * cycleMs * 1.0e6)
+                             + (jitterUs > 0 ? (std::rand() % (2 * jitterUs + 1) - jitterUs) * 1000 : 0);
         while (pace.nsecsElapsed() < dueNs) {
             const qint64 remainMs = (dueNs - pace.nsecsElapsed()) / 1000000;
             if (remainMs > 1)
                 QThread::msleep(1);
+        }
+
+        // 会话重启：到 restartAtMs 进入静默 gap。gap 期间不发帧、不推进 IPOC、
+        // 不处理回包（重排缓冲与回显队列都保持不动），但节拍照走。
+        const qint64 nowMs = pace.nsecsElapsed() / 1000000;
+        if (restartAtMs > 0 && !restartTriggered && nowMs >= restartAtMs) {
+            restartTriggered = true;      // 一次性门闩：只重启一次
+            gapUntilMs = nowMs + restartGapMs;
+            std::fprintf(stderr, "session restart at %lld ms\n", nowMs);
+        }
+        const bool inGap = (gapUntilMs >= 0 && nowMs < gapUntilMs);
+        if (inGap) {
+            continue;
+        }
+        if (restartTriggered && gapUntilMs >= 0 && nowMs >= gapUntilMs) {
+            // gap 结束：复位会话（IPOC 重置 + q 复位 + delay 重置），并清空
+            // 重排缓冲与回显队列——新会话从全新账本开始，不留上一会话残留
+            // （否则复位后的首帧回显会被错配到旧队列，误报 ipoc_mismatch）。
+            ipoc = 1000;
+            std::copy(initQ, initQ + 6, q);
+            pose = kr210::forward(q);
+            delay = delayBase;
+            heldValid = false;
+            heldRob.clear();
+            sentIpocs.clear();
+            gapUntilMs = -1;
+            std::fprintf(stderr, "session resumed\n");
         }
 
         const bool dup     = active(dupN, i);
@@ -353,6 +408,10 @@ int main(int argc, char **argv)
             lastSent = sendIpoc;
             ipoc     = sendIpoc + 1;
         }
+
+        // 32 位回绕模拟：IPOC 达到 wrapAt 后回到 0（模拟真实 KRC 的溢出回绕）。
+        if (wrapAt > 0 && ipoc >= wrapAt)
+            ipoc = 0;
 
         QElapsedTimer rtt;
         rtt.start();
