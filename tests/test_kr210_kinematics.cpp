@@ -196,6 +196,32 @@ private slots:
         QVERIFY(qAbs(p.b - 90.0) < 1e-6);
         QVERIFY(std::isfinite(p.a) && std::isfinite(p.c));
     }
+
+    void solveDelta_eulerDeltasMapToTwist()
+    {
+        // 回归锚点：默认位形（B=60°）下 A/B/C 各 +1° 修正，经 solveDelta+forward
+        // 应各自响应 ≈ +1°。修复前 solveDelta 把欧拉角增量直接当 ω 用，非零姿态
+        // 下欧拉角速率 ≠ 角速度，C 修正实测响应为 0 → 主机 C 误差永不收敛、发散。
+        const double d2r = M_PI / 180.0;
+        const double q[6] = {0, -60 * d2r, 30 * d2r, 0, 90 * d2r, 0};
+        const Pose base = kr210::forward(q);
+        for (int k = 0; k < 3; ++k) {
+            Pose dx{0, 0, 0, 0, 0, 0};
+            if (k == 0) dx.a = 1.0;
+            else if (k == 1) dx.b = 1.0;
+            else             dx.c = 1.0;
+            double dq[6];
+            QVERIFY(kr210::solveDelta(q, dx, dq));
+            double q2[6];
+            for (int i = 0; i < 6; ++i) q2[i] = q[i] + dq[i];
+            const Pose p = kr210::forward(q2);
+            const double resp = (k == 0 ? p.a - base.a
+                                : k == 1 ? p.b - base.b
+                                         : p.c - base.c);
+            QVERIFY2(qAbs(resp - 1.0) < 0.05,
+                     qPrintable(QStringLiteral("axis %1 response %2").arg(k).arg(resp)));
+        }
+    }
 };
 QTEST_MAIN(TestKr210)
 #include "test_kr210_kinematics.moc"

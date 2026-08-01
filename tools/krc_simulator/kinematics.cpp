@@ -200,10 +200,24 @@ bool solveDelta(const double qRad[6], const Pose &dxDeg, double dqRad[6])
     if (!inv6(JJt, JJtInv))
         return false;
 
-    // Δx（度→rad 姿态）
+    // 欧拉角增量（度）→ 角速度 ω（rad）：几何雅可比的姿态行是 ω，不是欧拉角
+    // 速率。ZYX 约定 ω = E(A,B,C)·[Ȧ,Ḃ,Ċ]，E 依赖当前姿态：
+    //   [ωx]   [ 0,  -sA, cA·cB ] [Ȧ]
+    //   [ωy] = [ 0,   cA, sA·cB ] [Ḃ]
+    //   [ωz]   [ 1,   0,  -sB   ] [Ċ]
+    // 非零姿态下二者显著不同（实测默认位形 B=60 时 C+1° 若直接当 ω 响应为 0）。
+    const Pose cur = forward(qRad);
+    const double A = cur.a * kDegToRad, B = cur.b * kDegToRad;
+    const double ca = std::cos(A), sa = std::sin(A);
+    const double cb = std::cos(B), sb = std::sin(B);
+    const double aDot = dxDeg.a * kDegToRad;
+    const double bDot = dxDeg.b * kDegToRad;
+    const double cDot = dxDeg.c * kDegToRad;
     const double dx[6] = {
         dxDeg.x, dxDeg.y, dxDeg.z,
-        dxDeg.a * kDegToRad, dxDeg.b * kDegToRad, dxDeg.c * kDegToRad,
+        -sa * bDot + ca * cb * cDot,   // ω_x
+         ca * bDot + sa * cb * cDot,   // ω_y
+         aDot - sb * cDot,             // ω_z
     };
     // Δq = Jᵀ (J Jᵀ)⁻¹ Δx
     double t[6] = {0, 0, 0, 0, 0, 0};
