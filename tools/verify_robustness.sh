@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # 通信健壮性端到端验证：用 krc_simulator 故障注入驱动 loopback_test。
 # 用法: bash tools/verify_robustness.sh
-# 运行前需把 Qt bin 放到 PATH 上（MINGW/NINJA/QTBIN），否则 exe 找不到 DLL。
+# 脚本自动配置 Qt 运行环境；若调用者已设 QTBIN/MINGW/NINJA 则尊重其取值。
 set -u
 cd "$(dirname "$0")/.."
+
+# 运行环境：默认本项目路径；若调用者已设 QTBIN/MINGW/NINJA 则尊重之。
+if [ -z "${QTBIN:-}" ]; then
+    export MINGW=/d/Software/QT/content/Tools/mingw1120_64/bin
+    export NINJA=/d/Software/QT/content/Tools/Ninja
+    export QTBIN=/d/Software/QT/content/6.5.3/mingw_64/bin
+    export PATH="$MINGW:$NINJA:$QTBIN:$PATH"
+fi
 
 BUILD=build
 HOST=127.0.0.1
@@ -81,13 +89,7 @@ check "跳号后主机收满不丢帧" gap "replies=$CYCLES"
 # 5. --ignore-replies：模拟 SENTYPE 错配。必须使能跟踪（--track 1）——
 #    KRC Delay 增长是运行中保护，只在 Tracking 状态触发 Fault。
 run ignore "--track 1" --ignore-replies
-if grep -q "state=Fault" "/tmp/lb_ignore.log"; then
-    echo "PASS  主机 KRC Delay 增长 → Fault"
-    pass=$((pass + 1))
-else
-    echo "FAIL  主机未因 KRC Delay 增长转 Fault（见 /tmp/lb_ignore.log）"
-    fail=$((fail + 1))
-fi
+check_lb "主机 KRC Delay 增长 → Fault" ignore "state=Fault"
 
 echo "----"
 echo "PASS=$pass FAIL=$fail"
