@@ -124,9 +124,10 @@ void abcFromQuat(const Quat &q, double *aDeg, double *bDeg, double *cDeg)
         *aDeg = std::atan2(R[1][0], R[0][0]) * kRadToDeg;
         *cDeg = std::atan2(R[2][1], R[2][2]) * kRadToDeg;
     } else {
-        // B = ±90°：A/C 耦合，取 C = 0 分支。
+        // B = ±90°：A/C 耦合，取 C = 0 分支。R[0][1]=-sA, R[1][1]=cA →
+        // atan2(-R[0][1], R[1][1]) = A（B=+90 提取值为 A−C，B=−90 为 A+C）。
         *bDeg = (sb > 0 ? 90.0 : -90.0);
-        *aDeg = std::atan2(R[0][1], R[1][1]) * kRadToDeg;
+        *aDeg = std::atan2(-R[0][1], R[1][1]) * kRadToDeg;
         *cDeg = 0.0;
     }
 }
@@ -168,8 +169,8 @@ bool invEulerRate(double aDeg, double bDeg, double cDeg, double out3x3[3][3])
     const double a = aDeg * kDegToRad, b = bDeg * kDegToRad;
     const double sa = std::sin(a), ca = std::cos(a);
     const double sb = std::sin(b), cb = std::cos(b);
-    if (std::fabs(cb) < 1e-9)
-        return false;   // B≈±90° 奇异
+    if (std::fabs(cb) < 0.1)
+        return false;   // B 超出 ~±84°：E⁻¹ 含 1/cosB 放大无界，回退有界一阶近似
     const double tb = sb / cb;
     // E⁻¹（world ZYX）：[Ȧ,Ḃ,Ċ] = E⁻¹·ω
     out3x3[0][0] =  tb*ca;  out3x3[0][1] =  tb*sa;  out3x3[0][2] = 1.0;
