@@ -136,12 +136,15 @@ bash tools/package.sh      # 生成自包含的 dist/
 
 **未验证**
 
-KRC 侧文件（`krc/`）已通过 RSIVisual 加载确认格式，但**未在运行的 RSI 上
-完成一次完整联机**。所有行为都是对着 `krc_simulator` 验证的，而那个模拟器
-与上位机 codec 出自同一套假设 —— 一个共享的报文格式误解会以构造的方式
-通过全部现有测试。首次联机请优先核对 `SENTYPE` 与实测周期。
+KRC 侧文件（`krc/`）已验证格式（`RSI_CREATE` 在 OfficeLite 上加载通过，属性
+规则对照官方参考确认），但**未在任何运行中的 RSI 上完成一次完整联机**。
+所有行为都是对着 `krc_simulator` 验证的，而那个模拟器与上位机 codec 出自
+同一套假设 —— 一个共享的报文格式误解会以构造的方式通过全部现有测试。
 
-详见 [docs/deployment.md](docs/deployment.md)。
+**OfficeLite 无法跑通 RSI 以太网**（官方限制：无 KLI、无法外接通信；社区存在
+VxWin 绕过方案但未验证）。因此真机是最终验证点，首次联机请严格按
+[docs/real-machine-deployment.md](docs/real-machine-deployment.md) 走，
+优先核对 `SENTYPE` 与实测周期。
 
 ---
 
@@ -149,7 +152,8 @@ KRC 侧文件（`krc/`）已通过 RSIVisual 加载确认格式，但**未在运
 
 | 文件 | 内容 |
 |---|---|
-| [docs/deployment.md](docs/deployment.md) | 部署步骤、联机清单、异常对照、已知缺口 |
+| [docs/real-machine-deployment.md](docs/real-machine-deployment.md) | **真机**部署与首次联机（当前主文档） |
+| [docs/deployment.md](docs/deployment.md) | 早期部署文档（含 OfficeLite 环境的记录） |
 | [docs/rsi-object-facts.md](docs/rsi-object-facts.md) | 从本机 RSI Visual 提取的对象定义权威数据 |
 | [docs/references.md](docs/references.md) | 参照过的第三方资料与各自解决了什么 |
 | `docs/superpowers/specs/` | 设计文档 |
