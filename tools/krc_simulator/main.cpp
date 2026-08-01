@@ -602,29 +602,38 @@ int main(int argc, char **argv)
     RobotView view;
     view.resize(900, 700);
     view.setWindowTitle("Comau Racer 7-1.4 — KRC Simulator (RL)");
+
+    // 立即显示初始位姿（不等首帧回包——用户开了 --viz 就要看到机器人）
+    {
+        rlk::forward(ctx.q);  // forwardPosition() 计算所有 body frame
+        const rlk::Skeleton skel = rlk::skeleton();
+        double qDeg[6];
+        for (int i = 0; i < 6; ++i) qDeg[i] = ctx.q[i] * 180.0 / M_PI;
+        view.updateRobot(skel, qDeg);
+    }
     view.show();
 
     int vizCycle = 0;
-    qint64 nextDueNs = 0;
 
     // timer 间隔选 cycleMs/2（不超过 4ms），纯 poll 不引入显著抖动
     QTimer tick;
     tick.setTimerType(Qt::PreciseTimer);
 
     QObject::connect(&tick, &QTimer::timeout, [&]() {
-        // 发送到期帧
-        while ((cycles == 0 || vizCycle < cycles)) {
+        // 发送到期帧——while 循环批量发送所有应发的帧，保持绝对节拍
+        while (cycles == 0 || vizCycle < cycles) {
             const qint64 dueNs = qint64(double(vizCycle) * cycleMs * 1.0e6)
                                  + (ctx.jitterUs > 0 ? (std::rand() % (2 * ctx.jitterUs + 1) - ctx.jitterUs) * 1000 : 0);
             if (ctx.pace.nsecsElapsed() < dueNs)
                 break;
 
-            // --- 以下与 runHeadless 的循环体逐行相同（send 部分） ---
+            // 进度输出
             if (cycles == 0 && vizCycle % 500 == 0) {
                 std::printf("i=%d replies=%d missed=%d ipoc_mismatch=%d\n",
                             vizCycle, ctx.replies, ctx.missed, ctx.ipocMismatch);
                 std::fflush(stdout);
             }
+            // 会话重启逻辑（与 runHeadless 相同）
             const qint64 nowMs = ctx.pace.nsecsElapsed() / 1000000;
             if (ctx.restartAtMs > 0 && !ctx.restartTriggered && nowMs >= ctx.restartAtMs) {
                 ctx.restartTriggered = true;
@@ -632,48 +641,50 @@ int main(int argc, char **argv)
                 std::fprintf(stderr, "session restart at %lld ms\n", nowMs);
             }
             const bool inGap = (ctx.gapUntilMs >= 0 && nowMs < ctx.gapUntilMs);
-            if (!inGap) {
-                if (ctx.restartTriggered && ctx.gapUntilMs >= 0 && nowMs >= ctx.gapUntilMs) {
-                    ctx.ipoc = 1000;
-                    std::copy(ctx.initQ, ctx.initQ + 6, ctx.q);
-                    ctx.pose = rlk::forward(ctx.q);
-                    ctx.delay = ctx.delayBase;
-                    ctx.heldValid = false;
-                    ctx.heldRob.clear();
-                    ctx.sentIpocs.clear();
-                    ctx.gapUntilMs = -1;
-                    std::fprintf(stderr, "session resumed\n");
-                }
-                const bool dup     = active(ctx.dupN, vizCycle);
-                const bool gap     = active(ctx.gapN, vizCycle);
-                const bool back    = active(ctx.backN, vizCycle);
-                const bool drop    = active(ctx.dropN, vizCycle);
-                const bool reorder = active(ctx.reorderN, vizCycle);
-                const bool late    = active(ctx.lateN, vizCycle);
-                quint64 sendIpoc = ctx.ipoc;
-                if (dup)         sendIpoc = ctx.lastSent;
-                else if (back)   sendIpoc = (ctx.lastSent > 0) ? ctx.lastSent - 1 : 0;
-                else if (gap)    sendIpoc = ctx.ipoc + ctx.gapN;
-                const QByteArray rob = buildRob(ctx.pose, sendIpoc, ctx.delay, ctx.q);
-                auto sendFrame = [&](const QByteArray &r, quint64 ip) {
-                    if (late) QThread::msleep(ctx.lateN);
-                    sock.writeDatagram(r, host, port);
-                    if (!ctx.ignore) ctx.sentIpocs.push_back(ip);
-                };
-                if (reorder) {
-                    ctx.heldRob = rob; ctx.heldIpoc = sendIpoc; ctx.heldValid = true;
-                } else {
-                    if (!drop) sendFrame(rob, sendIpoc);
-                    if (ctx.heldValid) { sendFrame(ctx.heldRob, ctx.heldIpoc); ctx.heldValid = false; }
-                }
-                if (!dup) { ctx.lastSent = sendIpoc; ctx.ipoc = sendIpoc + 1; }
-                if (ctx.wrapAt > 0 && ctx.ipoc >= ctx.wrapAt) { ctx.ipoc = 0; ++ctx.wrapCount; }
+            if (inGap) {
+                ++vizCycle;  // gap 期间占位推进（与 headless 的 for-loop ++i 一致）
+                continue;
             }
+            if (ctx.restartTriggered && ctx.gapUntilMs >= 0 && nowMs >= ctx.gapUntilMs) {
+                ctx.ipoc = 1000;
+                std::copy(ctx.initQ, ctx.initQ + 6, ctx.q);
+                ctx.pose = rlk::forward(ctx.q);
+                ctx.delay = ctx.delayBase;
+                ctx.heldValid = false;
+                ctx.heldRob.clear();
+                ctx.sentIpocs.clear();
+                ctx.gapUntilMs = -1;
+                std::fprintf(stderr, "session resumed\n");
+            }
+
+            const bool dup     = active(ctx.dupN, vizCycle);
+            const bool gap     = active(ctx.gapN, vizCycle);
+            const bool back    = active(ctx.backN, vizCycle);
+            const bool drop    = active(ctx.dropN, vizCycle);
+            const bool reorder = active(ctx.reorderN, vizCycle);
+            const bool late    = active(ctx.lateN, vizCycle);
+            quint64 sendIpoc = ctx.ipoc;
+            if (dup)         sendIpoc = ctx.lastSent;
+            else if (back)   sendIpoc = (ctx.lastSent > 0) ? ctx.lastSent - 1 : 0;
+            else if (gap)    sendIpoc = ctx.ipoc + ctx.gapN;
+            const QByteArray rob = buildRob(ctx.pose, sendIpoc, ctx.delay, ctx.q);
+            auto sendFrame = [&](const QByteArray &r, quint64 ip) {
+                if (late) QThread::msleep(ctx.lateN);
+                sock.writeDatagram(r, host, port);
+                if (!ctx.ignore) ctx.sentIpocs.push_back(ip);
+            };
+            if (reorder) {
+                ctx.heldRob = rob; ctx.heldIpoc = sendIpoc; ctx.heldValid = true;
+            } else {
+                if (!drop) sendFrame(rob, sendIpoc);
+                if (ctx.heldValid) { sendFrame(ctx.heldRob, ctx.heldIpoc); ctx.heldValid = false; }
+            }
+            if (!dup) { ctx.lastSent = sendIpoc; ctx.ipoc = sendIpoc + 1; }
+            if (ctx.wrapAt > 0 && ctx.ipoc >= ctx.wrapAt) { ctx.ipoc = 0; ++ctx.wrapCount; }
             ++vizCycle;
         }
-        nextDueNs = qint64(double(vizCycle) * cycleMs * 1.0e6);
 
-        // 收包（非阻塞 drain）
+        // 收包（非阻塞 drain——与 headless 的 waitForReadyRead 不同，viz 用事件驱动）
         if (!ctx.ignore) {
             while (sock.hasPendingDatagrams()) {
                 const QByteArray d = sock.receiveDatagram().data();
@@ -717,17 +728,15 @@ int main(int argc, char **argv)
                 ctx.sumRttUs += us;
             }
         } else {
-            // ignore 模式：drain 但不消费（等 host 超时判 missed）
             while (sock.hasPendingDatagrams())
                 sock.receiveDatagram();
         }
 
-        // 更新 3D 视图
-        if (ctx.pose.x != 0 || ctx.pose.y != 0 || ctx.pose.z != 0) {
+        // 每 tick 刷新 3D 视图（无条件——不管有没有回包，骨架都要显示）
+        {
             const rlk::Skeleton skel = rlk::skeleton();
             double qDeg[6];
-            for (int i = 0; i < 6; ++i)
-                qDeg[i] = ctx.q[i] * 180.0 / M_PI;
+            for (int i = 0; i < 6; ++i) qDeg[i] = ctx.q[i] * 180.0 / M_PI;
             view.updateRobot(skel, qDeg);
         }
         view.setCycleInfo(vizCycle, ctx.replies, ctx.missed);

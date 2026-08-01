@@ -38,8 +38,8 @@ private:
     void drawLabels(QPainter &p);
 
     // 相机
-    double m_yaw = 40.0, m_pitch = 25.0, m_dist = 2600.0;
-    double m_targetX = 500, m_targetY = 0, m_targetZ = 900;
+    double m_yaw = 40.0, m_pitch = 25.0, m_dist = 2200.0;
+    double m_targetX = 75, m_targetY = 0, m_targetZ = 800;
 
     QPointF m_lastMouse;
     bool m_dragging = false;

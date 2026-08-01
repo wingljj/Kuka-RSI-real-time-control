@@ -127,8 +127,8 @@ void RobotView::drawLinks()
     if (b.size() < 2)
         return;
 
-    glColor3f(0.2f, 0.8f, 1.0f);  // 青色
-    glLineWidth(3.0f);
+    glColor3f(0.0f, 0.9f, 1.0f);  // 亮青色
+    glLineWidth(4.0f);
     glBegin(GL_LINES);
     for (std::size_t i = 0; i + 1 < b.size(); ++i) {
         glVertex3d(b[i].x, b[i].y, b[i].z);
@@ -143,7 +143,7 @@ void RobotView::drawJoints()
     if (b.empty())
         return;
 
-    glPointSize(8.0f);
+    glPointSize(10.0f);
     glBegin(GL_POINTS);
     // base 略深
     glColor3f(1.0f, 0.6f, 0.1f);  // 橙色
