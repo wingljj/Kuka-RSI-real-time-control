@@ -22,9 +22,9 @@ private:
     // 执行，而 comm 线程每周期的 push() 抢同一把锁；GUI 线程持锁期间若被
     // 抢占，push() 最坏要等一个时间片（~10–15ms），超过 RSI 周期即丢包停机。
     //
-    // 2000 点覆盖 12ms 周期下的完整 10s 窗口（10/0.012 ≈ 834），再往上按
-    // 4ms 周期 10s 需要 2500 点也仍够（12ms 是默认）。copyOut 已改成两段连续
-    // memcpy，2000 × 24B = 48KB 的拷贝仍远快于早先逐元素取模的 4096 次循环。
+    // 2000 点覆盖 12ms 周期下的完整 10s 窗口（10/0.012 ≈ 833）。4ms 周期下
+    // 10s 需 2500 点，超过 kMaxDrawPoints 时窗口被截短至 ~8s——轴会如实收窄
+    // （tStart = max(tEnd - window, tOldest)），不再假装有数据。
     static constexpr int kMaxDrawPoints = 2000;
 
     int m_windowSeconds = 10;

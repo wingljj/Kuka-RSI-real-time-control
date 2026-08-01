@@ -452,12 +452,11 @@ private slots:
         QCOMPARE(pc.state(), TrackState::Idle);
     }
 
-    void rotatedOverLimit_firesViaCommandedSumEvenIfRistWraps()
+    void rotatedOverLimit_firesViaCommandedSumWhenRistDoesNotFollow()
     {
-        // RIst 姿态角折返/不跟随：若机器人未跟随命令（丢包或卡住），RIst
-        // 位移停在锚点附近，主机从 RIst 看不出已累计的修正量。
-        // commandedSum（不折返）反映"主机以为发出去了多少修正"，必须兜底：
-        // 0.6°/cycle，200° 需 ~334 周期。
+        // 机器人未跟随命令（丢包或卡住）：RIst 位移停在锚点附近，主机从 RIst
+        // 看不出已累计的修正量。commandedSum（不折返）反映"主机以为发出去了多少
+        // 修正"，必须兜底：0.6°/cycle，200° 需 ~334 周期。
         PoseController pc;
         AppConfig c = testCfg();
         c.accumLimitRotDeg = 200.0;   // 高于单圈 180°，让 RIst 折返不触发
