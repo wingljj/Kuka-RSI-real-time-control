@@ -16,6 +16,10 @@ private slots:
         QCOMPARE(c.accumLimitPosMm, 30.0);
         QCOMPARE(c.accumLimitRotDeg, 15.0);
         QCOMPARE(c.watchdogMissLimit, 3);
+        QCOMPARE(c.targetTrajectoryMs, 1000.0);
+        QCOMPARE(c.physVmaxPosMmS, 500.0);
+        QCOMPARE(c.physVmaxRotDegS, 60.0);
+        QCOMPARE(c.staleFrameLimit, 10);
     }
 
     void load_readsAllFields()
@@ -25,11 +29,15 @@ private slots:
         f.write(R"({
           "network": { "listen_ip": "10.0.0.5", "listen_port": 12345 },
           "rsi": { "cycle_ms": 4.0, "sen_type": "MyType",
-                   "watchdog_miss_limit": 7 },
+                   "watchdog_miss_limit": 7,
+                   "target_trajectory_ms": 88.0 },
           "control": { "kp_pos": 0.1, "kp_rot": 0.2,
                        "vmax_pos_mm_s": 11.0, "vmax_rot_deg_s": 22.0,
                        "accum_limit_pos_mm": 33.0,
-                       "accum_limit_rot_deg": 44.0 },
+                       "accum_limit_rot_deg": 44.0,
+                       "phys_vmax_pos_mm_s": 1234.0,
+                       "phys_vmax_rot_deg_s": 777.0,
+                       "stale_frame_limit": 5 },
           "ui": { "refresh_ms": 50, "chart_window_s": 60 }
         })");
         f.flush();
@@ -45,6 +53,10 @@ private slots:
         QCOMPARE(c.watchdogMissLimit, 7);
         QCOMPARE(c.kpPos, 0.1);
         QCOMPARE(c.accumLimitRotDeg, 44.0);
+        QCOMPARE(c.targetTrajectoryMs, 88.0);
+        QCOMPARE(c.physVmaxPosMmS, 1234.0);
+        QCOMPARE(c.physVmaxRotDegS, 777.0);
+        QCOMPARE(c.staleFrameLimit, 5);
         QCOMPARE(c.refreshMs, 50);
         QCOMPARE(c.chartWindowS, 60);
     }

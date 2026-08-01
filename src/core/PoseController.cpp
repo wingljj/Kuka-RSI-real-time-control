@@ -89,6 +89,11 @@ Pose PoseController::step(const Pose &actual)
         return Pose{};
     }
 
+    // 记录本周期实际，供下一次 setTarget 作为轨迹起点（从实际出发）。
+    // 必须在 Tracking 守卫之前：机器人可在 Ready（未使能跟踪）下手动移动，
+    // 若只在 Tracking 路径更新，随后开始的轨迹会从陈旧位姿起步。
+    m_lastActual = actual;
+
     if (m_state != TrackState::Tracking)
         return Pose{};
 
@@ -215,7 +220,5 @@ Pose PoseController::step(const Pose &actual)
     // m_displacement / m_accum 仍计算并暴露（accumulated()/commandedSum()），
     // 仅供 UI「累积修正」显示。KRC 侧层 4/5（POSCORR ±25 / POSCORRMON 45）是唯一兜底。
     m_accum = next;
-    // 记录本周期实际，供下一次 setTarget 作为轨迹起点（从实际出发）。
-    m_lastActual = actual;
     return d;
 }

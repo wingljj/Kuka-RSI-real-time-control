@@ -35,7 +35,8 @@ struct AppConfig
     double  accumLimitRotDeg  = 15.0;
 
     // 反馈异常剔除：单帧位置/旋转跳变超物理极限（v_max × dt）判为陈旧帧
-    //（回零增量 + 计数），连续 staleFrameLimit 帧 → Fault
+    //（回零增量 + 计数），连续 staleFrameLimit 帧超限 → Fault（仅在 Tracking
+    // 下；非 Tracking 只累计不 Fault，下一帧不超限即清零自愈）
     double  physVmaxPosMmS    = 500.0;
     double  physVmaxRotDegS   = 60.0;
     int     staleFrameLimit   = 10;

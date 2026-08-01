@@ -26,9 +26,9 @@ private slots:
         tr.setGoal(Pose{0,0,0,0,0,0}, Pose{100,0,0,0,0,0}, 1000);
         tr.advance(0.001);
         const double vEarly = tr.sample().x / 0.001;
-        // 推进到接近结束
+        // 推进到接近结束：总 999 步，u = 0.999——仍在结束点之前采样，
+        // 末速度断言才有意义（第 1000 步会到 u=1.0，sample 直接返回终点）。
         for (int i = 0; i < 998; ++i) tr.advance(0.001);
-        tr.advance(0.001);
         const double vLate = (100.0 - tr.sample().x) / 0.001;
         QVERIFY(qAbs(vEarly) < 0.1);
         QVERIFY(qAbs(vLate) < 0.1);

@@ -170,6 +170,8 @@ private slots:
         const Pose a{0,0,0,0,0,0};
         Pose b = a; b.x = 600.0;                       // 600mm 单帧 > 500mm/s×1s
         QVERIFY(poseops::exceedsPhysicalJump(a, b, 1.0, 500.0, 60.0));
+        // dt<=0 早退守卫：跳变再大也不判陈旧（dt 不可信时不能误杀）
+        QVERIFY(!poseops::exceedsPhysicalJump(a, b, 0.0, 500.0, 60.0));
         b = a; b.x = 100.0;                            // 100mm < 500 → 位置正常
         QVERIFY(!poseops::exceedsPhysicalJump(a, b, 1.0, 500.0, 60.0));
         b = a; b.a = 90.0;                             // 90° 单帧 > 60°/s×1s

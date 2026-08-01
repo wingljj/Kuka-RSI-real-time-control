@@ -8,7 +8,8 @@ namespace poseops {
 
 struct Quat { double w, x, y, z; };
 
-// 四元数乘法（Hamilton，右手系）。Task 2 平滑器插值依赖，故公开。
+// 四元数乘法（Hamilton，右手系）。TargetTrajectory 的姿态插值（Slerp，
+// quatSlerp）及其依赖的 quatFromABC/quatError 都要用到，故公开。
 Quat quatMul(const Quat &a, const Quat &b);
 
 // 四元数 Slerp 最短弧插值：dot<0 取反 q1（走短弧）；t=0/1 端点精确返回原值；

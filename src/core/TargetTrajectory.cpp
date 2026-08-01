@@ -1,5 +1,6 @@
 #include "core/TargetTrajectory.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace {

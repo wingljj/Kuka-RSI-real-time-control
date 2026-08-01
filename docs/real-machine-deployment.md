@@ -177,8 +177,12 @@ WaitingFirstFrame > Disconnected）：
 反馈异常剔除（陈旧帧）：单帧位姿相对上一帧的跳变超过物理极限
 （`phys_vmax_*` × `cycle_ms`，位置用欧氏距离、姿态用 SO(3) 最短旋转角）即判为
 陈旧/损坏帧：该周期回零增量但仍回包，状态显示 `StaleFrame`（黄）；连续
-`stale_frame_limit` 帧超限即转 `Fault`（红）。正常运动（真机可达速度以内）
-不会触发；首帧与会话重启首帧无可比帧，不检查。
+`stale_frame_limit` 帧超限即转 `Fault`（红）——**仅在 Tracking 下生效**：
+非 Tracking（如 Ready）时同样计数并显示 `StaleFrame`，但不 Fault，下一帧
+不超限即清零自愈。正常运动（真机可达速度以内）不会触发。首帧与会话重启
+首帧（静默 ≥ `session_gap_ms`）无可比帧，不检查；但看门狗间隙（静默
+< `session_gap_ms`，会话未重启）后的恢复首帧仍与间隙前的位姿比较——机器人
+若在间隙内移动超限，该帧至多计入一次 stale 计数，随后的正常帧立即清零自愈。
 
 通信健壮性验证工具：`tools/verify_robustness.sh`（故障注入端到端）与
 `tools/pcap_replay.py`（真实抓包回放），矩阵见
