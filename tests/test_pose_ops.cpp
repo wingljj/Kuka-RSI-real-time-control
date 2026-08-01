@@ -108,6 +108,18 @@ private slots:
         // 安全区边界外一档（B=80，|cosB|≈0.17 > 0.1）：仍可用
         QVERIFY(poseops::invEulerRate(0, 80, 0, m));
     }
+
+    void errorPoseDeg_singularTarget_rotationVector()
+    {
+        // 目标 (-180,180,-180) vs 实际 (0,60,0)：SO(3) 最短旋转范数 ≈ 60°，而非
+        // 逐轴欧拉差范数 ≈ 293°（修复前显示层）。
+        const Pose actual{0, 0, 0, 0, 60, 0};
+        const Pose target{0, 0, 0, -180, 180, -180};
+        const Pose e = poseops::errorPoseDeg(target, actual);
+        QVERIFY(std::isfinite(e.a) && std::isfinite(e.b) && std::isfinite(e.c));
+        const double norm = std::sqrt(e.a*e.a + e.b*e.b + e.c*e.c);
+        QVERIFY(qAbs(norm - 60.0) < 1.0);   // 真实 SO(3) 误差 60°（±容差）
+    }
 };
 QTEST_MAIN(TestPoseOps)
 #include "test_pose_ops.moc"

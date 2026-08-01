@@ -52,6 +52,7 @@ void abcFromQuat(const Quat &q, double *aDeg, double *bDeg, double *cDeg)
         *cDeg = std::atan2(R[2][1], R[2][2]) * kRadToDeg;
     } else {
         // B = ±90°：A/C 耦合，取 C = 0 分支。R[0][1]=-sA, R[1][1]=cA → atan2(-R[0][1], R[1][1]) = A
+        // gauge 说明：B=+90 时提取的 A 是 C=0-gauge 代表元 A−C；B=−90 时是 A+C。
         *bDeg = (sb > 0 ? 90.0 : -90.0);
         *aDeg = std::atan2(-R[0][1], R[1][1]) * kRadToDeg;
         *cDeg = 0.0;
@@ -87,6 +88,19 @@ Quat quatFromRotVec(const double rotVec[3])
     const double angle = v;
     const double s = std::sin(0.5 * angle) / v;
     return Quat{std::cos(0.5 * angle), rotVec[0]*s, rotVec[1]*s, rotVec[2]*s};
+}
+
+Pose errorPoseDeg(const Pose &target, const Pose &actual)
+{
+    const Quat qA = quatFromABC(actual.a, actual.b, actual.c);
+    const Quat qT = quatFromABC(target.a, target.b, target.c);
+    const Quat qE = quatError(qT, qA);
+    double rot[3];
+    rotVecFromQuat(qE, rot);
+    Pose p;
+    p.x = target.x - actual.x; p.y = target.y - actual.y; p.z = target.z - actual.z;
+    p.a = rot[0] * kRadToDeg; p.b = rot[1] * kRadToDeg; p.c = rot[2] * kRadToDeg;
+    return p;
 }
 
 bool invEulerRate(double aDeg, double bDeg, double cDeg, double out3x3[3][3])

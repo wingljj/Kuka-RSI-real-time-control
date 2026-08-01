@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include "core/Pose.h"
 
 // 姿态运算纯函数：KUKA A/B/C = ZYX 欧拉角 ↔ 四元数、SO(3) 最短旋转（旋转向量）、
 // ZYX 欧拉速率矩阵逆。无 Qt 运行时依赖。内部一律 rad，接口度。
@@ -24,6 +25,9 @@ void rotVecFromQuat(const Quat &q, double rotVec[3]);
 
 // 旋转向量（rad，世界坐标）→ 四元数（单位）。|v|≈0 返回恒等。
 Quat quatFromRotVec(const double rotVec[3]);
+
+// 便捷：目标 vs 实际 → 误差 Pose（x/y/z 逐轴差；a/b/c = SO(3) 旋转向量分量，世界坐标，度）
+Pose errorPoseDeg(const Pose &target, const Pose &actual);
 
 // ZYX 欧拉角速率矩阵逆 E⁻¹(A,B,C)（3×3）：[Ȧ,Ḃ,Ċ] = E⁻¹·ω。
 // E = [[0,-sA,cA·cB],[0,cA,sA·cB],[1,0,-sB]]，det=-cosB。

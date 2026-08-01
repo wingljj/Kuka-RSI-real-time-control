@@ -484,6 +484,22 @@ private slots:
         QVERIFY(rotDeg > 0.0);
         QVERIFY(rotDeg <= 0.2);   // 0.12° + E⁻¹ 耦合容差；未修复时 ≈6.87°
     }
+
+    void attitude_zeroVmaxRot_blocksRotation()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.targetSmoothingMs = 0.0;
+        c.vmaxRotDegS = 0.0;               // 0 = 旋转被阻止
+        pc.configure(c);
+        pc.beginSession(Pose{0,0,0, 0,60,0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0,0,0, 0,0,0});  // 大姿态误差
+        const Pose d = pc.step(Pose{0,0,0, 0,60,0});
+        QCOMPARE(d.a, 0.0);
+        QCOMPARE(d.b, 0.0);
+        QCOMPARE(d.c, 0.0);
+    }
 };
 
 QTEST_MAIN(TestPoseController)

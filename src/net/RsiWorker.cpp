@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include "core/PoseOps.h"
 #include "core/RsiCodec.h"
 
 RsiWorker::RsiWorker(const AppConfig &cfg, SharedState *state,
@@ -262,7 +263,8 @@ void RsiWorker::onDatagram()
         }
 
         if (f.valid) {
-            const Pose err = poseSub(m_ctl.target(), f.rist);
+            // 姿态误差 = SO(3) 旋转向量（世界坐标，度）——与控制器一致，奇异/边界不跳变
+            const Pose err = poseops::errorPoseDeg(m_ctl.target(), f.rist);
             publishSnapshot(f.rist, err, f.ipoc, true);
 
             ChartSample cs;

@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **仅主机误差计算**：位置完全不变；模拟器不改；KRC 三文件只读。
-- **RKorr 输出仍为欧拉增量**：`Δ欧拉 = E⁻¹(A_actual,B_actual,C_actual)·d_rot`。`E⁻¹` 在 `|cosB| < 1e-9` 时退化，返回 false → 调用方退化为逐轴一阶近似 + 范数限幅（不发散）。
+- **RKorr 输出仍为欧拉增量**：`Δ欧拉 = E⁻¹(A_actual,B_actual,C_actual)·d_rot`。`E⁻¹` 在 `|cosB| < 0.1`（B 超出 ~±84°）时退化，返回 false → 调用方退化为逐轴一阶近似 + 范数限幅（不发散）。
 - **增量姿态按范数限幅**（`|d_rot| ≤ stepLimitRot`，超限缩放），非逐分量 clamp——旋转向量是单一旋转。
 - **平滑器姿态用旋转向量插值**：`qSmooth = quat(alpha·rotErr_s) ⊗ qSmooth`，归一化。替换现有 `wrap180` 逐轴插值。
 - `poseops` 纯函数，无 Qt 运行时依赖（仅 `<cmath>`/`<array>` + `core/Pose.h`）。
@@ -61,7 +61,8 @@ Quat quatFromRotVec(const double rotVec[3]);
 
 // ZYX 欧拉角速率矩阵逆 E⁻¹(A,B,C)（3×3）：[Ȧ,Ḃ,Ċ] = E⁻¹·ω。
 // E = [[0,-sA,cA·cB],[0,cA,sA·cB],[1,0,-sB]]，det=-cosB。
-// |cosB| < 1e-9（B≈±90° 奇异）返回 false。
+// |cosB| < 0.1（B 超出 ~±84°，E⁻¹ 含 1/cosB 放大无界）返回 false；
+// 调用方应回退到有界的一阶近似，避免近奇异下 RKorr 欧拉增量发散。
 bool invEulerRate(double aDeg, double bDeg, double cDeg, double out3x3[3][3]);
 
 } // namespace poseops
