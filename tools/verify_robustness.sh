@@ -6,14 +6,16 @@ set -u
 cd "$(dirname "$0")/.."
 
 # 运行环境：默认本项目路径；若调用者已设 QTBIN/MINGW/NINJA 则尊重之。
-# UCRT 提供 libxml2-2.dll —— RL(rl::mdl) 的运行时依赖，模拟器正逆解必须。
 if [ -z "${QTBIN:-}" ]; then
     export MINGW=/d/Software/QT/content/Tools/mingw1120_64/bin
     export NINJA=/d/Software/QT/content/Tools/Ninja
     export QTBIN=/d/Software/QT/content/6.5.3/mingw_64/bin
-    export UCRT=/c/msys64/ucrt64/bin
-    export PATH="$MINGW:$NINJA:$QTBIN:$UCRT:$PATH"
+    export PATH="$MINGW:$NINJA:$QTBIN:$PATH"
 fi
+# UCRT 提供 libxml2-2.dll —— RL(rl::mdl) 的运行时依赖，模拟器正逆解必须。
+# 此为无条件依赖：调用者设 QTBIN 时仍可能缺 libxml2，故独立于上方守卫。
+export UCRT=/c/msys64/ucrt64/bin
+export PATH="$UCRT:$PATH"
 
 BUILD=build
 HOST=127.0.0.1
