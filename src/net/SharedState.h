@@ -22,6 +22,9 @@ struct StatusSnapshot
     double     maxReplyUs      = 0.0;
     quint64    frameCount      = 0;
     bool       connected       = false;
+    quint64    krcDelay        = 0;   // KRC 统计的迟到/丢失回包数（<Delay D=...>）
+    int        peerRejected    = 0;   // 被对端锁定丢弃的异源帧数
+    int        sendFails       = 0;   // writeDatagram 连续失败计数
 };
 
 // 通信线程 publish，GUI 线程 snapshot。锁持有时间仅够一次结构体拷贝。

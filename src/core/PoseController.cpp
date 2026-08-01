@@ -68,6 +68,12 @@ void PoseController::setTracking(bool on)
     }
 }
 
+void PoseController::forceFault(const QString &reason)
+{
+    m_state = TrackState::Fault;
+    m_faultReason = reason;
+}
+
 Pose PoseController::step(const Pose &actual)
 {
     // 粘滞的配置故障：每个周期都重新宣告，因为 resetToActual/beginSession

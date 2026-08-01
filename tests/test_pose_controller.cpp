@@ -434,6 +434,22 @@ private slots:
         pc.step(actual);
         QCOMPARE(pc.accumulated().x, 0.0);
     }
+
+    void forceFault_latchesUntilReset()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.forceFault(QStringLiteral("network write failed"));
+        QCOMPARE(pc.state(), TrackState::Fault);
+        QVERIFY(pc.faultReason().contains("network write failed"));
+        QCOMPARE(pc.step(Pose{0, 0, 0, 0, 0, 0}).x, 0.0);
+        pc.setTracking(true);   // 不得直接重新使能
+        QCOMPARE(pc.state(), TrackState::Fault);
+        pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
+        QCOMPARE(pc.state(), TrackState::Idle);
+    }
 };
 
 QTEST_MAIN(TestPoseController)

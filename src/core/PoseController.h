@@ -47,6 +47,10 @@ public:
 
     QString faultReason() const { return m_faultReason; }
 
+    // 外部（网络层）注入的锁存故障：写失败、KRC Delay 增长等。与内部判定的
+    // Fault 一样，必须经 resetToActual 才能清除，绝不能被 setTracking(true) 绕过。
+    void forceFault(const QString &reason);
+
 private:
     AppConfig  m_cfg = AppConfig::defaults();
     Pose       m_target;
