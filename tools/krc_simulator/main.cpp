@@ -119,10 +119,13 @@ int main(int argc, char **argv)
     QCoreApplication app(argc, argv);
     QCommandLineParser p;
     p.addHelpOption();
-    QCommandLineOption oHost("host", "host IP", "ip", "192.168.44.1");
+    // 默认 127.0.0.1（本机回环，不依赖 VMnet、不被防火墙挡）：双击即与本机
+    // rsi_host（监听 127.0.0.1）匹配。真机场景用 --host 指定宿主 IP。
+    QCommandLineOption oHost("host", "host IP", "ip", "127.0.0.1");
     QCommandLineOption oPort("port", "host port", "n", "59152");
     QCommandLineOption oCycle("cycle-ms", "cycle", "ms", "12.0");
-    QCommandLineOption oCount("cycles", "cycle count", "n", "500");
+    // 默认 10000 帧 ≈ 2 分钟：双击 exe 也能看到效果，不至于 6 秒闪退。
+    QCommandLineOption oCount("cycles", "cycle count", "n", "10000");
     QCommandLineOption oDup("ipoc-dup", "every Nth frame resend previous IPOC", "n", "0");
     QCommandLineOption oGap("ipoc-gap", "every Nth frame jump N IPOC", "n", "0");
     QCommandLineOption oBack("ipoc-back", "every Nth frame send IPOC-1", "n", "0");
