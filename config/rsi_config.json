@@ -12,6 +12,9 @@
     "    单周期增量 = kp × 误差，再夹到 vmax × cycle_ms",
     "首次联机用 0.1 / 10mm/s，确认方向和响应都对了再往上调。",
     "",
+    "target_trajectory_ms：目标阶跃的平滑轨迹时长（位置五次多项式 + 姿态 Slerp，",
+    "速度/加速度连续，到点即达）；0 = 轨迹立即完成 = 直通。",
+    "",
     "cycle_ms 必须与界面上显示的实测周期一致。若实测是 4.0 而这里写 12.0，",
     "每个增量会是三倍大——这是首次联机最该先核对的一个数。"
   ],
@@ -23,7 +26,7 @@
   "rsi": {
     "cycle_ms":                 12.0,
     "session_gap_ms":           2000.0,
-    "target_smoothing_ms":      50.0,
+    "target_trajectory_ms":     1000.0,
     "sen_type":                 "ImFree",
     "watchdog_miss_limit":      3,
     "krc_timeout_cycles":       100,

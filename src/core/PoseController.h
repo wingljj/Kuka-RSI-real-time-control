@@ -3,6 +3,7 @@
 #include "core/AppConfig.h"
 #include "core/Pose.h"
 #include "core/PoseOps.h"
+#include "core/TargetTrajectory.h"
 
 enum class TrackState { Idle, Tracking, Fault };
 
@@ -12,7 +13,16 @@ class PoseController
 public:
     void configure(const AppConfig &cfg);
 
-    void setTarget(const Pose &t) { m_target = t; }
+    // 目标变化时从"当前实际位姿"启动固定时长轨迹（位置五次多项式 + 姿态
+    // Slerp），到点即达；目标未变化则轨迹继续/保持，不重启。
+    void setTarget(const Pose &t)
+    {
+        if (t.x != m_target.x || t.y != m_target.y || t.z != m_target.z
+            || t.a != m_target.a || t.b != m_target.b || t.c != m_target.c) {
+            m_traj.setGoal(m_lastActual, t, m_cfg.targetTrajectoryMs);
+            m_target = t;
+        }
+    }
     Pose target() const { return m_target; }
 
     // 误差归零：目标置为实际、状态回 Idle、清除故障原因。
@@ -59,11 +69,10 @@ private:
     TrackState m_state = TrackState::Idle;
     QString    m_faultReason;
 
-    // 目标一阶低通（仅 Tracking 生效）。位置线性逼近，姿态用旋转向量插值
-    // （SO(3) 最短弧）——避免逐轴 wrap 边界跳变。系数 m_alpha = cycleS/(cycleS+tauS)；
-    // tauS≤0 时 m_alpha=1 直通。
-    Pose    m_smoothTarget;
-    double  m_alpha = 1.0;
+    // 目标轨迹（仅 Tracking 生效）：setTarget 目标变化时从 m_lastActual 启动，
+    // step 每周期采样作为误差源并推进。时长 ≤0 = 立即完成 = 直通。
+    TargetTrajectory m_traj;
+    Pose             m_lastActual;   // 最近一帧实际位姿（轨迹起点）
 
     Pose m_anchor;                  // 会话首帧锁存的 RIst₀
     Pose m_displacement;            // 当前实际位姿相对 m_anchor 的位移

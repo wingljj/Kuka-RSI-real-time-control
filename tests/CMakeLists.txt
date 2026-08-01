@@ -33,3 +33,7 @@ add_test(NAME test_kr210_kinematics COMMAND test_kr210_kinematics)
 add_executable(test_pose_ops test_pose_ops.cpp)
 target_link_libraries(test_pose_ops PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_pose_ops COMMAND test_pose_ops)
+
+add_executable(test_target_trajectory test_target_trajectory.cpp)
+target_link_libraries(test_target_trajectory PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_target_trajectory COMMAND test_target_trajectory)

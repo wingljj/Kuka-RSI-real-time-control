@@ -25,7 +25,7 @@ struct AppConfig
     // 与看门狗间隔（用于"连接丢失"显示）是两个不同的问题，不可共用一个值。
     double  sessionGapMs      = 2000.0;
 
-    double  targetSmoothingMs = 50.0;    // 目标一阶低通时间常数 ms（≤0 禁用）
+    double  targetTrajectoryMs = 1000.0; // 目标轨迹时长 ms（0 = 立即完成 = 直通）
 
     double  kpPos             = 0.30;
     double  kpRot             = 0.30;

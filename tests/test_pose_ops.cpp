@@ -72,6 +72,62 @@ private slots:
         QVERIFY(qAbs(rot[1]) < 1e-6 && qAbs(rot[2]) < 1e-6);
     }
 
+    void quatSlerp_endpointsExact()
+    {
+        const Quat a = poseops::quatFromABC(30, 20, -40);
+        const Quat b = poseops::quatFromABC(-170, 80, 150);
+        const Quat s0 = poseops::quatSlerp(a, b, 0.0);
+        const Quat s1 = poseops::quatSlerp(a, b, 1.0);
+        QCOMPARE(s0.w, a.w); QCOMPARE(s0.x, a.x); QCOMPARE(s0.y, a.y); QCOMPARE(s0.z, a.z);
+        QCOMPARE(s1.w, b.w); QCOMPARE(s1.x, b.x); QCOMPARE(s1.y, b.y); QCOMPARE(s1.z, b.z);
+    }
+
+    void quatSlerp_midpointOf90deg()
+    {
+        // 绕 Z 90° 的 Slerp 中点 = 45°（角度随 t 线性）
+        const Quat q0 = poseops::quatFromABC(0, 0, 0);
+        const Quat q1 = poseops::quatFromABC(0, 0, 90);
+        const Quat qm = poseops::quatSlerp(q0, q1, 0.5);
+        double a, b, c;
+        poseops::abcFromQuat(qm, &a, &b, &c);
+        QVERIFY(qAbs(a) < 1e-9 && qAbs(b) < 1e-9);
+        QVERIFY(qAbs(c - 45.0) < 1e-9);
+    }
+
+    void quatSlerp_shortestArc()
+    {
+        // 179° → -179°（最短差 2°）：中点走短弧 1°，而非长弧 179°
+        const Quat q0 = poseops::quatFromABC(179, 0, 0);
+        const Quat q1 = poseops::quatFromABC(-179, 0, 0);
+        const Quat qm = poseops::quatSlerp(q0, q1, 0.5);
+        double rot[3];
+        poseops::rotVecFromQuat(poseops::quatError(qm, q0), rot);
+        const double angleDeg = std::sqrt(rot[0]*rot[0]+rot[1]*rot[1]+rot[2]*rot[2])
+                                * 180.0 / 3.14159265358979323846;
+        QVERIFY(qAbs(angleDeg - 1.0) < 1e-6);
+        // 对 q1 取反（同一旋转）结果旋转不变——最短弧不依赖符号
+        const Quat q1n{-q1.w, -q1.x, -q1.y, -q1.z};
+        const Quat qm2 = poseops::quatSlerp(q0, q1n, 0.5);
+        double a1, b1, c1, a2, b2, c2;
+        poseops::abcFromQuat(qm, &a1, &b1, &c1);
+        poseops::abcFromQuat(qm2, &a2, &b2, &c2);
+        QVERIFY(qAbs(a1 - a2) < 1e-6 && qAbs(b1 - b2) < 1e-6 && qAbs(c1 - c2) < 1e-6);
+    }
+
+    void quatSlerp_angleProportionalToT()
+    {
+        // 角速度恒定：t=0.25 处相对起点的转角 = 总转角 × 0.25
+        const Quat q0 = poseops::quatFromABC(0, 0, 0);
+        const Quat q1 = poseops::quatFromABC(30, -20, 10);
+        double rot[3];
+        poseops::rotVecFromQuat(poseops::quatError(q1, q0), rot);
+        const double total = std::sqrt(rot[0]*rot[0]+rot[1]*rot[1]+rot[2]*rot[2]);
+        const Quat qH = poseops::quatSlerp(q0, q1, 0.25);
+        poseops::rotVecFromQuat(poseops::quatError(qH, q0), rot);
+        const double partial = std::sqrt(rot[0]*rot[0]+rot[1]*rot[1]+rot[2]*rot[2]);
+        QVERIFY(qAbs(partial - 0.25 * total) < 1e-6);
+    }
+
     void invEulerRate_identity()
     {
         // E·(E⁻¹·ω) = ω（非奇异位形）

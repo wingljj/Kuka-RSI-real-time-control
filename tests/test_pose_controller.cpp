@@ -15,7 +15,7 @@ AppConfig testCfg()
     c.vmaxRotDegS        = 10.0;   // 12ms → 步长上限 0.12°
     c.accumLimitPosMm    = 30.0;
     c.accumLimitRotDeg   = 15.0;
-    c.targetSmoothingMs  = 0.0;    // 保持增量 = kp×误差 的精确算术断言
+    c.targetTrajectoryMs = 0.0;    // 轨迹立即完成 = 直通，保持增量 = kp×误差 的精确算术断言
     return c;
 }
 
@@ -340,29 +340,32 @@ private slots:
         QCOMPARE(pc.state(), TrackState::Idle);
     }
 
-    void smoothing_progressivelyApproachesStepTarget()
+    void targetTrajectory_progressivelyApproachesStepTarget()
     {
-        // 放开限幅让增量 = kp×误差；无平滑时目标阶跃 100 第一周期误差=100
-        // → 增量=50。平滑后平滑目标第一步 = 100×α，α=12/(12+50)=0.1935
-        // → 误差≈19.35 → 增量≈9.68，显著削平。
+        // 放开限幅让增量 = kp×误差。轨迹语义：目标阶跃 100、时长 50ms、周期 12ms。
+        // 首周期先采样后推进：u=0 → 采样 = 起点（= 实际）→ 增量 0（五次多项式
+        // 起点速度 0）；次周期 u=12/50=0.24，s(0.24)=10u³-15u⁴+6u⁵≈0.09325
+        // → 误差 ≈9.325 → 增量 ≈4.66，显著削平（无轨迹时直通 50）。
         PoseController pc;
         AppConfig c = testCfg();
-        c.targetSmoothingMs = 50.0;
-        c.kpPos             = 0.5;
-        c.vmaxPosMmS        = 1000000.0;   // 放开限幅
+        c.targetTrajectoryMs = 50.0;
+        c.kpPos              = 0.5;
+        c.vmaxPosMmS         = 1000000.0;   // 放开限幅
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         const Pose d1 = pc.step(Pose{0, 0, 0, 0, 0, 0});
-        QVERIFY(d1.x < 20.0);
-        QVERIFY(qAbs(d1.x - 9.68) < 0.5);
+        QCOMPARE(d1.x, 0.0);                 // 起点速度 0
+        const Pose d2 = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        QVERIFY(d2.x < 20.0);
+        QVERIFY(qAbs(d2.x - 4.66) < 0.05);   // 0.5 × 100 × s(0.24)
     }
 
-    void smoothing_tauZero_isPassthrough()
+    void targetTrajectory_zeroDuration_isPassthrough()
     {
         PoseController pc;
-        AppConfig c = testCfg();            // targetSmoothingMs=0
+        AppConfig c = testCfg();             // targetTrajectoryMs=0 → 轨迹立即完成 = 直通
         c.kpPos      = 0.5;
         c.vmaxPosMmS = 1000000.0;
         pc.configure(c);
@@ -370,33 +373,33 @@ private slots:
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         const Pose d1 = pc.step(Pose{0, 0, 0, 0, 0, 0});
-        QVERIFY(qAbs(d1.x - 50.0) < 1e-9);   // α=1 直通
+        QVERIFY(qAbs(d1.x - 50.0) < 1e-9);   // 直通
     }
 
-    void resetToActual_syncsSmoothTarget()
+    void resetToActual_completesTrajectory()
     {
         PoseController pc;
         AppConfig c = testCfg();
-        c.targetSmoothingMs = 50.0;
-        c.kpPos             = 0.5;
-        c.vmaxPosMmS        = 1000000.0;
+        c.targetTrajectoryMs = 50.0;
+        c.kpPos              = 0.5;
+        c.vmaxPosMmS         = 1000000.0;
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        pc.step(Pose{0, 0, 0, 0, 0, 0});     // 平滑目标开始逼近（≈19.35）
+        pc.step(Pose{0, 0, 0, 0, 0, 0});     // 轨迹启动（u=0，增量 0）
         pc.resetToActual(Pose{3, 0, 0, 0, 0, 0});
         pc.setTracking(true);
-        // 平滑目标必须同步为 actual(3)，否则从 19.35 向 3 逼近 → 假误差 → 非零增量
+        // 轨迹必须立即完成（目标=实际=3），否则会残留向 3 逼近的假误差 → 非零增量
         const Pose d = pc.step(Pose{3, 0, 0, 0, 0, 0});
         QCOMPARE(d.x, 0.0);
     }
 
-    void smoothing_doesNotChangeSteadyState()
+    void targetTrajectory_doesNotChangeSteadyState()
     {
         PoseController pc;
         AppConfig c = testCfg();
-        c.targetSmoothingMs = 50.0;
+        c.targetTrajectoryMs = 50.0;
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
@@ -406,25 +409,29 @@ private slots:
             const Pose d = pc.step(actual);
             actual.x += d.x;
         }
+        // 轨迹到点即达：完成后稳态与无轨迹一致（目标 = 实际）
         QVERIFY(qAbs(pc.target().x - actual.x) < 1e-3);
         QVERIFY(qAbs(pc.accumulated().x - 5.0) < 1e-3);
     }
 
-    void smoothing_angularJumpTakesShortestPath()
+    void targetTrajectory_angularJumpTakesShortestPath()
     {
-        // 目标 -179→+179（最短差 2°）。旋转向量插值走 SO(3) 最短弧（经 180 侧），
-        // 第一周期增量方向为正（而非线性平滑经 0 的 358° 长路）。
+        // 目标 179→-179（最短差 2°）。轨迹姿态 Slerp 走 SO(3) 最短弧（经 180 侧）：
+        // 首周期增量 0（起点速度 0）；次周期采样越过 +179.18°（短弧上向 +180 前进）
+        // → 误差为正 → 增量方向为正（而非经 0 的 358° 长路）。
         PoseController pc;
         AppConfig c = testCfg();
-        c.targetSmoothingMs = 50.0;
-        c.kpRot             = 0.5;
-        c.vmaxRotDegS       = 1000000.0;   // 放开限幅
+        c.targetTrajectoryMs = 50.0;
+        c.kpRot              = 0.5;
+        c.vmaxRotDegS        = 1000000.0;   // 放开限幅
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 179, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0, 0, 0, -179, 0, 0});
         const Pose d1 = pc.step(Pose{0, 0, 0, 179, 0, 0});
-        QVERIFY(d1.a > 0.0);   // 经 180 侧（短路径），而非经 0 侧
+        QCOMPARE(d1.a, 0.0);                 // 起点速度 0
+        const Pose d2 = pc.step(Pose{0, 0, 0, 179, 0, 0});
+        QVERIFY(d2.a > 0.0);                 // 经 180 侧（短路径），而非经 0 侧
     }
 
     void attitude_singularTarget_doesNotJumpOrDiverge()
@@ -432,7 +439,7 @@ private slots:
         // B=180, A/C=±180（奇异+边界）：误差为连续旋转向量，增量不发散。
         PoseController pc;
         AppConfig c = testCfg();
-        c.targetSmoothingMs = 0.0;
+        c.targetTrajectoryMs = 0.0;
         c.kpRot = 0.1;
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 0, 60, 0});
@@ -456,7 +463,7 @@ private slots:
         // 非奇异位形：E·Δ欧拉 ≈ d_rot（旋转向量）——增量经 E⁻¹ 正确映射
         PoseController pc;
         AppConfig c = testCfg();
-        c.targetSmoothingMs = 0.0;
+        c.targetTrajectoryMs = 0.0;
         c.kpRot = 0.1;
         c.vmaxRotDegS = 1000000.0;   // 放开限幅，让 kp×误差 直接体现
         pc.configure(c);
@@ -476,7 +483,7 @@ private slots:
         // 否则等效限幅是 ~6.87°/周期（0.12 rad）而非 0.12°/周期。
         PoseController pc;
         AppConfig c = testCfg();       // vmaxRotDegS=10, cycleMs=12 → 0.12 deg/cycle
-        c.targetSmoothingMs = 0.0;
+        c.targetTrajectoryMs = 0.0;
         pc.configure(c);
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
@@ -492,7 +499,7 @@ private slots:
     {
         PoseController pc;
         AppConfig c = testCfg();
-        c.targetSmoothingMs = 0.0;
+        c.targetTrajectoryMs = 0.0;
         c.vmaxRotDegS = 0.0;               // 0 = 旋转被阻止
         pc.configure(c);
         pc.beginSession(Pose{0,0,0, 0,60,0});
@@ -510,7 +517,7 @@ private slots:
         // 范数限幅应把合成压到 ≤ 0.6（每轴 ~0.346）。
         PoseController pc;
         AppConfig c = testCfg();
-        c.targetSmoothingMs = 0.0;
+        c.targetTrajectoryMs = 0.0;
         c.kpPos = 1.0;
         c.vmaxPosMmS = 50.0;              // 12ms → 0.6mm/周期
         pc.configure(c);

@@ -11,6 +11,10 @@ struct Quat { double w, x, y, z; };
 // 四元数乘法（Hamilton，右手系）。Task 2 平滑器插值依赖，故公开。
 Quat quatMul(const Quat &a, const Quat &b);
 
+// 四元数 Slerp 最短弧插值：dot<0 取反 q1（走短弧）；t=0/1 端点精确返回原值；
+// 近共线（dot≈1）退化为线性插值 + 归一化，避免 acos(≈1) 数值病态。
+Quat quatSlerp(const Quat &a, const Quat &b, double t);
+
 // KUKA A/B/C = ZYX 欧拉（度）→ 四元数：q = qz(A) ⊗ qy(B) ⊗ qx(C)。
 Quat quatFromABC(double aDeg, double bDeg, double cDeg);
 

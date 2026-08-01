@@ -26,11 +26,7 @@ void PoseController::configure(const AppConfig &cfg)
     m_stepLimitPos = std::fabs(cfg.vmaxPosMmS) * cycleS;
     m_stepLimitRot = std::fabs(cfg.vmaxRotDegS) * cycleS;
 
-    // 平滑系数：仅当时间常数 > 0 才启用低通，否则直通（保持旧行为）。
-    const double tauS = cfg.targetSmoothingMs > 0.0
-                            ? cfg.targetSmoothingMs / 1000.0
-                            : 0.0;
-    m_alpha = (tauS <= 0.0 || cycleS <= 0.0) ? 1.0 : cycleS / (cycleS + tauS);
+    // 轨迹时长在 setTarget 时经 m_cfg.targetTrajectoryMs 使用（≤0 = 立即完成）。
 
     // 非正周期会让步长上限为 0，表现为静默不动而 state() 仍报 Tracking。
     // 用粘滞标志承载，而不是 Fault 状态——Fault 会被随后的 beginSession 清除。
@@ -47,7 +43,10 @@ void PoseController::resetToActual(const Pose &actual)
     m_target = actual;
     m_state  = TrackState::Idle;
     m_faultReason.clear();
-    m_smoothTarget = actual;   // 归零/会话开始同步平滑目标，避免假误差
+    // 归零/会话开始：轨迹立即完成（目标=实际），避免假误差；
+    // m_lastActual 同步为实际，保证下一次 setTarget 从当前实际出发。
+    m_traj.setGoal(actual, actual, 0);
+    m_lastActual = actual;
     // m_accum 刻意保留，理由见头文件注释
     // m_anchor / m_displacement / m_haveAnchor 同样刻意不动：会话内的归零
     // 不移动原点，否则第 2 层的预算又能被反复领取。只有 beginSession 才换锚点。
@@ -103,28 +102,13 @@ Pose PoseController::step(const Pose &actual)
         return Pose{};
     }
 
-    // 误差源：默认原始目标；平滑启用时用低通后的平滑目标（每周期指数逼近）。
-    // m_smoothTarget 只在 resetToActual/beginSession 同步到 actual，此处每周期
-    // 累加，绝不直接赋值——否则会丢历史。τ=0 时 m_alpha=1，一步到位等价无平滑。
-    Pose errSrc = m_target;
-    if (m_alpha < 1.0) {
-        // 位置线性；姿态用旋转向量插值（SO(3) 最短弧），避免 wrap 边界跳变。
-        m_smoothTarget.x += m_alpha * (m_target.x - m_smoothTarget.x);
-        m_smoothTarget.y += m_alpha * (m_target.y - m_smoothTarget.y);
-        m_smoothTarget.z += m_alpha * (m_target.z - m_smoothTarget.z);
-        const poseops::Quat qS = poseops::quatFromABC(
-            m_smoothTarget.a, m_smoothTarget.b, m_smoothTarget.c);
-        const poseops::Quat qT2 = poseops::quatFromABC(
-            m_target.a, m_target.b, m_target.c);
-        const poseops::Quat qES = poseops::quatError(qT2, qS);
-        double rotS[3];
-        poseops::rotVecFromQuat(qES, rotS);
-        rotS[0] *= m_alpha; rotS[1] *= m_alpha; rotS[2] *= m_alpha;
-        const poseops::Quat qInc = poseops::quatFromRotVec(rotS);
-        const poseops::Quat qNew = poseops::quatMul(qInc, qS);
-        poseops::abcFromQuat(qNew, &m_smoothTarget.a, &m_smoothTarget.b, &m_smoothTarget.c);
-        errSrc = m_smoothTarget;
-    }
+    // 目标来源：轨迹未完成时用轨迹采样（五次多项式 + Slerp，起点速度 0），
+    // 完成即最终目标（固定时长语义：到点即达，而非指数逼近永远追不上）。
+    // 先采样后推进：目标变化后的首周期采样 = 起点（= 实际），增量 0，
+    // 运动平滑起步；推进用配置周期换算的秒数。
+    Pose errSrc = m_traj.isFinished() ? m_target : m_traj.sample();
+    if (!m_traj.isFinished())
+        m_traj.advance(m_cfg.cycleMs / 1000.0);
 
     // 位置误差：逐轴差（无奇异问题）。姿态误差：SO(3) 最短旋转（旋转向量，
     // 世界坐标 rad）——奇异/边界目标下不再逐轴 wrap 跳变。
@@ -231,5 +215,7 @@ Pose PoseController::step(const Pose &actual)
     // m_displacement / m_accum 仍计算并暴露（accumulated()/commandedSum()），
     // 仅供 UI「累积修正」显示。KRC 侧层 4/5（POSCORR ±25 / POSCORRMON 45）是唯一兜底。
     m_accum = next;
+    // 记录本周期实际，供下一次 setTarget 作为轨迹起点（从实际出发）。
+    m_lastActual = actual;
     return d;
 }

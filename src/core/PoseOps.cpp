@@ -29,6 +29,37 @@ Quat quatMul(const Quat &a, const Quat &b)
     };
 }
 
+Quat quatSlerp(const Quat &a, const Quat &b, double t)
+{
+    if (t <= 0.0)
+        return a;
+    if (t >= 1.0)
+        return b;
+    // 最短弧：dot<0 时 q1 取反（q 与 -q 同一旋转，取反后走短弧）。
+    double dot = a.w*b.w + a.x*b.x + a.y*b.y + a.z*b.z;
+    Quat b2 = b;
+    if (dot < 0.0) {
+        b2.w = -b2.w; b2.x = -b2.x; b2.y = -b2.y; b2.z = -b2.z;
+        dot = -dot;
+    }
+    if (dot > 0.9995) {
+        // 近共线：线性插值 + 归一化（slerp 公式在 sin(angle)≈0 时数值病态）。
+        Quat q{a.w + t*(b2.w - a.w), a.x + t*(b2.x - a.x),
+               a.y + t*(b2.y - a.y), a.z + t*(b2.z - a.z)};
+        const double n = std::sqrt(q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z);
+        if (n < 1e-12)
+            return Quat{1, 0, 0, 0};
+        q.w /= n; q.x /= n; q.y /= n; q.z /= n;
+        return q;
+    }
+    const double angle = std::acos(dot);
+    const double s = std::sin(angle);
+    const double k0 = std::sin((1.0 - t) * angle) / s;
+    const double k1 = std::sin(t * angle) / s;
+    return Quat{k0*a.w + k1*b2.w, k0*a.x + k1*b2.x,
+                k0*a.y + k1*b2.y, k0*a.z + k1*b2.z};
+}
+
 Quat quatFromABC(double aDeg, double bDeg, double cDeg)
 {
     const double ha = 0.5 * aDeg * kDegToRad;

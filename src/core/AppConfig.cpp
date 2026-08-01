@@ -69,7 +69,7 @@ bool AppConfig::loadFromFile(const QString &path, AppConfig *out,
     readDouble(rsi, "session_gap_ms", &out->sessionGapMs);
     readString(rsi, "sen_type", &out->senType);
     readInt(rsi, "watchdog_miss_limit", &out->watchdogMissLimit);
-    readDouble(rsi, "target_smoothing_ms", &out->targetSmoothingMs);
+    readDouble(rsi, "target_trajectory_ms", &out->targetTrajectoryMs);
     readInt(rsi, "krc_timeout_cycles", &out->krcTimeoutCycles);
     readDouble(rsi, "krc_poscorr_limit_pos_mm", &out->krcPoscorrLimitPosMm);
     readDouble(rsi, "krc_poscorr_limit_rot_deg", &out->krcPoscorrLimitRotDeg);

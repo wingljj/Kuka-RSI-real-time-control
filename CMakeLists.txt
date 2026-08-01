@@ -14,6 +14,7 @@ add_library(rsi_core STATIC
     src/core/RsiCodec.cpp
     src/core/PoseController.cpp
     src/core/SessionGuard.cpp
+    src/core/TargetTrajectory.cpp
     tools/krc_simulator/kinematics.cpp
 )
 target_include_directories(rsi_core PUBLIC src tools/krc_simulator ${CMAKE_CURRENT_SOURCE_DIR})
