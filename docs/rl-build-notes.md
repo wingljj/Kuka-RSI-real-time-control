@@ -135,3 +135,51 @@ pose residual: position [mm] 0.000000, rotation [deg] 0.000000
 - 迭代逆解：`rl::mdl::JacobianInverseKinematics ik(kinematic.get()); ik.addGoal(goal, 0); ik.setDuration(...); ik.solve()`，
   solve 后 `kinematic->getPosition()` 取结果（需再 `forwardPosition()` 刷新位姿）
 - 角度单位：模型内部一律弧度；XML 的 `<min>/<max>/<home>` 由 XmlFactory 自动 deg→rad
+
+## 打包与分发 (RL-T4)
+
+日期：2026-08-02。
+
+### 运行时依赖
+
+| 依赖 | 来源 | 说明 |
+|---|---|---|
+| robot.rlmdl.xml | `D:/QTproj/rl/rl-master/3dmodel/robot.rlmdl.xml` | Comau Racer 7-1.4 运动学模型（`--model` 指定路径） |
+| libxml2-2.dll | `C:/msys64/ucrt64/bin` | RL xml 模块的运行时依赖（动态链接） |
+| libiconv-2.dll, liblzma-5.dll, zlib1.dll | `C:/msys64/ucrt64/bin` | libxml2 的传递依赖（ldd 实测；三者只依赖系统 DLL，无需再带） |
+| Qt6*.dll | Qt 6.5.3 mingw_64 | Qt Core/Network/Gui/Widgets/Charts |
+| libgcc_s_seh-1.dll, libstdc++-6.dll, libwinpthread-1.dll | MinGW 11.2.0 | C++ 运行时 |
+
+### 编译期依赖（运行时不需要）
+
+- **Eigen 3.3.8**：header-only，编译后零运行时依赖
+- **Boost 1.85.0**：仅 `Boost::headers`（RL 头文件引用），零运行时依赖
+- **RL 核心库**（math/mdl/kin/xml）：**静态链接**进 exe（`librlmdl.a`、`librlkin.a`；math/std/xml 为 INTERFACE 头文件库）
+- **libxslt**：fake headers 绕过（RL 的 XSLT 分支编译期满足，运行时永不触发）
+
+### 打包验证（干净环境，2026-08-02）
+
+`bash tools/package.sh` 产物 dist/ 33M。验证方式：清空 QTDIR/CMAKE_PREFIX_PATH/
+EIGEN3_INCLUDE_DIR/rl_DIR/BOOST_ROOT 等环境变量，PATH 只留 `/usr/bin:/bin:C:/Windows/system32`
+（不带 Qt、不带 ucrt64），cd dist 后直接运行——exe 目录缺任何 DLL 都会当场起不来。
+
+1. **正解自检**：`dist/krc_simulator.exe --model robot.rlmdl.xml --self-test`
+   → `self-test OK`（rc=0）。证明 Qt6*.dll、libxml2 链、MinGW 运行库全部从
+   dist/ 自身目录解析成功，RL 静态链接生效。
+2. **闭环**：宿主 `loopback_test.exe --track 50`（与 rsi_host 同一 RsiWorker
+   宿主代码）+ 模拟器 `--model robot.rlmdl.xml --cycles 200`：
+   - 模拟器：`cycles=200 replies=200 missed=0 ipoc_mismatch=0 delay=0` → `PASS`
+   - 宿主：`frames=200 missed=0 cycle_ms=12.00 max_reply_us=168.8`，
+     `state=Tracking`，`accum X=50.000 err X=0.000 actual X=70.000 target X=70.000`
+   - 结论：RL 逆解在干净环境精确跟踪 50mm 目标，零 Eigen 运行时依赖。
+3. **rsi_host.exe**：干净环境启动 GUI 存活（rsi_host 纯 Qt，不含 RL）。
+
+### --model 参数
+
+模拟器支持 `--model <path>` 覆盖默认模型路径。main.cpp 的默认值仍是开发机
+绝对路径 `D:/QTproj/rl/rl-master/3dmodel/robot.rlmdl.xml`（开发树双击
+tools/启动模拟器.bat 时可用，不破坏开发流程）。分发包里模型放在 exe 同目录：
+`dist/启动模拟器.bat` 先 `cd /d %~dp0` 再以相对路径传 `--model robot.rlmdl.xml`
+（包内脚本由 tools/启动模拟器-dist.bat 复制而来）。`tools/package.sh` 的
+Release 构建带 RL 配置钉（rl_DIR / FIND_USE_REGISTRY=OFF / Eigen / Boost /
+编译器显式指回 Qt 的 mingw 工具链），详见脚本内注释。
