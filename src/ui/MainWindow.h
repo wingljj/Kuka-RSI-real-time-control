@@ -64,7 +64,8 @@ private:
     std::array<QLabel *, 6> m_errorLabel{};
     std::array<QLabel *, 6> m_accumLabel{};
 
-    QLabel *m_statusLabel = nullptr;
+    QLabel *m_stateCard   = nullptr;   // 大字状态卡（颜色分级）
+    QLabel *m_stateDetail = nullptr;   // 次行诊断详情
     ErrorChart *m_chart   = nullptr;
 
     // 两段式使能：连接不等于运动，操作员确认数值后才勾选。

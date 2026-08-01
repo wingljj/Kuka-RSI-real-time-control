@@ -5,6 +5,7 @@
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QHostAddress>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
@@ -30,12 +31,16 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 {
     setWindowTitle("KUKA RSI POSCORR 位姿跟踪");
 
-    m_statusLabel = new QLabel("未连接", this);
-    m_statusLabel->setStyleSheet("font-weight: bold;");
+    m_stateCard = new QLabel("未连接", this);
+    m_stateCard->setStyleSheet(
+        "font-size: 18px; font-weight: bold; color: #888;");
+    m_stateDetail = new QLabel("", this);
+    m_stateDetail->setStyleSheet("color: #555;");
 
     auto *central = new QWidget(this);
     auto *outer = new QVBoxLayout(central);
-    outer->addWidget(m_statusLabel);
+    outer->addWidget(m_stateCard);
+    outer->addWidget(m_stateDetail);
     outer->addWidget(buildConnPanel());
 
     // 按钮栏紧随状态栏，并且刻意放在下面那个滚动区之外。
@@ -424,37 +429,63 @@ void MainWindow::onRefresh()
         m_liveLabel[i]->setText(cur);
     }
 
-    // 三态而不是两态：「已绑定但一帧未收」和「根本没绑上」对操作员是两件
-    // 完全不同的事——前者该去看 KRC 那边的 KRL 程序有没有跑起来、地址端口
-    // 对不对；后者是本机的绑定就失败了，多半端口被占。原先合并成「未连接」
-    // 会把人指向错误的排查方向。
-    QString st;
-    if (s.connected)
-        st = "● 已连接";
-    else if (m_listening)
-        st = "◐ 监听中（等待 KRC 发帧）";
-    else
-        st = "○ 未监听";
-    if (s.state == TrackState::Tracking)
-        st += "  跟踪中";
-    else if (s.state == TrackState::Fault)
-        st += "  故障: " + s.faultReason;
-    st += QStringLiteral("   IPOC %1   周期 %2 ms   最大回包 %3 µs"
-                         "   丢包 %4   KRC丢包 %5   异源 %6   发送失败 %7")
-              .arg(s.ipoc)
-              .arg(s.measuredCycleMs, 0, 'f', 1)
-              .arg(s.maxReplyUs, 0, 'f', 0)
-              .arg(s.missedCount)
-              .arg(s.krcDelay)
-              .arg(s.peerRejected)
-              .arg(s.sendFails);
+    // ── 状态卡：颜色分级，让「机器人是否真的连接/可动」一眼可判 ──
+    QString cardText;
+    bool red = false, yellow = false;
+    if (s.state == TrackState::Fault) {
+        red = true;
+        cardText = QStringLiteral("● 故障: %1").arg(s.faultReason);
+    } else if (s.connected) {
+        const bool degraded =
+            s.missedCount > 0 || s.krcDelay > 0
+            || (s.measuredCycleMs > 0.0 && m_cfg.cycleMs > 0.0
+                && std::fabs(s.measuredCycleMs - m_cfg.cycleMs)
+                       > 0.10 * m_cfg.cycleMs);
+        yellow = degraded;
+        cardText = s.state == TrackState::Tracking
+                       ? (degraded ? "● 已连接（注意）  跟踪中"
+                                   : "● 已连接  跟踪中")
+                       : (degraded ? "● 已连接（注意）" : "● 已连接");
+    } else if (m_listening) {
+        cardText = "◐ 监听中（等待 KRC 发帧）";
+    } else {
+        cardText = "○ 未监听";
+    }
+    const char *cardColor = red    ? "#c00"
+                            : yellow ? "#a06000"
+                            : s.connected ? "#080"
+                            : m_listening ? "#069"
+                                          : "#888";
+    m_stateCard->setText(cardText);
+    m_stateCard->setStyleSheet(
+        QStringLiteral("font-size: 18px; font-weight: bold; color: %1;")
+            .arg(QLatin1String(cardColor)));
+
+    // ── 详情行：诊断字段 ──
+    const QString peer = s.peerIp4
+                             ? QStringLiteral("%1:%2")
+                                   .arg(QHostAddress(s.peerIp4).toString())
+                                   .arg(s.peerPort)
+                             : QStringLiteral("?");
+    m_stateDetail->setText(
+        QStringLiteral("KRC %1   IPOC %2   周期 %3 ms（均值 %4 / 最大 %5 / P99 %6）"
+                       "   回包 %7 µs   丢包 %8 / 累计 %9   RSI Delay %10")
+            .arg(peer)
+            .arg(s.ipoc)
+            .arg(s.measuredCycleMs, 0, 'f', 1)
+            .arg(s.cycleMeanMs, 0, 'f', 2)
+            .arg(s.cycleMaxMs, 0, 'f', 2)
+            .arg(s.cycleP99Ms, 0, 'f', 2)
+            .arg(s.maxReplyUs, 0, 'f', 0)
+            .arg(s.missedCount)
+            .arg(s.lifetimeLost)
+            .arg(s.krcDelay));
+
     // Fault 是锁存的：PoseController::setTracking(true) 在 Fault 下不会转
     // Tracking，必须先经「归零到当前位姿」清除。所以此时勾选框若还打着勾，
     // 显示的就是一个与机器状态不符的谎言——强制取消勾选。
     if (s.state == TrackState::Fault && m_trackCheck->isChecked())
         m_trackCheck->setChecked(false);
-
-    m_statusLabel->setText(st);
 
     m_chart->updateFrom(m_ring);
 }
