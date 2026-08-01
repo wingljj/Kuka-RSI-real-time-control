@@ -53,10 +53,19 @@ private:
     QTimer        *m_watchdog = nullptr;
     PoseController m_ctl;
 
-    QHostAddress m_peerAddr;
-    quint16      m_peerPort = 0;
-
     IpocTracker m_ipocTracker;
+
+    // 会话安全
+    QHostAddress m_peerAddr;
+    quint16      m_peerPort     = 0;
+    bool         m_peerLocked   = false;
+    int          m_peerRejected = 0;
+    int          m_sendFails    = 0;
+    quint64      m_lastDelay    = 0;
+    int          m_delayRising  = 0;
+
+    static constexpr int kMaxBurst = 8;   // 每轮 onDatagram 最多处理的积压帧数
+
     int     m_missed         = 0;
     quint64 m_frameCount     = 0;
     double  m_maxReplyUs     = 0.0;

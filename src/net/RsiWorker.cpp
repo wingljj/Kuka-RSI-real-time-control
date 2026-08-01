@@ -1,6 +1,7 @@
 #include "net/RsiWorker.h"
 
 #include <QNetworkDatagram>
+#include <QVariant>
 #include <algorithm>
 #include <cmath>
 #include "core/RsiCodec.h"
@@ -31,6 +32,9 @@ void RsiWorker::start()
     }
     connect(m_sock, &QUdpSocket::readyRead,
             this, &RsiWorker::onDatagram);
+    // 突发积压时内核缓冲兜底。Windows 上 SO_RCVBUF 是软上限，由 OS 决定实际值。
+    m_sock->setSocketOption(
+        QAbstractSocket::ReceiveBufferSizeSocketOption, m_cfg.rxBufferBytes);
 
     m_watchdog = new QTimer(this);
     // 看门狗周期取通信周期的 20 倍，最少 200ms
@@ -70,6 +74,11 @@ void RsiWorker::stop()
         m_sock = nullptr;
     }
     m_ipocTracker.reset();
+    m_peerLocked   = false;
+    m_peerRejected = 0;
+    m_sendFails    = 0;
+    m_lastDelay    = 0;
+    m_delayRising  = 0;
     StatusSnapshot s;
     s.connected = false;
     m_state->publish(s);
@@ -115,13 +124,25 @@ void RsiWorker::onWatchdog()
 
 void RsiWorker::onDatagram()
 {
-    while (m_sock && m_sock->hasPendingDatagrams()) {
+    int processed = 0;
+    while (m_sock && m_sock->hasPendingDatagrams() && processed < kMaxBurst) {
+        ++processed;
         QElapsedTimer replyTimer;
         replyTimer.start();
 
         const QNetworkDatagram dg = m_sock->receiveDatagram();
-        m_peerAddr = dg.senderAddress();
-        m_peerPort = quint16(dg.senderPort());
+        if (!m_peerLocked) {
+            // 首帧锁定对端。此后只认同一 (IP, port) 的帧。
+            m_peerAddr   = dg.senderAddress();
+            m_peerPort   = quint16(dg.senderPort());
+            m_peerLocked = true;
+        } else if (dg.senderAddress() != m_peerAddr
+                   || quint16(dg.senderPort()) != m_peerPort) {
+            // 异源帧：假 KRC（残留模拟器之类）。丢弃且不回包——回包会让它
+            // 误以为掌控链路；真实 KRC 的源固定，不受影响。
+            ++m_peerRejected;
+            continue;
+        }
 
         const RobFrame f = RsiCodec::parseRob(dg.data());
 
@@ -184,6 +205,20 @@ void RsiWorker::onDatagram()
                 break;
             }
 
+            // KRC Delay 运行中保护：SENTYPE 错配、回复迟到/被丢弃都会让 KRC
+            // 自己的 Delay 计数增长，而主机侧的丢包计数看不见这些。连续 3 帧
+            // 递增（持平不算）即转 Fault。
+            if (f.delay > m_lastDelay) {
+                ++m_delayRising;
+                if (m_delayRising >= 3 && m_ctl.state() == TrackState::Tracking)
+                    m_ctl.forceFault(QStringLiteral(
+                        "KRC reports rising delay %1 (lost/late replies)")
+                            .arg(f.delay));
+            } else {
+                m_delayRising = 0;
+            }
+            m_lastDelay = f.delay;
+
             if (ev.kind == IpocEvent::Normal || ev.kind == IpocEvent::Gap)
                 delta = m_ctl.step(f.rist);
         } else {
@@ -192,7 +227,17 @@ void RsiWorker::onDatagram()
 
         const QByteArray sen =
             RsiCodec::buildSen(delta, echoIpoc, m_cfg.senType);
-        m_sock->writeDatagram(sen, m_peerAddr, m_peerPort);
+        // 发送失败必须计数：KRC 收不到修正时继续跟踪是危险的。连续 5 次失败
+        // 即 Fault；一次成功清零连续计数。
+        const qint64 sent = m_sock->writeDatagram(sen, m_peerAddr, m_peerPort);
+        if (sent < 0) {
+            ++m_sendFails;
+            if (m_sendFails >= 5 && m_ctl.state() == TrackState::Tracking)
+                m_ctl.forceFault(
+                    QStringLiteral("send failed %1 times").arg(m_sendFails));
+        } else {
+            m_sendFails = 0;
+        }
 
         const double replyUs = replyTimer.nsecsElapsed() / 1000.0;
         m_maxReplyUs = std::max(m_maxReplyUs, replyUs);
@@ -238,6 +283,9 @@ void RsiWorker::publishSnapshot(const Pose &actual, const Pose &err,
     s.missedCount     = m_missed;
     s.measuredCycleMs = m_measuredCycleMs;
     s.maxReplyUs      = m_maxReplyUs;
+    s.krcDelay        = m_lastDelay;
+    s.peerRejected    = m_peerRejected;
+    s.sendFails       = m_sendFails;
     s.frameCount      = m_frameCount;
     s.connected       = connected;
     m_state->publish(s);
