@@ -464,6 +464,26 @@ private slots:
         // d 是欧拉增量（度）。验证它非零、有限、方向合理（目标+方向）。
         QVERIFY(std::isfinite(d.a) && std::isfinite(d.b) && std::isfinite(d.c));
     }
+
+    void attitude_stepLimitRespectsDegPerCycle()
+    {
+        // 姿态步长限值按 deg/周期：vmaxRotDegS=10, cycleMs=12 → 0.12°/周期。
+        // 大姿态误差使旋转向量范数（rad）超过其 rad 等价阈值 → 必须按范数限幅。
+        // 回归：rotNorm 是 rad，m_stepLimitRot 是 deg，比较前必须把阈值换成 rad，
+        // 否则等效限幅是 ~6.87°/周期（0.12 rad）而非 0.12°/周期。
+        PoseController pc;
+        AppConfig c = testCfg();       // vmaxRotDegS=10, cycleMs=12 → 0.12 deg/cycle
+        c.targetSmoothingMs = 0.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0, 90, 0, 0});   // 大姿态误差（90° 绕 Z）
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        // d 是欧拉增量（度）。E⁻¹ 在 B=0 只重排轴序，故欧拉范数 = 旋转向量范数。
+        const double rotDeg = std::sqrt(d.a*d.a + d.b*d.b + d.c*d.c);
+        QVERIFY(rotDeg > 0.0);
+        QVERIFY(rotDeg <= 0.2);   // 0.12° + E⁻¹ 耦合容差；未修复时 ≈6.87°
+    }
 };
 
 QTEST_MAIN(TestPoseController)

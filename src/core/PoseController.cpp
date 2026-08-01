@@ -149,8 +149,11 @@ Pose PoseController::step(const Pose &actual)
                       m_cfg.kpRot * rotErr[1],
                       m_cfg.kpRot * rotErr[2]};
     const double rotNorm = std::sqrt(dRot[0]*dRot[0] + dRot[1]*dRot[1] + dRot[2]*dRot[2]);
-    if (m_stepLimitRot > 0.0 && rotNorm > m_stepLimitRot) {
-        const double s = m_stepLimitRot / rotNorm;
+    // m_stepLimitRot 是 deg/周期，dRot 范数是 rad——阈值须换算成 rad 再比较，
+    // 否则等效步长限幅放大约 57.3×（安全相关，见 attitude_stepLimitRespectsDegPerCycle）。
+    const double rotLimitRad = m_stepLimitRot * kDegToRad;
+    if (rotLimitRad > 0.0 && rotNorm > rotLimitRad) {
+        const double s = rotLimitRad / rotNorm;
         dRot[0] *= s; dRot[1] *= s; dRot[2] *= s;
     }
 
