@@ -36,6 +36,8 @@ def parse_pcap(path, target_port):
         magic = struct.unpack(endian + "I", raw)[0]
         if magic not in (0xA1B2C3D4, 0xA1B23C4D):
             raise ValueError("未知 pcap magic %#x" % magic)
+        # 0xA1B23C4D = 纳秒时间戳；0xA1B2C3D4 = 微秒
+        subsecond_divisor = 1e9 if magic == 0xA1B23C4D else 1e6
         linktype = struct.unpack(endian + "I", gh[20:24])[0]
         if linktype != 1:
             raise ValueError("仅支持 Ethernet(1) 链路层，得到 %d" % linktype)
@@ -49,7 +51,7 @@ def parse_pcap(path, target_port):
             data = f.read(incl_len)
             if len(data) < incl_len:
                 break
-            t = ts_sec + ts_usec / 1e6
+            t = ts_sec + ts_usec / subsecond_divisor
             if t0 is None:
                 t0 = t
             payload = extract_udp_payload(data, target_port)
@@ -124,9 +126,9 @@ def main():
 
     sent = 0
     loop_shift = 0
-    prev_t = 0.0
     try:
         while True:
+            prev_t = 0.0   # 每圈重置时钟基准，避免圈间 delta 为负
             for k, (t, payload) in enumerate(frames):
                 delta = t - prev_t
                 prev_t = t
