@@ -31,6 +31,26 @@ const char *kAxisUnit(int i) { return i < 3 ? " mm" : " deg"; }
 double axisMin(int i) { return i < 3 ? -4000.0 : -180.0; }
 double axisMax(int i) { return i < 3 ?  4000.0 :  180.0; }
 
+// 控制参数只读行的唯一真源。标签、字段、单位、小数位写在同一行，
+// 建面板与刷新数值都从这里取——原缺陷是标签坐标和数值坐标各写一套，
+// 六个里错了五个。仅把标签与数值成对创建只堵住一半：只要 onRefresh
+// 里「第 i 个数值读哪个字段」还是手写六行，重排本表就会静默复现同一
+// 个错位，而且这次隔着两个函数更难看出来。成员指针让绑定跨函数成立。
+struct ParamRow {
+    const char        *label;
+    double AppConfig::*field;
+    const char        *unit;
+    int                decimals;
+};
+const ParamRow kParams[6] = {
+    {"Kp 位置",       &AppConfig::kpPos,            "",       3},
+    {"Kp 姿态",       &AppConfig::kpRot,            "",       3},
+    {"限速位置",      &AppConfig::vmaxPosMmS,       " mm/s",  1},
+    {"限速姿态",      &AppConfig::vmaxRotDegS,      " deg/s", 1},
+    {"累积上限位置",  &AppConfig::accumLimitPosMm,  " mm",    1},
+    {"累积上限姿态",  &AppConfig::accumLimitRotDeg, " deg",   1},
+};
+
 } // namespace
 
 // ═══════════════════════════════════════════════
@@ -340,16 +360,24 @@ QWidget *MainWindow::buildMidPanel()
     tbl->setStyleSheet(
         "QTableWidget { border: none; font-size: 10px; } "
         "QTableWidget::item { padding: 0px 6px; }");
-    tbl->horizontalHeader()->setStretchLastSection(true);
+    // 列宽显式给全并关掉 stretchLastSection：开着 stretch 时最后一列的
+    // setColumnWidth 不生效，而「RKorr 输出」表头把它的 minimumSectionSize
+    // 顶到 100px，四列 92 加起来超出 viewport 18px——横向滚动条常驻，
+    // 右对齐的数值尾巴（"-12.345 mm" 的单位）正好落在被截掉的那一段里。
+    // 数值看着完整、其实少了尾巴，与本任务修的两个缺陷是同一类问题。
+    tbl->horizontalHeader()->setStretchLastSection(false);
     tbl->setColumnWidth(0, 28);
-    tbl->setColumnWidth(1, 92);
-    tbl->setColumnWidth(2, 92);
-    tbl->setColumnWidth(3, 92);
+    tbl->setColumnWidth(1, 86);
+    tbl->setColumnWidth(2, 86);
+    tbl->setColumnWidth(3, 86);
+    tbl->setColumnWidth(4, 100);
     // 六行必须一屏放下：默认行高下只露出 X/Y/Z/A，B 与 C 被挤到滚动条以外，
     // 轴名从「看不见」变成「要滚动才看得见」，对操作员是同一个问题。
-    // 高度 = 表头 + 6×22 行 + 余量，宁可留白也不要出现纵向滚动条。
-    tbl->verticalHeader()->setDefaultSectionSize(22);
-    tbl->setFixedHeight(190);
+    // 表头高度按字体度量取而不是写死——换 DPI 缩放档或系统字体变大时
+    // 表头会长高，写死的总高会重新裁掉 C 行，即缺陷 B 换台机器就复发。
+    const int kRowH = 22;
+    tbl->verticalHeader()->setDefaultSectionSize(kRowH);
+    tbl->setFixedHeight(tbl->horizontalHeader()->height() + 6 * kRowH + 4);
 
     for (int i = 0; i < 6; ++i) {
         auto *ax = new QTableWidgetItem(kAxisName[i]);
@@ -401,18 +429,8 @@ QWidget *MainWindow::buildMidPanel()
     m_cumulBar = new CumulativeBar(safeBox);
     safeV->addWidget(m_cumulBar);
 
-    // 控制参数只读行
-    // 标签与数值在同一次循环里成对创建。原实现把标签按
-    // (1,0)(2,0)(1,2)(2,2)(1,4)(2,4) 摆放、数值按 (r+1, c*2+1) 摆放，
-    // 六个参数里只有第一个对得上——操作员照标签读到的是别的参数。
-    // 成对创建让这种错位在结构上不可能发生。
-    struct ParamRow { const char *label; };
-    const ParamRow kParams[6] = {
-        {"Kp 位置"},   {"Kp 姿态"},
-        {"限速位置"},  {"限速姿态"},
-        {"累积上限位置"}, {"累积上限姿态"},
-    };
-
+    // 控制参数只读行：标签与数值在同一次循环里成对创建，
+    // 行列由同一个下标算出，错位在结构上不可能发生（表见文件顶部 kParams）。
     auto *paramForm = new QGridLayout;
     paramForm->setHorizontalSpacing(12);
     paramForm->setVerticalSpacing(4);
@@ -757,12 +775,11 @@ void MainWindow::onRefresh()
     m_commCards->updateFrom(s, m_cfg.cycleMs);
 
     // ── 控制参数只读 ──
-    m_paramVal[0]->setText(QString::number(m_cfg.kpPos, 'f', 3));
-    m_paramVal[1]->setText(QString::number(m_cfg.kpRot, 'f', 3));
-    m_paramVal[2]->setText(QStringLiteral("%1 mm/s").arg(m_cfg.vmaxPosMmS, 0, 'f', 1));
-    m_paramVal[3]->setText(QStringLiteral("%1 deg/s").arg(m_cfg.vmaxRotDegS, 0, 'f', 1));
-    m_paramVal[4]->setText(QStringLiteral("%1 mm").arg(m_cfg.accumLimitPosMm, 0, 'f', 1));
-    m_paramVal[5]->setText(QStringLiteral("%1 deg").arg(m_cfg.accumLimitRotDeg, 0, 'f', 1));
+    // 字段、单位、小数位都来自建面板时用的同一张表，不再手写六行按位置对应。
+    for (int i = 0; i < 6; ++i)
+        m_paramVal[i]->setText(QStringLiteral("%1%2")
+                                   .arg(m_cfg.*(kParams[i].field), 0, 'f', kParams[i].decimals)
+                                   .arg(kParams[i].unit));
 
     // ── 使能按钮状态机 ──
     if (s.state == ControlState::Fault) {
