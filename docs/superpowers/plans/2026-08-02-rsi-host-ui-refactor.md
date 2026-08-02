@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 修正 `rsi_host` 界面的 12 个缺陷，砍掉 4 个装饰性部件，新增 RKorr 输出列，并把布局与配色统一到单一 QSS 来源。
+**Goal:** 修正 `rsi_host` 界面的 12 个缺陷，砍掉 4 个装饰性部件，新增 RKorr 输出列，并把主窗口改成菜单栏 + 可停靠面板 + 状态栏的原生 Qt 外观。
 
-**Architecture:** 把"会算错"的界面逻辑（告警边沿触发、数值格式化、按钮启用状态）抽成 `src/ui/UiLogic.h/.cpp` 纯函数，进 `rsi_core` 库并用 QtTest 覆盖——这些正是当前出 bug 的地方，也是唯一能脱离窗口测试的部分。纯视觉问题（布局、配色、选择器污染）无法单测，用截图核对验证。`src/net/`、`src/core/` 的通信与控制逻辑一行不改。
+**Architecture:** 把"会算错"的界面逻辑（告警边沿触发、数值格式化、按钮启用状态）抽成 `src/ui/UiLogic.h/.cpp` 纯函数，进 `rsi_core` 库并用 QtTest 覆盖——这些正是当前出 bug 的地方，也是唯一能脱离窗口测试的部分。纯视觉问题（布局、选择器污染）无法单测，用截图核对验证。`src/net/`、`src/core/` 的通信与控制逻辑一行不改。
 
 **Tech Stack:** Qt 6.5.3 (Widgets, Charts, Test)、CMake + Ninja、MinGW、QtTest、CTest。
 
@@ -12,12 +12,14 @@
 
 - Qt 版本 6.5.3，MinGW 64 位；构建目录 `build`（Debug，Ninja 已配置）。
 - 通信层 `src/net/RsiWorker.*`、`src/net/SharedState.h`、`src/core/` 下所有文件**不得修改**（`SharedState.h` 只读不写）。
-- 配色唯一来源 `src/ui/style.qss`，色值：背景 `#F4F6F8`、卡片 `#FFFFFF`、边框 `#D9E0E7`、主色 `#2563EB`、正常 `#16A34A`、警告 `#D97706`、故障 `#DC2626`。
-- 正文字号 12px，数值 13px 且用 `Consolas` 等宽右对齐。
+- **不使用 QSS**（2026-08-02 变更，见 spec 第六节）。界面为原生 Qt 外观，`src/ui/` 下不得出现 `setStyleSheet`。语义色只经 `QPalette` / `QTableWidgetItem::setForeground` 施加，取自 `uilogic::severityColor`：正常 `#16A34A`、警告 `#D97706`、故障 `#DC2626`、空闲 `#6B7280`。
+- 等宽字体用 `QFontDatabase::systemFont(QFontDatabase::FixedFont)`，不硬编码 `Consolas`——未装该字体的机器会静默回退到比例字体，小数点从此不对齐。
+- 颜色永远伴随文字（"正常"/"警告"/"超限"），不单独依赖颜色传达状态。
 - RKorr 数值固定 4 位小数（与 `RsiCodec::buildSen` 的线上量化位数一致）；位姿/误差 3 位小数。
 - 新增测试一律 `QtTest` + `tests/CMakeLists.txt` 注册 `add_test`，风格对齐 `tests/test_session_guard.cpp`。
 - 注释用中文，说明「为什么」而非「做了什么」，与现有代码一致。
 - 每个任务结束必须 `cmake --build build --target rsi_host` 通过后再提交。
+- 涉及显示的改动必须实际截图核对（`powershell -File tools/snap.ps1 -Title rsi_host -Out _x.png`，再用 Read 打开看），不得以"代码看起来对"代替——本次要修的缺陷全都是代码看起来对但显示错。
 
 ---
 
@@ -663,15 +665,39 @@ after it was hidden. Both now build label and value in one pass."
 
 ### Task 5: 表格布局修正 + RKorr 输出列
 
-缺陷 D（固定高度截断）与新增 RKorr 列。
+缺陷 D（固定高度截断）与新增 RKorr 列。另修 Task 4 审查发现的横向溢出。
 
 **Files:**
+- Modify: `src/ui/UiLogic.h` / `src/ui/UiLogic.cpp`（新增 `monospaceFont`）
 - Modify: `src/ui/MainWindow.h`（新增 `m_rkorrItem`）
 - Modify: `src/ui/MainWindow.cpp`（`buildMidPanel`、`buildLeftPanel`、`onRefresh`）
 
 **Interfaces:**
 - Consumes: Task 2 的 `uilogic::formatValue` / `formatRkorr`；`StatusSnapshot::lastDelta`
-- Produces: `std::array<QTableWidgetItem *, 6> m_rkorrItem{};`
+- Produces:
+  - `std::array<QTableWidgetItem *, 6> m_rkorrItem{};`
+  - `QFont uilogic::monospaceFont();` —— Task 7、8 也要用
+
+- [ ] **Step 0: 加入 monospaceFont**
+
+`src/ui/UiLogic.h` 的 `namespace uilogic` 内追加：
+
+```cpp
+// 数值显示用的系统等宽字体。硬编码 "Consolas" 在没装该字体的机器上会
+// 静默回退到比例字体，小数点从此不对齐——而对齐正是读数列存在的理由。
+QFont monospaceFont();
+```
+
+`src/ui/UiLogic.cpp` 追加：
+
+```cpp
+QFont monospaceFont()
+{
+    return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+}
+```
+
+头文件加 `#include <QFont>`，实现文件加 `#include <QFontDatabase>`。
 
 - [ ] **Step 1: 加入 RKorr 列成员**
 
@@ -722,7 +748,7 @@ void MainWindow::fitTableToRows(QTableWidget *tbl, int rows)
         auto *rk = new QTableWidgetItem("--");
         rk->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         rk->setFlags(Qt::NoItemFlags);
-        auto rkF = rk->font(); rkF.setFamily("Consolas"); rkF.setPointSize(10);
+        rk->setFont(uilogic::monospaceFont());   // 系统等宽，不硬编码 Consolas
         rk->setFont(rkF);
         tbl->setItem(i, 4, rk);
         m_rkorrItem[i] = rk;
@@ -874,15 +900,18 @@ void MainWindow::refreshDeltaPreview()
 void MainWindow::updateApplyButton()
 {
     // m_targetApplied 原先只写不读：目标改了没发，界面毫无提示。
-    // 用它驱动按钮高亮，「改了没发」一眼可见。
-    m_applyBtn->setProperty("cssClass",
-                            m_targetApplied ? "secondary" : "primary");
-    m_applyBtn->style()->unpolish(m_applyBtn);
-    m_applyBtn->style()->polish(m_applyBtn);
+    // 用它驱动按钮的默认态，「改了没发」一眼可见。
+    // 用 setDefault 而不是配色：原生按钮的「默认按钮」有平台自带的
+    // 视觉强调（Windows 上是高亮边框），且回车键会触发它——正是
+    // 「刚改完值，按回车发出去」这个动作。
+    m_applyBtn->setDefault(!m_targetApplied);
+    m_applyBtn->setEnabled(!m_targetApplied);
 }
 ```
 
-`m_applyBtn` 需提升为成员（`buildLeftPanel` 中原为局部变量 `apply`）。
+`m_applyBtn` 需提升为成员（`buildLeftPanel` 中原为局部变量 `apply`），
+类型用 `QPushButton *`，且 `setAutoDefault(true)` 才能让 `setDefault`
+生效。
 `onApplyTarget`、`onUndoTarget`、`onReadActualTarget` 末尾各调用一次
 `refreshDeltaPreview(); updateApplyButton();`，并删除三处手写的
 `m_deltaPreview->setStyleSheet(...)` 与写死文案。
@@ -912,290 +941,344 @@ was written three times and never read — now it highlights Apply."
 
 ---
 
-### Task 7: 样式统一——内联样式迁入 QSS
+### Task 7: 移除自定义样式，回到原生 Qt 外观
 
-缺陷 C（选择器污染）与 L（双色板）。
+**背景（2026-08-02 计划变更）**：原 Task 7 是"把内联样式统一进 QSS"。
+人类看过 Robotics Library 的 `rlPlanDemo`（`ref/fig/ref.png`、
+`ref/rlPlanDemo/`）后决定改为该程序的做法——**它全程没有一处
+`setStyleSheet`，完全是原生 Qt 外观**。因此本任务由"统一样式"反转为
+"删除样式"。
+
+删除而非统一的理由（写进 commit message）：本次审查已经出现两起样式
+缺陷——`QFrame` 选择器污染卡片内的 QLabel（`QLabel` 继承自 `QFrame`）、
+内联样式与 QSS 两套色板并存。这两类都不会在原生外观下发生。另外硬编码
+的浅色背景会覆盖操作员在系统层面设置的高对比度主题。
 
 **Files:**
-- Modify: `src/ui/style.qss`
-- Modify: `src/ui/StatusBar.cpp`、`src/ui/CommCards.cpp`、`src/ui/CumulativeBar.cpp`、`src/ui/AlarmLog.cpp`、`src/ui/ErrorChart.cpp`、`src/ui/MainWindow.cpp`
+- Delete: `src/ui/style.qss`
+- Modify: `src/main.cpp`（删除加载 qss 的整段）
+- Modify: `src/ui/StatusBar.cpp`、`src/ui/CommCards.cpp`、
+  `src/ui/CumulativeBar.cpp`、`src/ui/AlarmLog.cpp`、
+  `src/ui/ErrorChart.cpp`、`src/ui/MainWindow.cpp`
+- Modify: `tools/package.sh`（若其中拷贝 style.qss）
 
 **Interfaces:**
-- Produces: QSS 属性约定 `cssClass` ∈ {primary, secondary, warning, danger, fieldLabel, readout, cardTitle, cardValue, hint}；`state` ∈ {ok, warn, fault, idle}
+- Produces: 状态色改由 `uilogic::stateColor(...)` 提供（见 Step 2），
+  供 Task 8 的状态栏复用。
 
-- [ ] **Step 1: 扩充 style.qss**
-
-在 `src/ui/style.qss` 末尾追加：
-
-```css
-/* ── 字号：工业现场 10px 偏小 ── */
-QWidget { font-size: 12px; }
-
-/* ── 状态卡片 ──
-   注意用 #objectName 精确限定。原实现对 QFrame 用 "QFrame { ... }"
-   作为部件级样式表，而 QLabel 继承自 QFrame，于是卡片里每个标签都
-   套上了白底+边框+圆角，看起来像一排输入框。 */
-QFrame#statusCard {
-    background-color: #FFFFFF;
-    border: 1px solid #D9E0E7;
-    border-radius: 6px;
-}
-QFrame#statusCard[state="ok"]    { background-color: #F0FDF4; border-color: #16A34A; }
-QFrame#statusCard[state="warn"]  { background-color: #FFFBEB; border-color: #D97706; }
-QFrame#statusCard[state="fault"] { background-color: #FEF2F2; border-color: #DC2626; }
-QFrame#statusCard[state="idle"]  { background-color: #F9FAFB; border-color: #E5E7EB; }
-
-QFrame#statusCard QLabel { border: none; background: transparent; }
-
-QLabel[cssClass="cardTitle"] { font-size: 11px; color: #64748B; font-weight: bold; }
-QLabel[cssClass="cardValue"] { font-size: 15px; font-weight: bold; }
-QFrame#statusCard[state="ok"]    QLabel[cssClass="cardValue"] { color: #16A34A; }
-QFrame#statusCard[state="warn"]  QLabel[cssClass="cardValue"] { color: #D97706; }
-QFrame#statusCard[state="fault"] QLabel[cssClass="cardValue"] { color: #DC2626; }
-QFrame#statusCard[state="idle"]  QLabel[cssClass="cardValue"] { color: #9CA3AF; }
-
-/* ── 数值读数：等宽、右对齐，位数变化时不跳动 ── */
-QLabel[cssClass="readout"] {
-    font-family: Consolas, "Courier New", monospace;
-    font-size: 13px;
-    color: #1F2937;
-}
-QLabel[cssClass="fieldLabel"] { color: #64748B; }
-
-/* ── 提示条 ── */
-QLabel[cssClass="hint"] {
-    color: #64748B;
-    background-color: #F3F4F6;
-    border-radius: 4px;
-    padding: 5px 10px;
-}
-QLabel[cssClass="hint"][state="warn"]  { color: #92400E; background-color: #FEF3C7; }
-QLabel[cssClass="hint"][state="ok"]    { color: #166534; background-color: #F0FDF4; }
-QLabel[cssClass="hint"][state="fault"] {
-    color: #DC2626; background-color: #FEF2F2;
-    border: 1px solid #FECACA; font-weight: bold;
-}
-
-/* ── 进度条状态色 ── */
-QProgressBar[state="ok"]::chunk    { background-color: #16A34A; }
-QProgressBar[state="warn"]::chunk  { background-color: #D97706; }
-QProgressBar[state="fault"]::chunk { background-color: #DC2626; }
-
-/* ── 表格 ── */
-QTableWidget { border: 1px solid #D9E0E7; border-radius: 4px; }
-QTableWidget::item { padding: 2px 8px; }
-```
-
-- [ ] **Step 2: StatusBar 改用 objectName + property**
-
-`StatusBar.cpp` 的 `makeCard` 中把 `c.frame->setStyleSheet(...)` 替换为：
-
-```cpp
-        c.frame->setObjectName("statusCard");
-        c.frame->setProperty("state", "idle");
-```
-
-`c.label` 与 `c.status` 的 `setStyleSheet` 替换为：
-
-```cpp
-        c.label->setProperty("cssClass", "cardTitle");
-        c.status->setProperty("cssClass", "cardValue");
-```
-
-`Card::set` 签名由 `(icon, label, status, bg, fg)` 改为 `(icon, status, state)`：
-
-```cpp
-void StatusBar::Card::set(const QString &iconText, const QString &statusText,
-                          const char *state)
-{
-    icon->setText(iconText);
-    status->setText(statusText);
-    frame->setProperty("state", state);
-    // 属性变化后必须重新 polish，否则 QSS 属性选择器不会重新求值
-    frame->style()->unpolish(frame);
-    frame->style()->polish(frame);
-}
-```
-
-`updateFrom` 中全部调用点相应简化，例如：
-
-```cpp
-    if (s.connected)      m_netCard.set("●", "已连接", "ok");
-    else if (listening)   m_netCard.set("◐", "监听中", "idle");
-    else                  m_netCard.set("○", "未监听", "idle");
-```
-
-`setWarning` 改为：
-
-```cpp
-void StatusBar::setWarning(const QString &text, bool isFault)
-{
-    m_warning->setText(text);
-    m_warning->setProperty("cssClass", "hint");
-    m_warning->setProperty("state", isFault ? "fault" : "");
-    m_warning->style()->unpolish(m_warning);
-    m_warning->style()->polish(m_warning);
-    m_warning->setVisible(!text.isEmpty());
-}
-```
-
-`StatusBar.h` 同步修改 `Card::set` 声明，并加入 `#include <QStyle>` 到 `.cpp`。
-
-- [ ] **Step 3: CommCards / CumulativeBar 统一到 Tailwind 色板**
-
-`CommCards.cpp`：`Card::setColors(const char*, const char*)` 改为
-`Card::setState(const char *state)`，内部设 `frame` 的 `state` 属性并 polish；
-调用点 `#d4edda/#28a745` → `"ok"`、`#fff3cd/#ffc107` → `"warn"`、
-`#f8d7da/#dc3545` → `"fault"`、`#f5f5f5/#ccc` → `"idle"`。
-卡片 frame 加 `setObjectName("statusCard")`，标题/数值加对应 `cssClass`。
-
-回包卡片（缺陷 E）改为单值显示：
-
-```cpp
-    // StatusSnapshot 没有「本帧回包耗时」字段，只有会话最大值。
-    // 原实现两行都取 maxReplyUs，「当前」是假的。
-    m_reply.line1->setText(QStringLiteral("%1").arg(s.maxReplyUs, 0, 'f', 0));
-    m_reply.line2->setText("会话最大值");
-```
-
-并把 `makeCard(m_reply, "回包 µs", 1);` 的标题改为 `"最大回包 µs"`。
-
-`CumulativeBar.cpp`：删除 `r.bar->setStyleSheet(...)` 与
-`r.status->setStyleSheet(...)`，改为设 `state` 属性并 polish；
-数值/状态标签加 `cssClass="readout"` 与 `"fieldLabel"`。
-
-- [ ] **Step 4: 清除 MainWindow / AlarmLog / ErrorChart 的内联样式**
-
-`MainWindow.cpp`：删除全部 `setStyleSheet` 调用，改为设 `cssClass`——
-目标 spinbox 无需特殊样式（QSS 里 `QDoubleSpinBox` 已统一）；
-`m_liveLabel` → `cssClass="readout"`；`m_deltaPreview` → `cssClass="hint"`；
-`m_interlockLabel` → `cssClass="hint"` + `state="fault"`；
-左栏 `setCur`/`undo` 保留 `cssClass="secondary"`，`m_applyBtn` 由
-Task 6 的 `updateApplyButton` 管理。
-
-`AlarmLog.cpp`：`m_toggle`/`m_export`/`m_clear`/`m_table` 的 `setStyleSheet`
-全部删除，`m_toggle` 设 `cssClass="secondary"`。
-`ErrorChart.cpp`：`m_placeholder->setStyleSheet(...)` 删除，设
-`cssClass="fieldLabel"`。
-
-- [ ] **Step 5: 确认无残留内联样式并截图**
-
-Run: `grep -rn "setStyleSheet" src/ui/`
-Expected: 无输出（`main.cpp` 的 `app.setStyleSheet` 不在 `src/ui/` 下）
-
-Run: `cmake --build build --target rsi_host && ./build/rsi_host.exe &`
-Run: `powershell -File tools/snap.ps1 -Title rsi_host -Out _t7.png`
-Expected: 四张状态卡片内部无多余边框（不再像输入框）；绿色只有一种
-
-- [ ] **Step 6: 提交**
+- [ ] **Step 1: 删除 qss 与其加载代码**
 
 ```bash
-git add src/ui/
-git commit -m "style(ui): single QSS source, fix selector leaking into cards
-
-setStyleSheet(\"QFrame{...}\") on a card matched its QLabel children —
-QLabel derives from QFrame — so every label inside wore a border and
-looked like an input. Cards now use #statusCard plus a state property.
-Also merges the Bootstrap and Tailwind palettes into one."
+git rm src/ui/style.qss
 ```
 
----
-
-### Task 8: 布局重整——QSplitter 三栏
-
-**Files:**
-- Modify: `src/ui/MainWindow.cpp`（构造函数、`buildRightPanel`）
-- Modify: `src/ui/MainWindow.h`
-
-- [ ] **Step 1: 三栏改 QSplitter**
-
-构造函数中把 `body` 整段替换为：
+`src/main.cpp` 删除这一整段：
 
 ```cpp
-    // 三栏用 QSplitter 而非固定宽度。原实现左 360 + 中 420 = 780px 写死，
-    // 右栏拿剩下的——1400px 窗口下右栏只剩 600px 却要竖排四个部件，
-    // 实测通信卡片被完全挤出可视区。给最小宽度、让用户自己分配。
-    auto *body = new QSplitter(Qt::Horizontal, this);
-    body->setChildrenCollapsible(false);
-    body->setHandleWidth(6);
-
-    auto *leftPanel = buildLeftPanel();
-    leftPanel->setMinimumWidth(300);
-    body->addWidget(leftPanel);
-
-    auto *midPanel = buildMidPanel();
-    midPanel->setMinimumWidth(360);
-    body->addWidget(midPanel);
-
-    auto *rightPanel = buildRightPanel();
-    rightPanel->setMinimumWidth(320);
-    body->addWidget(rightPanel);
-
-    body->setStretchFactor(0, 3);
-    body->setStretchFactor(1, 4);
-    body->setStretchFactor(2, 5);
-    outer->addWidget(body, 1);
+    // 加载全局样式表
+    const QStringList qssPaths{...};
+    for (const QString &qss : qssPaths) { ... }
 ```
 
-删除原有的两处 `setFixedWidth`。`MainWindow.cpp` 已包含 `<QSplitter>`。
+检查 `tools/package.sh` 是否拷贝 `style.qss` 或 `config/style.qss`，
+有则一并删除该行。
 
-- [ ] **Step 2: 通信卡片移到图表下方**
+- [ ] **Step 2: 语义色改由纯函数提供，不再用样式表**
 
-`buildRightPanel` 中把 `m_commCards` 的 `addWidget` 移到两张图表之后
-（当前已在图表后，仅需确认顺序为：位置图 → 姿态图 → 通信卡片），
-并给图表 stretch：
+在 `src/ui/UiLogic.h` 的 `namespace uilogic` 内追加：
 
 ```cpp
-    v->addWidget(m_chartPos, 1);
-    v->addWidget(m_chartRot, 1);
-    v->addWidget(m_commCards);   // 不给 stretch：固定高度
+// 状态语义等级。与 QSS 时代的 ok/warn/fault/idle 一一对应，
+// 但现在只用来选一个 QColor，不再拼样式表字符串。
+enum class Severity { Idle, Ok, Warn, Fault };
+
+// 语义色。取值来自原 QSS 色板，但施加方式改为 QPalette /
+// QTableWidgetItem::setForeground——样式表会级联到后代部件，
+// 本次审查里 "QFrame{...}" 污染卡片内每个 QLabel 就是这么来的
+//（QLabel 继承自 QFrame）。直接设颜色没有级联，也就没有这一类错误。
+QColor severityColor(Severity s);
 ```
 
-- [ ] **Step 3: 安全提示移到按钮栏**
+（`monospaceFont` 已在 Task 5 Step 0 加入，此处不重复。）
 
-构造函数中，`btnBar->addStretch();` 之后加入：
+`src/ui/UiLogic.cpp` 追加实现：
 
 ```cpp
-    // 提示说的是「停止跟踪」这个按钮的性质，就该在它旁边，
-    // 而不是在顶部状态区里当一条通用横幅。
-    m_safetyNote = new QLabel(
-        "「停止跟踪」是软停止（RKorr=0，RSI 回包保持），不是急停。"
-        "急停只能用示教器上的物理按钮。", this);
-    m_safetyNote->setProperty("cssClass", "hint");
-    btnBar->addWidget(m_safetyNote);
+QColor severityColor(Severity s)
+{
+    switch (s) {
+    case Severity::Ok:    return QColor(0x16, 0xA3, 0x4A);
+    case Severity::Warn:  return QColor(0xD9, 0x77, 0x06);
+    case Severity::Fault: return QColor(0xDC, 0x26, 0x26);
+    case Severity::Idle:  break;
+    }
+    return QColor(0x6B, 0x72, 0x80);
+}
 ```
 
-`MainWindow.h` 加入 `QLabel *m_safetyNote = nullptr;`。
-删除构造函数中原有的 `m_statusBar->setWarning(...)` 初始调用；
-`onRefresh` 中的 `setWarning` 改为只在故障时显示故障信息：
+头文件加 `#include <QColor>`。
 
-```cpp
-    const bool isFault = (s.state == ControlState::Fault) || s.accumOverLimit;
-    m_statusBar->setWarning(
-        isFault ? QStringLiteral("故障：%1").arg(
-                      s.faultReason.isEmpty() ? "跟踪已停止，请检查累计修正与通信"
-                                              : s.faultReason)
-                : QString(),
-        isFault);
+- [ ] **Step 3: 清空 src/ui 下所有 setStyleSheet**
+
+逐个文件处理，一律遵循同一原则：**删掉样式表调用，需要保留的语义
+只用控件自带 API 表达**。
+
+- `StatusBar.cpp`：`Card::set` 的 `frame->setStyleSheet(...)` 改为
+  `frame->setFrameShape(QFrame::StyledPanel)` + 用 `QPalette` 设
+  `QPalette::WindowText` 为 `uilogic::severityColor(...)`。
+  卡片内数值标签的加粗改用 `QFont::setBold(true)`。
+- `CommCards.cpp`：`Card::setColors` 改名 `setSeverity(uilogic::Severity)`，
+  内部同样走 QPalette。
+- `CumulativeBar.cpp`：进度条颜色删掉样式表——`QProgressBar` 的
+  chunk 颜色在原生样式下不可靠地可控。改为进度条保持原生外观，
+  由右侧的状态文字（"正常"/"注意"/"警告"/"超限"）+ 文字颜色承载语义。
+  这也符合"颜色永远伴随文字"的既定原则。
+- `AlarmLog.cpp`、`ErrorChart.cpp`、`MainWindow.cpp`：删除全部
+  `setStyleSheet`；等宽数值改用 `setFont(uilogic::monospaceFont())`；
+  提示条的背景色不再需要——原生 `QLabel` 加 `QFrame::StyledPanel`
+  边框即可区分。
+
+- [ ] **Step 4: 验证无残留并截图**
+
+Run: `grep -rn "setStyleSheet\|cssClass" src/ main.cpp`
+Expected: 无输出
+
+Run:
+```bash
+export PATH="/d/Software/QT/content/6.5.3/mingw_64/bin:$PATH"
+cmake --build build --target rsi_host
+./build/rsi_host.exe &
+sleep 3
+powershell -File tools/snap.ps1 -Title rsi_host -Out _t7.png
 ```
-
-- [ ] **Step 4: 窄窗口验证**
-
-Run: `cmake --build build --target rsi_host && ./build/rsi_host.exe &`
-Run: 手动把窗口拖到约 1280×800，`powershell -File tools/snap.ps1 -Title rsi_host -Out _t8.png`
-Expected: 三栏均可见，通信卡片在右栏图表下方可见，无部件被挤出；
-拖动分隔条可重新分配宽度。
+用 Read 工具打开 `_t7.png` 亲眼核对：界面为原生 Windows 外观，
+无自定义配色；状态文字仍带语义色；数值列仍等宽对齐。
 
 - [ ] **Step 5: 提交**
 
 ```bash
-git add src/ui/MainWindow.cpp src/ui/MainWindow.h
-git commit -m "layout(ui): splitter columns, comm cards under charts
+git add -A src/ui src/main.cpp tools/package.sh
+git commit -m "style(ui): drop custom stylesheets for native Qt appearance
 
-Left 360 + mid 420 were hard-coded, leaving the right column 600px for
-four stacked widgets — the comm cards fell off-screen. Minimum widths
-plus stretch factors let the operator allocate. The soft-stop note moves
-next to the button it describes."
+Two styling defects surfaced in review: a QFrame selector cascading onto
+every QLabel inside a card (QLabel derives from QFrame), and inline
+styles carrying a second palette alongside the QSS one. Neither can
+happen without stylesheets. Hard-coded light backgrounds also override
+whatever high-contrast theme the operator set system-wide.
+
+Semantic colours now come from uilogic::severityColor and are applied
+through QPalette, which does not cascade."
+```
+
+---
+
+### Task 8: 菜单栏 + 可停靠面板 + 状态栏
+
+把主窗口改成 `rlPlanDemo` 的组织方式。参考实现在
+`ref/rlPlanDemo/rlPlanDemo/MainWindow.cpp`——菜单构建见其 `init()`
+（约 557-760 行），停靠面板见构造函数（约 253-272 行）。
+
+**Files:**
+- Modify: `src/ui/MainWindow.h`、`src/ui/MainWindow.cpp`
+
+**Interfaces:**
+- Consumes: Task 7 的 `uilogic::severityColor`；既有各面板部件
+  （`buildLeftPanel` / `buildMidPanel` / `buildRightPanel` 的产物）
+- Produces: 各面板成为独立的 `QDockWidget`，其
+  `toggleViewAction()` 进「视图」菜单
+
+- [ ] **Step 1: 拆分面板构建函数**
+
+现有三个 `buildXxxPanel()` 各自返回一个塞了多个 `QGroupBox` 的
+`QWidget`。改为每个逻辑区块一个函数，各返回一个可直接放进
+`QDockWidget` 的部件：
+
+```cpp
+    QWidget *buildListenPanel();    // 监听配置（IP / 端口）
+    QWidget *buildTargetPanel();    // 目标位姿编辑
+    QWidget *buildComparePanel();   // 位姿对比表（含 RKorr 列）
+    QWidget *buildCumulPanel();     // 累积修正
+    QWidget *buildParamPanel();     // 控制参数
+    QWidget *buildCommPanel();      // 通信指标
+```
+
+各面板内部不再套 `QGroupBox`——`QDockWidget` 自带标题栏，
+再套一层分组框是重复的边框。
+
+- [ ] **Step 2: 建立停靠面板**
+
+构造函数中央部件改为图表，其余全部入停靠区：
+
+```cpp
+    // 中央部件是误差图表：它是唯一需要大面积且持续观察的东西。
+    // 其余面板都是"看一眼确认数值"的性质，适合停靠、按需调出。
+    auto *charts = new QWidget(this);
+    auto *cv = new QVBoxLayout(charts);
+    cv->setContentsMargins(0, 0, 0, 0);
+    m_chartPos = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Position, charts);
+    m_chartRot = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Rotation, charts);
+    cv->addWidget(m_chartPos, 1);
+    cv->addWidget(m_chartRot, 1);
+    setCentralWidget(charts);
+
+    auto addDock = [this](const QString &title, QWidget *w,
+                          Qt::DockWidgetArea area) -> QDockWidget * {
+        auto *d = new QDockWidget(title, this);
+        d->setObjectName(title);   // saveState/restoreState 靠它认面板
+        d->setWidget(w);
+        addDockWidget(area, d);
+        return d;
+    };
+
+    m_listenDock  = addDock("监听配置", buildListenPanel(),  Qt::LeftDockWidgetArea);
+    m_targetDock  = addDock("目标位姿", buildTargetPanel(),  Qt::LeftDockWidgetArea);
+    m_compareDock = addDock("位姿对比", buildComparePanel(), Qt::LeftDockWidgetArea);
+    m_cumulDock   = addDock("累积修正", buildCumulPanel(),   Qt::RightDockWidgetArea);
+    m_paramDock   = addDock("控制参数", buildParamPanel(),   Qt::RightDockWidgetArea);
+    m_commDock    = addDock("通信指标", buildCommPanel(),    Qt::RightDockWidgetArea);
+    m_alarmDock   = addDock("事件日志", m_alarmLog,          Qt::BottomDockWidgetArea);
+    m_alarmDock->hide();   // 默认隐藏，从「视图」菜单调出
+```
+
+- [ ] **Step 3: 菜单栏**
+
+```cpp
+void MainWindow::buildMenus()
+{
+    // ── 监听 ──
+    QMenu *listenMenu = menuBar()->addMenu("监听(&L)");
+    m_startListenAct = listenMenu->addAction("开始监听");
+    m_startListenAct->setShortcut(QKeySequence("F5"));
+    connect(m_startListenAct, &QAction::triggered, this, &MainWindow::onStartListening);
+    m_stopListenAct = listenMenu->addAction("停止监听");
+    connect(m_stopListenAct, &QAction::triggered, this, &MainWindow::onStopListening);
+
+    // ── 控制 ──
+    QMenu *ctlMenu = menuBar()->addMenu("控制(&C)");
+    m_enableAct = ctlMenu->addAction("使能跟踪");
+    m_enableAct->setShortcut(QKeySequence("F9"));
+    connect(m_enableAct, &QAction::triggered, this, &MainWindow::onPrepareTracking);
+    m_stopTrackAct = ctlMenu->addAction("停止跟踪");
+    m_stopTrackAct->setShortcut(QKeySequence("Esc"));
+    connect(m_stopTrackAct, &QAction::triggered, this, &MainWindow::onStopTracking);
+    ctlMenu->addSeparator();
+    m_resetFaultAct = ctlMenu->addAction("复位故障");
+    connect(m_resetFaultAct, &QAction::triggered, this, &MainWindow::onResetFault);
+    ctlMenu->addSeparator();
+    QAction *paramsAct = ctlMenu->addAction("编辑控制参数…");
+    connect(paramsAct, &QAction::triggered, this, &MainWindow::onEditParams);
+
+    // ── 视图：各面板的显示开关 ──
+    // toggleViewAction() 直接给出带勾选状态的 QAction，
+    // 显示状态与菜单勾选自动同步，不必自己维护。
+    QMenu *viewMenu = menuBar()->addMenu("视图(&V)");
+    for (QDockWidget *d : {m_listenDock, m_targetDock, m_compareDock,
+                           m_cumulDock, m_paramDock, m_commDock, m_alarmDock})
+        viewMenu->addAction(d->toggleViewAction());
+
+    // ── 工具栏：安全关键动作 ──
+    // 使能与停止同时留在工具栏。菜单里的动作要两次点击才触发，
+    // 停止跟踪不该有这个延迟。
+    QToolBar *tb = addToolBar("控制");
+    tb->setObjectName("controlToolBar");
+    tb->addAction(m_startListenAct);
+    tb->addAction(m_stopListenAct);
+    tb->addSeparator();
+    tb->addAction(m_resetFaultAct);
+    tb->addAction(m_enableAct);
+    tb->addAction(m_stopTrackAct);
+}
+```
+
+`MainWindow.h` 相应加入 `QAction *` 成员与 `QDockWidget *` 成员，
+并加 `void buildMenus();`。
+
+- [ ] **Step 4: 状态栏取代顶部状态卡片**
+
+`StatusBar` 部件（四张卡片）删除，其信息移入 `QStatusBar`：
+
+```cpp
+void MainWindow::buildStatusBar()
+{
+    // 常驻标签用 addPermanentWidget（右侧），瞬时消息用 showMessage（左侧）。
+    // 连接/控制状态是"随时想瞥一眼"的信息，占一整块面板不值得。
+    m_connLabel  = new QLabel(this);
+    m_stateLabel = new QLabel(this);
+    m_ipocLabel  = new QLabel(this);
+    m_cycleLabel = new QLabel(this);
+    for (QLabel *l : {m_connLabel, m_stateLabel, m_ipocLabel, m_cycleLabel})
+        statusBar()->addPermanentWidget(l);
+    m_ipocLabel->setFont(uilogic::monospaceFont());
+    m_cycleLabel->setFont(uilogic::monospaceFont());
+}
+```
+
+`onRefresh` 中更新这四个标签，颜色用 `QPalette` +
+`uilogic::severityColor`。联锁拦截原因改用
+`statusBar()->showMessage(reason, 10000)`。
+
+删除 `src/ui/StatusBar.h`、`src/ui/StatusBar.cpp`，
+从 `CMakeLists.txt` 的 `rsi_host` 源列表移除。
+
+- [ ] **Step 5: 布局持久化**
+
+```cpp
+MainWindow::~MainWindow()
+{
+    QSettings st("kuka_rsi_win", "rsi_host");
+    st.setValue("geometry", saveGeometry());
+    st.setValue("windowState", saveState());
+    // ...既有的线程收尾...
+}
+```
+
+构造函数末尾：
+
+```cpp
+    QSettings st("kuka_rsi_win", "rsi_host");
+    restoreGeometry(st.value("geometry").toByteArray());
+    restoreState(st.value("windowState").toByteArray());
+```
+
+注意 `restoreState` 依赖每个 dock 与 toolbar 的 `objectName`——
+Step 2、3 里已经设好，漏设会导致该面板位置不被恢复且 Qt 打警告。
+
+- [ ] **Step 6: 验证**
+
+Run:
+```bash
+cmake --build build --target rsi_host
+./build/rsi_host.exe &
+sleep 3
+powershell -File tools/snap.ps1 -Title rsi_host -Out _t8.png
+```
+用 Read 工具打开截图核对：
+- 菜单栏四项（监听/控制/视图/帮助）齐全
+- 中央是两张图表
+- 各面板停靠在左右两侧，标题栏可见
+- 底部状态栏显示连接状态、IPOC、周期
+
+手工验证（截图看不出来的）：
+- 拖动某个面板到另一侧，关闭程序再启动，确认位置被恢复
+- 「视图」菜单勾掉某面板，确认它隐藏且勾选状态同步
+- 把某面板拖出窗口成为浮动窗口，确认正常
+
+- [ ] **Step 7: 提交**
+
+```bash
+git add -A src/ui CMakeLists.txt
+git commit -m "layout(ui): menu bar, dockable panels, status bar
+
+Follows Robotics Library's rlPlanDemo (ref/rlPlanDemo): one large
+central view plus panels the operator arranges as the job needs, rather
+than a fixed three-column split that pushed widgets off-screen at 1400px.
+
+Charts take the centre — the only thing needing sustained attention.
+Connection state moves to the status bar. Enable and stop stay on a
+toolbar as well as in the menu: a menu action costs two clicks, which
+stop-tracking should not.
+
+Layout persists via QSettings."
 ```
 
 ---
@@ -1254,7 +1337,7 @@ git commit -m "test(ui): full regression after UI refactor"
 |---|---|
 | A 参数串行 | Task 4 |
 | B 轴名隐藏 | Task 4 |
-| C 选择器污染 | Task 7 |
+| C 选择器污染 | Task 7（删除 QSS，此类缺陷从根上消失） |
 | D 表格截断 | Task 5 |
 | E 回包卡同值 | Task 7 Step 3 |
 | F 日志刷屏 | Task 1 + Task 6 |
@@ -1263,16 +1346,25 @@ git commit -m "test(ui): full regression after UI refactor"
 | I 撤销后预览不刷新 | Task 6 Step 4 |
 | J `m_targetApplied` 只写不读 | Task 6 Step 4 |
 | K 判空恒假 | Task 2 |
-| L 双色板 | Task 7 |
+| L 双色板 | Task 7（两套色板一并删除） |
 | 砍四个部件 | Task 3 |
 | RKorr 列 | Task 2（格式化）+ Task 5（表格） |
-| 布局重整 | Task 8 |
-| 视觉系统 | Task 7 |
+| 菜单栏 + 停靠面板 + 状态栏 | Task 8 |
+| 视觉系统（原生外观） | Task 7 |
 | 交互状态逻辑 | Task 1 + Task 6 |
 | 验证 | Task 9 |
 
 全部覆盖，无遗漏。
 
+**2026-08-02 计划变更的影响：** Task 7 由「统一进 QSS」反转为「删除 QSS」，
+Task 8 由「QSplitter 三栏」改为「菜单栏 + QDockWidget + 状态栏」。
+缺陷 C 与 L 的修法随之改变（从「统一样式」变为「不用样式表」），
+但两者仍被覆盖，且新修法更彻底——样式表级联导致的缺陷类别整个消失。
+Task 1-6 不受影响：它们修的是逻辑与数据绑定，与外观无关。
+
 **类型一致性：** `AlarmEdge`、`ButtonStates` 在 Task 1 定义，Task 6 使用，字段名一致；
 `uilogic::formatValue` / `formatRkorr` / `deltaPreview` 在 Task 2 定义，Task 5、Task 6 使用，签名一致；
-`fitTableToRows` 在 Task 5 定义并使用；`m_applyBtn` 在 Task 6 提升为成员，Task 7 引用其 `cssClass`。
+`monospaceFont` 在 Task 5 Step 0 定义，Task 7、8 使用；
+`severityColor` 与 `Severity` 在 Task 7 定义，Task 8 使用；
+`fitTableToRows` 在 Task 5 定义并使用；
+`m_applyBtn` 在 Task 6 提升为 `QPushButton *` 成员，用 `setDefault` 而非样式表表达"未应用"。
