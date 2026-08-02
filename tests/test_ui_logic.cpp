@@ -105,6 +105,13 @@ private slots:
         const ButtonStates b = uilogic::buttonStates(s, true);
         QVERIFY(b.resetFault);
         QVERIFY(!b.enableTrack);              // Fault 必须先复位
+        // stopTrack 是 Tracking || StaleFrame || Syncing 的 OR 链，而 OR 链
+        // 天然诱导后来者继续追加分支。这里必须钉死 Fault 不在链内：
+        // 「停止跟踪」走 onZeroToActual → PoseController::resetToActual，
+        // 而 resetToActual 会清除 Fault。一旦有人加上 `|| Fault`，停止跟踪
+        // 就成了一次绕过 onResetFault 日志记录的隐式故障复位——故障发生过
+        // 这件事会从事件日志里消失。
+        QVERIFY(!b.stopTrack);                // Fault 下停止跟踪也无意义
     }
 
     // 复位不该受监听状态影响：Fault 是锁存的，停止监听不会清除它。
