@@ -20,6 +20,7 @@ add_library(rsi_core STATIC
     src/core/RsiCodec.cpp
     src/core/PoseController.cpp
     src/core/SessionGuard.cpp
+    src/ui/UiLogic.cpp
     src/core/TargetTrajectory.cpp
     tools/krc_simulator/kinematics.cpp
 )
