@@ -125,12 +125,24 @@ StopType 枚举：InfoMessage=0  PathNormal=1  Velocity=2  PathFast=3  ExitMoveC
 即上位机可以通过第 7 个 `RKorr` 通道主动请求 RSI 退出修正。这比界面上的
 "软停止"（只是把误差归零、继续回包）强一级，值得纳入。
 
-## 8. 关于 HOLDON 的悬置问题
+## 8. HOLDON 必须为 0（已决议，本项已关闭）
 
-最终评审担心 `_ethernet.xml` 里 `HOLDON="1"` 在 RELATIVE 语义下会让 KRC 在主机
-停顿时每周期重复施加最后一个增量。上面这份真实 PosCorr 配置用的是
-`Limit` + `PosCorrMon` + `Stop` 三重防护，说明实际工程做法是**不依赖 HOLDON 的
-语义**，而是用对象图本身兜住。这个疑问仍需在部署前用 RSI 手册确认。
+`RKorr.X..C` 六个元素在 `krc/PoseTrack_ethernet.xml` 里全部是 `HOLDON="0"`，
+不是 KUKA 示例与 ROS-Industrial 模板里那个 `HOLDON="1"`。
+
+推导（与该文件第 52–57 行的注释同源）：本接口是**增量**语义。`HOLDON="1"`
+的含义是"没有新数据时保持上一个值"——对绝对量接口这是安全的降级，对增量
+接口则是最坏的选择：主机一停顿，KRC 会把最后那个增量**每周期重新施加一次**。
+按 0.6mm 的单周期增量与 100 个周期的 `Timeout` 计，一次停顿就能走出 60mm，
+而主机的账本一分都记不到——`commandedSum()` 与 `displacement()` 的交叉校验
+在这里也救不了，因为主机压根不知道 KRC 动了。
+
+早期评审曾把这条列为"需查手册确认"的悬置项。它已经由上述推导决议：
+增量接口下 `HOLDON` 只能是 0，无需真机验证。
+
+保留本节而不是删掉，是因为 ROS-Industrial 的模板用的是 `HOLDON="1"`——
+下一个从那里复制配置的人会再踩一次，而这里是他会来查的地方。
+
 
 ---
 
