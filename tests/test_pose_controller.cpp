@@ -5,6 +5,11 @@
 
 namespace {
 
+// 满预算 = 距上一次 step 恰好过去一个配置周期。绝大多数用例断言的是"正常
+// 配速下的行为"，所以显式传这个值——step() 的第二个参数没有默认值，正是
+// 为了逼每个调用点写出自己假设的节奏。
+constexpr double kCycleMs = 12.0;
+
 AppConfig testCfg()
 {
     AppConfig c = AppConfig::defaults();
@@ -31,7 +36,7 @@ private slots:
         pc.configure(testCfg());
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});   // 巨大误差
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         QCOMPARE(d.x, 0.0);                        // 未使能 → 不动
         QCOMPARE(pc.state(), TrackState::Idle);
     }
@@ -42,7 +47,7 @@ private slots:
         pc.configure(testCfg());
         pc.beginSession(Pose{10, 20, 30, 1, 2, 3});
         pc.setTracking(true);
-        const Pose d = pc.step(Pose{10, 20, 30, 1, 2, 3});
+        const Pose d = pc.step(Pose{10, 20, 30, 1, 2, 3}, kCycleMs);
         QCOMPARE(d.x, 0.0);
         QCOMPARE(d.a, 0.0);
     }
@@ -54,7 +59,7 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         // 50mm/s * 0.012s = 0.6mm
         QVERIFY(qAbs(d.x - 0.6) < 1e-9);
     }
@@ -68,7 +73,7 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0.4, 0, 0, 0, 0, 0});
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         // 0.5 * 0.4 = 0.2 < 0.6 → 不限幅
         QVERIFY(qAbs(d.x - 0.2) < 1e-9);
     }
@@ -83,7 +88,7 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, -179, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0, 0, 0, 179, 0, 0});
-        const Pose d = pc.step(Pose{0, 0, 0, -179, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, -179, 0, 0}, kCycleMs);
         QVERIFY(d.a < 0.0);   // 向负方向（经 180 侧短路径）
     }
 
@@ -96,7 +101,7 @@ private slots:
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         Pose actual{0, 0, 0, 0, 0, 0};
         for (int i = 0; i < 3; ++i) {
-            const Pose d = pc.step(actual);
+            const Pose d = pc.step(actual, kCycleMs);
             actual.x += d.x;               // 模拟机器人跟随
         }
         // 命令和仍是三步之和
@@ -118,7 +123,7 @@ private slots:
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         Pose actual{0, 0, 0, 0, 0, 0};
         for (int i = 0; i < 5; ++i)
-            actual.x += pc.step(actual).x;
+            actual.x += pc.step(actual, kCycleMs).x;
 
         // 第 2 层已移除：累积越限只记账、不故障——状态仍为 Tracking，增量继续流动
         QCOMPARE(pc.state(), TrackState::Tracking);
@@ -137,7 +142,7 @@ private slots:
         // 【关键之二】会话锚点也必须原样保留：再走一个周期，位移仍以原锚点（0）
         // 度量，而不是以 resetToActual 传入的 {7,8,9} 度量——位移随 actual 前进。
         pc.setTracking(true);
-        pc.step(actual);
+        pc.step(actual, kCycleMs);
         QVERIFY(qAbs(pc.accumulated().x - actual.x) < 1e-9);
     }
 
@@ -152,7 +157,7 @@ private slots:
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         Pose actual{0, 0, 0, 0, 0, 0};
         for (int i = 0; i < 5; ++i)
-            actual.x += pc.step(actual).x;
+            actual.x += pc.step(actual, kCycleMs).x;
         // 第 2 层已移除：越限仍保持 Tracking，只验证账本确实累计了
         QCOMPARE(pc.state(), TrackState::Tracking);
         QVERIFY(qAbs(pc.accumulated().x) > 1e-9);
@@ -175,7 +180,7 @@ private slots:
         pc.setTracking(true);
         Pose bad{0, 0, 0, 0, 0, 0};
         bad.x = std::numeric_limits<double>::quiet_NaN();
-        const Pose d = pc.step(bad);
+        const Pose d = pc.step(bad, kCycleMs);
         QCOMPARE(d.x, 0.0);
         QCOMPARE(pc.state(), TrackState::Fault);
         QVERIFY(!pc.faultReason().isEmpty());
@@ -192,7 +197,7 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         // 必须朝目标走，绝不能因 clamp(lo>hi) 反向
         QVERIFY(d.x > 0.0);
         QVERIFY(qAbs(d.x - 0.6) < 1e-9);
@@ -210,7 +215,7 @@ private slots:
         // 限幅 + E⁻¹，各轴增量不再独立等于 0.12，只保证有限且被限幅
         // （详见 attitude_* 新用例）。
         pc.setTarget(Pose{100, 100, 100, 90, 90, 90});
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         const double posNorm = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
         QVERIFY(qAbs(posNorm - 0.6) < 1e-9);   // 范数恰好压到限值
         QVERIFY(qAbs(d.x - d.y) < 1e-9);       // 等比缩放（各轴误差等大）
@@ -229,7 +234,7 @@ private slots:
         pc.setTracking(true);
         QVERIFY(pc.state() != TrackState::Tracking);   // 不得被使能
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         QCOMPARE(d.x, 0.0);
         QCOMPARE(pc.state(), TrackState::Fault);
         QVERIFY(pc.faultReason().contains("cycleMs"));
@@ -246,7 +251,7 @@ private slots:
         pc.setTracking(true);
         QCOMPARE(pc.state(), TrackState::Tracking);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        QVERIFY(pc.step(Pose{0, 0, 0, 0, 0, 0}).x > 0.0);
+        QVERIFY(pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs).x > 0.0);
     }
 
     void nonFiniteGainEntersFault()
@@ -258,7 +263,7 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{10, 0, 0, 0, 0, 0});
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         QCOMPARE(d.x, 0.0);
         QCOMPARE(pc.state(), TrackState::Fault);
         // 累积量绝不能被污染，否则显示账本与实际同步性都会失真
@@ -275,7 +280,7 @@ private slots:
         pc.setTracking(true);
         pc.setTarget(Pose{1.0, 0, 0, 0, 0, 0});
         for (int i = 0; i < 1000; ++i)
-            pc.step(Pose{0, 0, 0, 0, 0, 0});
+            pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         // 每周期 1e-6 会被 buildSen 量化成 0.0000，机器人不动，
         // 所以账本也不该增长——否则收敛后会持续漂移。
         // actual 固定不动，位移当然是 0；真正钉住死区的是命令和。
@@ -292,16 +297,16 @@ private slots:
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         Pose actual{0, 0, 0, 0, 0, 0};
         for (int i = 0; i < 10; ++i)
-            actual.x += pc.step(actual).x;
+            actual.x += pc.step(actual, kCycleMs).x;
         // 再走一个周期但不喂回，使 before 就是"以当前 actual 度量的位移"，
         // 这样才能和归零后同一 actual 上的度量直接比较（位移天然滞后一拍）。
-        pc.step(actual);
+        pc.step(actual, kCycleMs);
         const double before = pc.accumulated().x;
         QVERIFY(before > 0.0);
 
         pc.resetToActual(actual);      // 会话内归零：原点不得移动
         pc.setTracking(true);
-        pc.step(actual);
+        pc.step(actual, kCycleMs);
         QVERIFY(qAbs(pc.accumulated().x - before) < 1e-9);
     }
 
@@ -314,13 +319,13 @@ private slots:
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
         Pose actual{0, 0, 0, 0, 0, 0};
         for (int i = 0; i < 10; ++i)
-            actual.x += pc.step(actual).x;
+            actual.x += pc.step(actual, kCycleMs).x;
         QVERIFY(pc.accumulated().x > 0.0);
 
         pc.beginSession(actual);       // 真正的会话重启：原点移到此处
         QCOMPARE(pc.accumulated().x, 0.0);
         pc.setTracking(true);
-        pc.step(actual);
+        pc.step(actual, kCycleMs);
         QCOMPARE(pc.accumulated().x, 0.0);
     }
 
@@ -333,7 +338,7 @@ private slots:
         pc.forceFault(QStringLiteral("network write failed"));
         QCOMPARE(pc.state(), TrackState::Fault);
         QVERIFY(pc.faultReason().contains("network write failed"));
-        QCOMPARE(pc.step(Pose{0, 0, 0, 0, 0, 0}).x, 0.0);
+        QCOMPARE(pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs).x, 0.0);
         pc.setTracking(true);   // 不得直接重新使能
         QCOMPARE(pc.state(), TrackState::Fault);
         pc.resetToActual(Pose{0, 0, 0, 0, 0, 0});
@@ -355,9 +360,9 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        const Pose d1 = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d1 = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         QCOMPARE(d1.x, 0.0);                 // 起点速度 0
-        const Pose d2 = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d2 = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         QVERIFY(d2.x < 20.0);
         QVERIFY(qAbs(d2.x - 4.66) < 0.05);   // 0.5 × 100 × s(0.24)
     }
@@ -372,7 +377,7 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        const Pose d1 = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d1 = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         QVERIFY(qAbs(d1.x - 50.0) < 1e-9);   // 直通
     }
 
@@ -387,11 +392,11 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
-        pc.step(Pose{0, 0, 0, 0, 0, 0});     // 轨迹启动（u=0，增量 0）
+        pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);     // 轨迹启动（u=0，增量 0）
         pc.resetToActual(Pose{3, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         // 轨迹必须立即完成（目标=实际=3），否则会残留向 3 逼近的假误差 → 非零增量
-        const Pose d = pc.step(Pose{3, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{3, 0, 0, 0, 0, 0}, kCycleMs);
         QCOMPARE(d.x, 0.0);
     }
 
@@ -406,7 +411,7 @@ private slots:
         pc.setTarget(Pose{5, 0, 0, 0, 0, 0});
         Pose actual{0, 0, 0, 0, 0, 0};
         for (int i = 0; i < 5000; ++i) {
-            const Pose d = pc.step(actual);
+            const Pose d = pc.step(actual, kCycleMs);
             actual.x += d.x;
         }
         // 轨迹到点即达：完成后稳态与无轨迹一致（目标 = 实际）
@@ -428,9 +433,9 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 179, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0, 0, 0, -179, 0, 0});
-        const Pose d1 = pc.step(Pose{0, 0, 0, 179, 0, 0});
+        const Pose d1 = pc.step(Pose{0, 0, 0, 179, 0, 0}, kCycleMs);
         QCOMPARE(d1.a, 0.0);                 // 起点速度 0
-        const Pose d2 = pc.step(Pose{0, 0, 0, 179, 0, 0});
+        const Pose d2 = pc.step(Pose{0, 0, 0, 179, 0, 0}, kCycleMs);
         QVERIFY(d2.a > 0.0);                 // 经 180 侧（短路径），而非经 0 侧
     }
 
@@ -449,7 +454,7 @@ private slots:
         Pose actual{0, 0, 0, 0, 60, 0};
         double prevA = 0;
         for (int i = 0; i < 2000; ++i) {
-            const Pose d = pc.step(actual);
+            const Pose d = pc.step(actual, kCycleMs);
             QVERIFY(std::isfinite(d.a) && std::isfinite(d.b) && std::isfinite(d.c));
             actual.a += d.a; actual.b += d.b; actual.c += d.c;
             (void)prevA;
@@ -470,7 +475,7 @@ private slots:
         pc.beginSession(Pose{0,0,0, 0, 60, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0,0,0, 5, 60, 5});   // 小姿态目标，非奇异
-        const Pose d = pc.step(Pose{0,0,0, 0, 60, 0});
+        const Pose d = pc.step(Pose{0,0,0, 0, 60, 0}, kCycleMs);
         // d 是欧拉增量（度）。验证它非零、有限、方向合理（目标+方向）。
         QVERIFY(std::isfinite(d.a) && std::isfinite(d.b) && std::isfinite(d.c));
     }
@@ -488,7 +493,7 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0, 0, 0, 90, 0, 0});   // 大姿态误差（90° 绕 Z）
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         // d 是欧拉增量（度）。E⁻¹ 在 B=0 只重排轴序，故欧拉范数 = 旋转向量范数。
         const double rotDeg = std::sqrt(d.a*d.a + d.b*d.b + d.c*d.c);
         QVERIFY(rotDeg > 0.0);
@@ -505,7 +510,7 @@ private slots:
         pc.beginSession(Pose{0,0,0, 0,60,0});
         pc.setTracking(true);
         pc.setTarget(Pose{0,0,0, 0,0,0});  // 大姿态误差
-        const Pose d = pc.step(Pose{0,0,0, 0,60,0});
+        const Pose d = pc.step(Pose{0,0,0, 0,60,0}, kCycleMs);
         QCOMPARE(d.a, 0.0);
         QCOMPARE(d.b, 0.0);
         QCOMPARE(d.c, 0.0);
@@ -524,7 +529,7 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{0.5, 0.5, 0.5, 0, 0, 0});
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         const double norm = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
         QVERIFY(norm <= 0.6 + 1e-9);
         QVERIFY(qAbs(d.x - d.y) < 1e-9);  // 等比缩放
@@ -541,10 +546,123 @@ private slots:
         pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
         pc.setTracking(true);
         pc.setTarget(Pose{100, 100, 100, 0, 0, 0});   // 大位置误差
-        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
         QCOMPARE(d.x, 0.0);
         QCOMPARE(d.y, 0.0);
         QCOMPARE(d.z, 0.0);
+    }
+
+    // ── 步长预算按实测帧间隔发放 ──
+    // 背景：主机线程停顿时 KRC 继续发包，几十帧积压在接收缓冲里，恢复后在
+    // 几毫秒墙钟内被连续排空，且每帧都带着间隙前那个陈旧位姿（误差顶格）。
+    // 按配置周期发放预算时一次排空 = 41 × 0.6 ≈ 25mm，正是 POSCORR 硬限的
+    // 量级。以下四个用例钉住替代方案的四个性质。
+
+    // 性质一：满周期间隔下与"按配置周期"逐位相同——这是"单调安全"论证的
+    // 实证部分，也挡住"把预算无脑调小"的假修复。
+    void stepBudget_fullCycleIsUnchanged()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, 12.0);
+        QCOMPARE(d.x, 0.6);   // 逐位相等，不是"接近"：12/12 恰为 1.0
+    }
+
+    // 性质二：比例正确。半个周期 = 半个预算，不是"判定为异常后清零"——
+    // 被抢占后追赶的帧与排空积压的帧本就是同一现象，只是规模不同。
+    void stepBudget_scalesWithElapsed()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        QVERIFY(qAbs(pc.step(Pose{0, 0, 0, 0, 0, 0}, 6.0).x - 0.3) < 1e-12);
+        QVERIFY(qAbs(pc.step(Pose{0, 0, 0, 0, 0, 0}, 1.2).x - 0.06) < 1e-12);
+    }
+
+    // 性质三：上限封在一个周期。间隔 500ms 不等于这一帧可以走 25mm——KRC
+    // 在一个 IPO 周期内施加它，那是 40 倍速。封顶保证任何一帧都 ≤ 旧值。
+    void stepBudget_isCappedAtOneCycle()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        QCOMPARE(pc.step(Pose{0, 0, 0, 0, 0, 0}, 500.0).x, 0.6);
+    }
+
+    // 性质四：整批积压只值它真正占用的墙钟。41 帧在 ~3ms 内排空 → 总量
+    // 0.6 × 3/12 ≈ 0.15mm，而不是 24.6mm。
+    void stepBudget_backlogDrainCollapsesToElapsedWallClock()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        // 陈旧位姿：机器人在主机停顿期间没收到修正，没动，误差始终顶格。
+        constexpr int    kBacklog   = 41;
+        constexpr double kDrainMs   = 3.0;             // 整批排空占用的墙钟
+        constexpr double kPerFrame  = kDrainMs / kBacklog;
+        double sumX = 0.0;
+        for (int i = 0; i < kBacklog; ++i)
+            sumX += pc.step(Pose{0, 0, 0, 0, 0, 0}, kPerFrame).x;
+        QVERIFY2(sumX < 0.2, qPrintable(QStringLiteral("排空吐出 %1 mm").arg(sumX)));
+        // 且确实等于"墙钟 × vmax"，不是被某个阈值一刀切成 0：控制律在排空
+        // 期间仍然在工作，只是按它真正占用的时间收费。
+        QVERIFY(qAbs(sumX - 50.0 * kDrainMs / 1000.0) < 1e-9);
+    }
+
+    // 无法测量间隔时（看门狗刚清掉基准）必须取零预算，绝不能退化成满预算。
+    // 负值与非有限值走同一条路：非有限值若混进比例计算，会让"范数 > 限值"
+    // 恒为假，第 1 层静默失效。
+    void stepBudget_unknownElapsedGivesZeroBudget()
+    {
+        PoseController pc;
+        pc.configure(testCfg());
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 90, 0});
+        for (double bad : {0.0, -1.0, -500.0,
+                           std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity()}) {
+            const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, bad);
+            QCOMPARE(d.x, 0.0);
+            QCOMPARE(d.a, 0.0);
+            QCOMPARE(d.b, 0.0);
+            QCOMPARE(d.c, 0.0);
+        }
+    }
+
+    // 姿态路径必须与位置路径同步收紧。只改一条路的话，排空期间机器人照样
+    // 能走满 41 帧的角度预算（0.12°/帧 × 41 ≈ 4.9°，POSCORR 姿态限 25°）。
+    void attitudeStepBudget_scalesAndCapsLikePosition()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();       // vmaxRotDegS=10, cycleMs=12 → 0.12 deg/周期
+        c.targetTrajectoryMs = 0.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0, 90, 0, 0});   // 大姿态误差 → 恒顶格
+        auto rotNorm = [&](double ms) {
+            const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, ms);
+            return std::sqrt(d.a*d.a + d.b*d.b + d.c*d.c);
+        };
+        const double full = rotNorm(12.0);
+        QVERIFY(qAbs(full - 0.12) < 1e-9);          // B=0：E⁻¹ 只重排轴序
+        QVERIFY(qAbs(rotNorm(6.0) - 0.06) < 1e-9);  // 半个周期 = 半个预算
+        QCOMPARE(rotNorm(500.0), full);             // 封顶：不得超过一个周期
+        // 排空：41 帧共 3ms 墙钟 → 总角度 ≈ 0.12 × 3/12 = 0.03°，而非 4.9°
+        double sumRot = 0.0;
+        for (int i = 0; i < 41; ++i)
+            sumRot += rotNorm(3.0 / 41.0);
+        QVERIFY2(sumRot < 0.05, qPrintable(QStringLiteral("排空吐出 %1 deg").arg(sumRot)));
     }
 };
 

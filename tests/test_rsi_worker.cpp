@@ -40,6 +40,19 @@ Pose poseAt(double x)
     return p;
 }
 
+// 从一份 SEN 回包里取出 RKorr 的 X（mm）。回包是主机真正发上线的东西，
+// 所以它是"这次事件里机器人被要求走多远"的唯一可信度量——比读控制器的
+// 内部账本更接近 KRC 看到的现实（含 4 位小数量化）。
+double senRkorrX(const QByteArray &sen)
+{
+    const int k = sen.indexOf("<RKorr X=\"");
+    if (k < 0)
+        return 0.0;
+    const int b = k + int(sizeof("<RKorr X=\"")) - 1;
+    const int e = sen.indexOf('"', b);
+    return e < 0 ? 0.0 : sen.mid(b, e - b).toDouble();
+}
+
 QByteArray robFrame(const Pose &p, quint64 ipoc)
 {
     QByteArray s = "<Rob Type=\"KUKA\">\n<RIst";
@@ -99,6 +112,30 @@ private:
                 QTRY_VERIFY(snap().frameCount > before);
             }
         }
+        // 不跑事件循环地灌 n 帧：模拟"主机停顿期间 KRC 继续发包"，帧全部
+        // 积压在内核接收缓冲里，等主机恢复后一次排空。用 feed() 造不出来——
+        // 它每帧都等 worker 处理完，正是要绕开的那个节奏。
+        void blast(const Pose &p, quint64 startIpoc, int n)
+        {
+            for (int i = 0; i < n; ++i)
+                sender.writeDatagram(robFrame(p, startIpoc + quint64(i)),
+                                     QHostAddress::LocalHost, port);
+        }
+
+        // 读走 sender 上积压的 SEN 回包，返回 (帧数, ΣRKorr.X)。
+        QPair<int, double> drainReplies()
+        {
+            int n = 0;
+            double sumX = 0.0;
+            while (sender.hasPendingDatagrams()) {
+                QByteArray buf(int(sender.pendingDatagramSize()), '\0');
+                sender.readDatagram(buf.data(), buf.size());
+                sumX += senRkorrX(buf);
+                ++n;
+            }
+            return {n, sumX};
+        }
+
         StatusSnapshot snap() const { return state.snapshot(); }
     };
 
@@ -221,6 +258,96 @@ private slots:
         QCOMPARE(r.snap().state, ControlState::StaleFrame);
         // 且本周期一定回零增量：反馈可疑时不许发修正。
         QCOMPARE(r.snap().lastDelta.x, 0.0);
+    }
+
+    // ── 突发排空：主机侧停顿，KRC 继续发 ──
+    // 这是 --restart-gap-ms 造不出来的那一半（那个是 KRC 停发，主机侧无积压）。
+    // 主机停顿 500ms 期间约 41 个数据报堆在接收缓冲里，且每一帧都带着间隙前
+    // 那个陈旧位姿（KRC 没收到修正，机器人没动），所以误差始终顶格。若每帧
+    // 都按"一个配置周期"发放预算，一次恢复就能吐出 41 × 0.6 ≈ 25mm——正好是
+    // KRC 侧 POSCORR 硬限的量级。预算按实测帧间隔计算后，整批积压只值它真正
+    // 占用的那几毫秒墙钟。
+    void hostStallBacklog_drainsWithinOneCycleOfBudget()
+    {
+        Rig r(59235);
+        r.feed(poseAt(kActualX), 1000, 3);
+
+        // 远目标：误差 100mm × kp 0.3 = 30mm ≫ 0.6mm 限值，每帧都顶格。
+        r.worker->applyTarget(poseAt(kActualX + 100.0));
+        r.worker->setTracking(true);
+        r.feed(poseAt(kActualX), 1003, 3);
+        QCOMPARE(r.snap().state, ControlState::Tracking);
+        r.drainReplies();          // 只统计排空事件本身发出的增量
+
+        // qSleep 而不是 qWait：必须不跑事件循环，否则就不是"主机停顿"了。
+        QTest::qSleep(500);
+        constexpr int kBacklog = 41;      // 500ms / 12ms
+        r.blast(poseAt(kActualX), 1006, kBacklog);
+
+        // 排空占用的墙钟：断言的判据是"这批增量值不值这么多时间"，而不是一个
+        // 写死的毫米数——排空快慢取决于构建类型与机器负载（Debug 下每帧约
+        // 0.8ms，Release 下约 0.07ms），写死数字只会让用例在别的机器上变成
+        // 抛硬币。
+        QElapsedTimer drain;
+        drain.start();
+        // 手写自旋而不是 QTRY_COMPARE：QTRY 内部按 qWait(step) 分段等待，测出
+        // 来的"排空耗时"会是它自己的轮询节奏（实测把 41 帧拖到 100ms），而生产
+        // 里主机恢复后事件循环是空的，readyRead 会连着重入——那正是危险所在。
+        // 这里让事件循环全速转，复现的才是真正的突发排空。
+        while (r.snap().frameCount < quint64(6 + kBacklog) && drain.elapsed() < 5000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents);
+        const double drainMs = drain.nsecsElapsed() / 1.0e6;
+        QCOMPARE(r.snap().frameCount, quint64(6 + kBacklog));
+        const auto [replies, sumX] = r.drainReplies();
+        qInfo("PROBE replies=%d sumX=%.4f mm drain=%.2f ms", replies, sumX, drainMs);
+
+        // 积压必须真的被处理过，否则"少发增量"可能只是因为帧被丢了——
+        // 那不是修复，是另一个缺陷。
+        QVERIFY2(replies >= kBacklog, "积压帧没被处理完，本用例没测到排空");
+        // 排空本身若慢到与停顿同量级，判据的区分力就没了（vmax × 500ms 正好
+        // 是 25mm，缺陷值本身）。先钉住这个前提。
+        QVERIFY2(drainMs < 200.0, "排空耗时与停顿同量级，本用例失去区分力");
+
+        // 安全属性：一次排空发出的总增量 ≤ 一个周期的满预算（跨越停顿的那
+        // 一帧，被封顶）+ vmax × 排空真正占用的墙钟。即"机器人的平均速度不
+        // 超过 vmax"，与积压多深无关。修复前这里是 41 × 0.6 = 24.6mm。
+        const double bound = 0.6 + 50.0 * drainMs / 1000.0;
+        QVERIFY2(sumX <= bound + 1e-9,
+                 qPrintable(QStringLiteral("排空吐出 %1 mm，上界 %2 mm")
+                                .arg(sumX).arg(bound)));
+        // 排空不得顺带把跟踪弄停：预算收紧的代价必须只落在幅值上。
+        QTRY_COMPARE(r.snap().state, ControlState::Tracking);
+    }
+
+    // 正常配速下预算必须与"按配置周期算"一致：这是"单调安全"论证的另一半，
+    // 否则一个把预算无脑调小的实现也能通过上面那个用例。
+    void normalPacing_stillEmitsFullPerCycleBudget()
+    {
+        Rig r(59236);
+        r.feed(poseAt(kActualX), 1000, 3);
+        r.worker->applyTarget(poseAt(kActualX + 100.0));
+        r.worker->setTracking(true);
+        r.feed(poseAt(kActualX), 1003, 1);
+        QCOMPARE(r.snap().state, ControlState::Tracking);
+        r.drainReplies();
+
+        // 按 12ms 边界配速发 10 帧。实测间隔总在 12ms 附近抖动，预算被封在
+        // 一个配置周期，故每帧 ≤0.6 且应非常接近 0.6。
+        constexpr int kN = 10;
+        for (int i = 0; i < kN; ++i) {
+            QTest::qWait(12);
+            r.feed(poseAt(kActualX), 1004 + quint64(i), 1);
+        }
+        const auto [replies, sumX] = r.drainReplies();
+        qInfo("PACED replies=%d sumX=%.4f mm", replies, sumX);
+        QCOMPARE(replies, kN);
+        // 上界：每帧不得超过一个周期的预算（封顶生效）
+        QVERIFY(sumX <= kN * 0.6 + 1e-9);
+        // 下界：正常配速不得被误伤成"排空"。qWait 只保证 ≥12ms，调度抖动
+        // 只会让间隔更长（被封顶），不会更短，故 95% 是很宽的余量。
+        QVERIFY2(sumX >= kN * 0.6 * 0.95,
+                 qPrintable(QStringLiteral("正常配速只发了 %1 mm，预算被误伤")
+                                .arg(sumX)));
     }
 };
 

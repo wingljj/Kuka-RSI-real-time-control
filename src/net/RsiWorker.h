@@ -79,6 +79,12 @@ private:
     QElapsedTimer m_sessionTimer;   // 曲线时间轴
     QElapsedTimer m_cycleTimer;     // 实测周期
     QElapsedTimer m_sinceLastFrame;   // 最后一次收到有效帧的时刻
+    // 上一次调用 m_ctl.step() 的时刻 = 步长预算的时间基准。
+    // 刻意不复用 m_cycleTimer（它测的是帧间隔）：被判 stale、重复、回退的帧
+    // 照样重启 m_cycleTimer 却不发修正，用它算预算会把那些帧占用的时间白白
+    // 扣掉。预算的物理含义是"距上一次真正发出修正过去了多久"，基准必须是
+    // step 而不是收帧。invalidate() 状态表示"基准不可信"，见 onWatchdog()。
+    QElapsedTimer m_sinceLastStep;
     bool          m_cycleTimerValid = false;
     double        m_measuredCycleMs = 0.0;
 

@@ -40,7 +40,15 @@ public:
 
     // 计算本周期增量。非 Tracking 状态一律返回零增量，
     // 但调用方仍必须把结果回包给 KRC。
-    Pose step(const Pose &actual);
+    //
+    // sinceLastStepMs = 距上一次调用 step() 真正过去的墙钟毫秒（不是配置周期）。
+    // 步长限值按它发放（上限封在一个配置周期），因为 RSI 是增量接口：这一帧
+    // 该发多少，取决于"距上次发送过去了多久 × 允许速度"。参数刻意做成必填而
+    // 不给默认值——给一个默认值就等于给"满预算"，那正是积压排空时最危险的
+    // 取值，绝不能让新调用方靠遗忘拿到它。
+    // 无法测量时（如看门狗刚清掉时间基准）必须传 0：宁可这一帧不动，也不能
+    // 把一段无从核实的静默当成满预算。负值/非有限值同样按 0 处理。
+    Pose step(const Pose &actual, double sinceLastStepMs);
 
     TrackState state() const { return m_state; }
     // 现在返回的是相对会话锚点的位移（见 displacement()），而非命令增量之和；
@@ -78,8 +86,8 @@ private:
     Pose m_displacement;            // 当前实际位姿相对 m_anchor 的位移
     bool m_haveAnchor = false;
 
-    double m_stepLimitPos = 0.0;   // mm  / 周期
-    double m_stepLimitRot = 0.0;   // deg / 周期
+    double m_stepLimitPos = 0.0;   // mm  / 周期（满预算上限；实发按实测间隔按比例发放）
+    double m_stepLimitRot = 0.0;   // deg / 周期（同上）
 
     // 配置非法（如 cycleMs <= 0）。粘滞：resetToActual/beginSession 都不清除它，
     // 因为生产调用顺序恰是 configure → beginSession(首帧)，若用 Fault 状态承载

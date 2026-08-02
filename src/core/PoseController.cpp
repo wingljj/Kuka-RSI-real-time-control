@@ -23,6 +23,8 @@ void PoseController::configure(const AppConfig &cfg)
     // lo > hi——形式上是 UB，libstdc++ 上会返回 hi，于是机器人朝远离目标
     // 的方向走。取绝对值挡住这一类。
     const double cycleS = std::fabs(cfg.cycleMs) / 1000.0;
+    // 这两个是"一个完整周期的满预算"上限，不是每帧照发的常数：step() 按
+    // 实测帧间隔在 [0, 1] 区间内按比例发放（见 step() 里的长注释）。
     m_stepLimitPos = std::fabs(cfg.vmaxPosMmS) * cycleS;
     m_stepLimitRot = std::fabs(cfg.vmaxRotDegS) * cycleS;
 
@@ -78,7 +80,7 @@ void PoseController::forceFault(const QString &reason)
     m_faultReason = reason;
 }
 
-Pose PoseController::step(const Pose &actual)
+Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
 {
     // 粘滞的配置故障：每个周期都重新宣告，因为 resetToActual/beginSession
     // 会清掉 Fault 状态，但不该让一个非法配置就此隐身。
@@ -124,6 +126,39 @@ Pose PoseController::step(const Pose &actual)
     double rotErr[3];
     poseops::rotVecFromQuat(qE, rotErr);
 
+    // ── 本周期的步长预算：按实际流逝时间发放，上限一个配置周期 ──
+    //
+    // 为什么不能按配置周期发放：RSI 是增量接口，"这一帧该发多少"本来就是
+    // "距上次发送过去了多久 × 允许速度"。用配置周期是个隐含假设——每帧恰好
+    // 间隔一个周期。主机线程停顿（OS 调度、GC 等）时这个假设破裂：KRC 继续
+    // 按 12ms 发包，几十个数据报积压在接收缓冲里，主机恢复后在几毫秒墙钟内
+    // 连续排空；而每一帧都带着间隙前那个陈旧位姿（KRC 没收到修正、机器人
+    // 没动），误差始终顶格。于是每帧都吐满额增量：实测一次 500ms 停顿排空
+    // 41 帧 = 24.6mm，正是 KRC 侧 POSCORR 硬限（25mm）的量级。
+    //
+    // 为什么不能改用"实测周期 < 阈值就不发"：实测按真实 12ms 边界配速的
+    // 118 帧里，有 10 帧（8.5%）的实测间隔低于 1ms——主机被抢占一次（实测
+    // 最大 62.8ms），期间到达的几帧随后被连续排空。"排空积压"与"被短暂抢占
+    // 后追赶"在时序上是同一件事，只是规模不同（3 帧 vs 41 帧），没有阈值能
+    // 分开它们。按流逝时间发放则不需要分：0.07ms 后到达就只值 0.07ms 的预算，
+    // 6ms 后到达就值半个，悬崖被换成连续函数，不存在误伤。
+    //
+    // 为什么必须封在一个配置周期：KRC 在一个 IPO 周期内施加这一帧的增量，
+    // 增量大小就是那个周期里的速度。间隔 500ms 不代表这一帧可以走 25mm——
+    // 那只会让机器人在 12ms 内跑出 40 倍速。封顶还带来一条便于论证的性质：
+    // 任何一帧发出的增量都 ≤ 封顶前的值（比例 ∈[0,1]），所以本机制不可能
+    // 引入新的越界路径，只可能少发。
+    const double cycleMsAbs = std::fabs(m_cfg.cycleMs);   // >0：m_configInvalid 已挡住 ≤0
+    // 非有限值不能进比例计算：NaN 会一路传播到限值，让"范数 > 限值"恒为假、
+    // 第 1 层静默失效——与本文件里其它非有限守卫同一类问题。按 0 处理。
+    const double elapsedMs = (std::isfinite(sinceLastStepMs) && sinceLastStepMs > 0.0)
+                                 ? std::min(sinceLastStepMs, cycleMsAbs)
+                                 : 0.0;
+    // elapsedMs == cycleMsAbs 时比例恰为 1.0（同值相除），限值与封顶前逐位相同。
+    const double budget       = elapsedMs / cycleMsAbs;
+    const double stepLimitPos = m_stepLimitPos * budget;
+    const double stepLimitRot = m_stepLimitRot * budget;
+
     // 第 1 层限值：位置按欧氏范数限幅（三轴同时到限时合成速度不超 √3×——
     // 逐轴 clamp 会让对角运动达到 √3×limit），姿态按旋转向量范数限幅。
     Pose d;
@@ -131,10 +166,12 @@ Pose PoseController::step(const Pose &actual)
     d.y = m_cfg.kpPos * errPos.y;
     d.z = m_cfg.kpPos * errPos.z;
     const double posNorm = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-    if (m_stepLimitPos <= 0.0) {
-        d.x = d.y = d.z = 0.0;   // vmax_pos=0：位置被阻止（与姿态路径一致）
-    } else if (posNorm > m_stepLimitPos) {
-        const double s = m_stepLimitPos / posNorm;
+    if (stepLimitPos <= 0.0) {
+        // vmax_pos=0（位置被阻止，与姿态路径一致）或本帧预算为 0（排空/无法
+        // 测量间隔）：两种情况下都不许发位置修正。
+        d.x = d.y = d.z = 0.0;
+    } else if (posNorm > stepLimitPos) {
+        const double s = stepLimitPos / posNorm;
         d.x *= s; d.y *= s; d.z *= s;
     }
     double dRot[3] = {m_cfg.kpRot * rotErr[0],
@@ -143,9 +180,11 @@ Pose PoseController::step(const Pose &actual)
     const double rotNorm = std::sqrt(dRot[0]*dRot[0] + dRot[1]*dRot[1] + dRot[2]*dRot[2]);
     // m_stepLimitRot 是 deg/周期，dRot 范数是 rad——阈值须换算成 rad 再比较，
     // 否则等效步长限幅放大约 57.3×（安全相关，见 attitude_stepLimitRespectsDegPerCycle）。
-    const double rotLimitRad = m_stepLimitRot * kDegToRad;
+    // 姿态与位置必须共用同一个 budget：只收紧一条路，排空时机器人照样能靠
+    // 姿态修正走满 41 帧的角度预算。
+    const double rotLimitRad = stepLimitRot * kDegToRad;
     if (rotLimitRad <= 0.0) {
-        dRot[0] = dRot[1] = dRot[2] = 0.0;   // vmax_rot=0：旋转被阻止（与位置路径一致）
+        dRot[0] = dRot[1] = dRot[2] = 0.0;   // vmax_rot=0 或本帧零预算：旋转被阻止
     } else if (rotNorm > rotLimitRad) {
         const double s = rotLimitRad / rotNorm;
         dRot[0] *= s; dRot[1] *= s; dRot[2] *= s;

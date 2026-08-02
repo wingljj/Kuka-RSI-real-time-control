@@ -53,6 +53,7 @@ void RsiWorker::start()
     m_maxReplyUs      = 0.0;
     m_cycleTimerValid = false;
     m_measuredCycleMs = 0.0;
+    m_sinceLastStep.invalidate();   // 新会话：没有"上一次 step"，预算基准不可信
     m_lifetimeLost = 0;
     m_lastDelta    = Pose{};
     m_cycleHead    = 0;
@@ -123,6 +124,10 @@ void RsiWorker::onWatchdog()
 
     m_ipocTracker.reset();
     m_cycleTimerValid = false;   // 否则下个会话的首帧会把整段静默当作周期发布
+    // 步长预算的时间基准同样作废。跨越静默的那个间隔不是"这一帧欠了多少
+    // 修正"——静默期间主机根本没在控制，把它当预算发出去等于凭空补发一段
+    // 从未发生的跟踪。基准不可信时 step() 只能拿到 0 预算（见 onDatagram）。
+    m_sinceLastStep.invalidate();
     m_missed          = 0;       // 丢包计数是突发保护，不是终身计数
     m_ring->clear();
     StatusSnapshot s = m_state->snapshot();
@@ -221,6 +226,15 @@ void RsiWorker::onDatagram()
                 // 此时移锚点等于在已施加的修正之上再发一份全新预算。
                 wasFirstFrame   = true;
                 wasSessionStart = genuineSessionStart;
+
+                // 步长预算的时间基准重开在这一帧。First 不在 Normal/Gap 之列，
+                // 本帧不 step；若不在这里重开，恢复后第一次 step 拿到的就是
+                // 跨越整段间隙的间隔（实测停顿可达 500ms）。它确实会被 step()
+                // 内的封顶挡住，但一个安全属性不该只靠最后一道兜底成立——
+                // 把跨间隙的那一段显式排除，预算才真是"从恢复这一刻起算"。
+                // 主机侧停顿造成的积压排空正是靠这一句：恢复首帧走这里重开
+                // 计时，随后被连续排空的几十帧各自只领到几十微秒的预算。
+                m_sinceLastStep.start();
             }
 
             if (m_cycleTimerValid) {
@@ -292,8 +306,17 @@ void RsiWorker::onDatagram()
             m_lastDelay = f.delay;
 
             if (!stale
-                && (ev.kind == IpocEvent::Normal || ev.kind == IpocEvent::Gap))
-                delta = m_ctl.step(f.rist);
+                && (ev.kind == IpocEvent::Normal || ev.kind == IpocEvent::Gap)) {
+                // 步长预算按"距上一次 step 的实测墙钟"发放，而不是按配置周期。
+                // 基准不可信（看门狗刚清过，且本帧居然不是 First）时只能给 0：
+                // 一段无从核实的静默不该换来一份满预算。
+                const double sinceStepMs =
+                    m_sinceLastStep.isValid()
+                        ? m_sinceLastStep.nsecsElapsed() / 1.0e6
+                        : 0.0;
+                delta = m_ctl.step(f.rist, sinceStepMs);
+                m_sinceLastStep.start();
+            }
         } else {
             ++m_missed;
             ++m_lifetimeLost;
