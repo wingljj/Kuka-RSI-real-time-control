@@ -46,9 +46,14 @@ add_executable(rsi_host
     src/main.cpp
     src/ui/MainWindow.cpp
     src/ui/ErrorChart.cpp
+    src/ui/StatusBar.cpp
+    src/ui/CommCards.cpp
+    src/ui/CumulativeBar.cpp
+    src/ui/AlarmLog.cpp
+    src/ui/TcpView3D.cpp
 )
 target_link_libraries(rsi_host PRIVATE
-    rsi_net Qt6::Core Qt6::Network Qt6::Widgets Qt6::Charts)
+    rsi_net Qt6::Core Qt6::Network Qt6::Widgets Qt6::Charts Qt6::OpenGLWidgets opengl32)
 
 enable_testing()
 add_subdirectory(tests)

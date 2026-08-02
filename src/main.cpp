@@ -54,6 +54,19 @@ int main(int argc, char **argv)
                 .arg(tried.join("\n")));
     }
 
+    // 加载全局样式表
+    const QStringList qssPaths{
+        appDir.filePath("config/style.qss"),
+        appDir.filePath("../src/ui/style.qss"),
+    };
+    for (const QString &qss : qssPaths) {
+        QFile f(qss);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            app.setStyleSheet(QString::fromUtf8(f.readAll()));
+            break;
+        }
+    }
+
     MainWindow w(cfg);
     w.show();
     return app.exec();

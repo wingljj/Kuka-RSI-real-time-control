@@ -26,6 +26,7 @@
 #include "tools/krc_simulator/kinematics.h"
 #include "tools/krc_simulator/rl_kinematics.h"
 #include "tools/krc_simulator/RobotView.h"
+#include "tools/krc_simulator/MeshLoader.h"
 
 namespace {
 
@@ -603,9 +604,22 @@ int main(int argc, char **argv)
     view.resize(900, 700);
     view.setWindowTitle("Comau Racer 7-1.4 — KRC Simulator (RL)");
 
+    // 加载 VRML 网格（link0.wrl..link6.wrl）
+    {
+        const double *homeQ = ctx.q;
+        std::string meshDir = "D:/QTproj/rl/rl-master/3dmodel";
+        std::string modelDir = modelPath.toStdString();
+        std::size_t slash = modelDir.find_last_of("/\\");
+        if (slash != std::string::npos)
+            meshDir = modelDir.substr(0, slash);
+        std::vector<BodyMesh> meshes = loadModelMeshes(meshDir, homeQ);
+        if (!meshes.empty())
+            view.setMeshes(meshes);
+    }
+
     // 立即显示初始位姿（不等首帧回包——用户开了 --viz 就要看到机器人）
     {
-        rlk::forward(ctx.q);  // forwardPosition() 计算所有 body frame
+        rlk::forward(ctx.q);
         const rlk::Skeleton skel = rlk::skeleton();
         double qDeg[6];
         for (int i = 0; i < 6; ++i) qDeg[i] = ctx.q[i] * 180.0 / M_PI;

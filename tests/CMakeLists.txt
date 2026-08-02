@@ -42,3 +42,7 @@ add_test(NAME test_target_trajectory COMMAND test_target_trajectory)
 add_executable(test_rl_kinematics test_rl_kinematics.cpp)
 target_link_libraries(test_rl_kinematics PRIVATE rl_kin Qt6::Test)
 add_test(NAME test_rl_kinematics COMMAND test_rl_kinematics)
+
+add_executable(test_mesh_loader test_mesh_loader.cpp ../tools/krc_simulator/MeshLoader.cpp)
+target_link_libraries(test_mesh_loader PRIVATE rl_kin Qt6::Test Qt6::Widgets)
+add_test(NAME test_mesh_loader COMMAND test_mesh_loader)

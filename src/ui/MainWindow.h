@@ -5,16 +5,21 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QMainWindow>
-#include <QSlider>
 #include <QSpinBox>
 #include <QThread>
 #include <QTimer>
+#include <QTableWidgetItem>
 #include <array>
 #include "core/AppConfig.h"
 #include "net/RsiWorker.h"
 #include "net/SharedState.h"
 
 class ErrorChart;
+class StatusBar;
+class CommCards;
+class CumulativeBar;
+class AlarmLog;
+class TcpView3D;
 
 class MainWindow : public QMainWindow
 {
@@ -26,23 +31,25 @@ public:
 private slots:
     void onRefresh();
     void onTargetEdited();
+    void onApplyTarget();
+    void onUndoTarget();
     void onZeroToActual();
+    void onReadActualTarget();
     void onPrepareTracking();
+    void onResetFault();
     void onStopTracking();
     void onStartListening();
     void onStopListening();
     void onEditParams();
 
 private:
-    QWidget *buildTargetPanel();
-    QWidget *buildReadoutPanel();
-    QWidget *buildParamPanel();
-    QWidget *buildConnPanel();
-    QWidget *buildSingularWarn();
+    // 构建方法
+    QWidget *buildLeftPanel();
+    QWidget *buildMidPanel();
+    QWidget *buildRightPanel();
 
-    // 依据当前是否已绑定，切换监听按钮与地址输入的可用状态。
-    // 地址与端口只在未绑定时可编辑——运行中改它们毫无意义，而且会让界面
-    // 显示的地址与实际绑定的地址不符。
+    void saveTargetSnapshot();
+    void restoreTargetSnapshot();
     void updateConnControls();
 
     AppConfig    m_cfg;
@@ -52,53 +59,45 @@ private:
     RsiWorker   *m_worker     = nullptr;
     QTimer      *m_refresh    = nullptr;
 
-    // 目标位姿输入：6 个滑块 + 6 个数值框联动
-    std::array<QSlider *, 6>        m_targetSlider{};
+    // ── 新组件 ──
+    StatusBar      *m_statusBar = nullptr;
+    CommCards      *m_commCards = nullptr;
+    CumulativeBar  *m_cumulBar  = nullptr;
+    AlarmLog       *m_alarmLog  = nullptr;
+    TcpView3D      *m_tcpView   = nullptr;
+    ErrorChart     *m_chartPos  = nullptr;
+    ErrorChart     *m_chartRot  = nullptr;
+
+    // ── 左栏：目标位姿表格 ──
     std::array<QDoubleSpinBox *, 6> m_targetSpin{};
+    std::array<QPushButton *, 6>    m_stepMinus{};
+    std::array<QPushButton *, 6>    m_stepPlus{};
+    std::array<QLabel *, 6>         m_liveLabel{};
+    QComboBox   *m_stepSel      = nullptr;
+    QLabel      *m_deltaPreview  = nullptr;
+    double       m_appliedTarget[6] = {0,0,0,0,0,0};
+    bool         m_targetApplied = true;
 
-    // 小步进：步长选择器 + 每轴 [-][+] 按钮
-    QComboBox *m_stepSel = nullptr;
-    std::array<QPushButton *, 6> m_stepMinus{};
-    std::array<QPushButton *, 6> m_stepPlus{};
+    // ── 中栏：位姿对比表格项 ──
+    std::array<QTableWidgetItem *, 6> m_actualItem{};
+    std::array<QTableWidgetItem *, 6> m_errorItem{};
+    std::array<QTableWidgetItem *, 6> m_targetItem{};
 
-    // 紧贴目标数值框右侧的当前位姿。读数面板在曲线下方，窗口一矮就被滚出
-    // 视野；而"目标给了多少 / 现在到哪了"是操作时最需要并排看的一对值。
-    std::array<QLabel *, 6> m_liveLabel{};
+    // ── 控制按钮 ──
+    QPushButton *m_enableBtn    = nullptr;
+    QPushButton *m_resetFaultBtn = nullptr;
+    QPushButton *m_stopBtn      = nullptr;
+    QPushButton *m_listenBtn    = nullptr;
+    QPushButton *m_unlistenBtn  = nullptr;
+    QLabel      *m_interlockLabel = nullptr;
 
-    // 读数：当前位姿 / 误差 / 累积
-    std::array<QLabel *, 6> m_actualLabel{};
-    std::array<QLabel *, 6> m_errorLabel{};
-    std::array<QLabel *, 6> m_accumLabel{};
+    // ── 连接 ──
+    QLineEdit   *m_ipEdit      = nullptr;
+    QSpinBox    *m_portSpin    = nullptr;
+    bool         m_listening   = false;
 
-    QLabel *m_stateCard   = nullptr;   // 大字状态卡（颜色分级）
-    QLabel *m_stateDetail = nullptr;   // 次行诊断详情
-    ErrorChart *m_chartPos = nullptr;   // 位置误差图（上）
-    ErrorChart *m_chartRot = nullptr;   // 姿态误差图（下）
-
-    QPushButton *m_enableBtn = nullptr;   // 两阶段使能：准备→确认→已使能
-    QLabel    *m_safetyNote = nullptr;
-
-    // 联锁拦截原因（红字）。硬拦截：使能不通过时置红字，无覆盖入口。
-    QLabel *m_interlockLabel = nullptr;
-
-    // 欧拉奇异区警告（B≈±90° 时姿态控制退化）。黄色提示，不拦截。
-    QLabel *m_singularWarnLabel = nullptr;
-
-    // 连接配置与手动监听控制。没有这些的话 bindFailed 是个死局：
-    // 弹一次对话框之后应用永久停在未连接，只能改 JSON 再重启。
-    QLineEdit  *m_ipEdit    = nullptr;
-    QSpinBox   *m_portSpin  = nullptr;
-    QPushButton *m_listenBtn = nullptr;
-    QPushButton *m_unlistenBtn = nullptr;
-
-    // 是否已成功绑定。区别于 StatusSnapshot::connected（那表示已收到帧）：
-    // 「已绑定但一帧未收」和「根本没绑上」对操作员是两件完全不同的事。
-    bool m_listening = false;
-
-    // 控制参数：主面板只读区显示生效值，编辑移入「控制参数…」对话框。
-    // Tracking 期间对话框内参数禁用，因此这里也没有可变的编辑控件。
-    QPushButton *m_paramsBtn = nullptr;   // 打开控制参数对话框
-    // Kp/限速/累积上限 × 位置/姿态，共 6 个只读值，由 onRefresh 随 m_cfg 刷新。
+    // ── 参数 ──
+    QPushButton *m_paramsBtn = nullptr;
     std::array<QLabel *, 6> m_paramVal{};
 
     bool m_suppressTargetSignal = false;

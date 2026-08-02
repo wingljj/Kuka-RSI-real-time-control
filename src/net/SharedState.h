@@ -15,6 +15,15 @@ enum class ControlState {
     Disconnected, WaitingFirstFrame, Syncing, Ready, Tracking, StaleFrame, Fault,
 };
 
+// 跟踪质量：独立于控制状态，评估误差与累积修正相对限值的比例。
+enum class TrackingQuality {
+    Normal,       // 误差 < 50% 限值
+    LargeError,   // 误差 50–80% 限值
+    NearLimit,    // 误差 80–100% 限值
+    OverLimit,    // 超过限值
+    Inactive,     // 未跟踪（状态不是 Tracking）
+};
+
 struct StatusSnapshot
 {
     Pose       actual;
@@ -39,6 +48,14 @@ struct StatusSnapshot
     quint64    krcDelay        = 0;   // KRC 统计的迟到/丢失回包数（<Delay D=...>）
     int        peerRejected    = 0;   // 被对端锁定丢弃的异源帧数
     int        sendFails       = 0;   // writeDatagram 连续失败计数
+
+    // 跟踪质量与限值比例（由 publishSnapshot 计算）
+    TrackingQuality trackingQuality = TrackingQuality::Inactive;
+    double    accumPosPct     = 0.0;  // 累积位置 / 位置限值（0–∞）
+    double    accumRotPct     = 0.0;  // 累积姿态 / 姿态限值（0–∞）
+    double    errorPosPct     = 0.0;  // 位置误差 / 位置限值（0–∞）
+    double    errorRotPct     = 0.0;  // 姿态误差 / 姿态限值（0–∞）
+    bool      accumOverLimit  = false; // 累计修正超限（accumPosPct>=1 或 accumRotPct>=1）
 };
 
 // 通信线程 publish，GUI 线程 snapshot。锁持有时间仅够一次结构体拷贝。

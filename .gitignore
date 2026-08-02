@@ -10,5 +10,12 @@ build-release/
 # 会话中的临时诊断截图与日志
 _*.png
 _*.log
+diag*.txt
+edges.txt
+edgefail.txt
+fixed.txt
 ref/
 release/
+
+# SDD 任务工作区（ledger、简报、审查包等中间产物）
+.superpowers/

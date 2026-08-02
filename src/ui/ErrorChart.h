@@ -2,6 +2,7 @@
 #include <QLabel>
 #include <QChartView>
 #include <QLineSeries>
+#include <QPushButton>
 #include <QValueAxis>
 #include <QWidget>
 #include <vector>
@@ -14,29 +15,37 @@ public:
     enum class Mode { Position, Rotation };
     explicit ErrorChart(int windowSeconds, Mode mode, QWidget *parent = nullptr);
 
-    // 从环形缓冲拉取样本重画。由 GUI 线程调用。
     void updateFrom(const SampleRing &ring);
 
+    // 阈值线（水平虚线，单位 mm 或 °）
+    void setThresholdLine(double value);
+    // 模式切换（位置图：0=合成 1=X 2=Y 3=Z；姿态图：0=合成 1=A 2=B 3=C）
+    void setSubMode(int subMode);
+
+private slots:
+    void onPauseToggled();
+    void onClear();
+    void onExport();
+
 private:
-    // 只取绘制真正需要的点数，不要拉满 kCapacity。copyOut 在 ring 互斥内
-    // 执行，而 comm 线程每周期的 push() 抢同一把锁；GUI 线程持锁期间若被
-    // 抢占，push() 最坏要等一个时间片（~10–15ms），超过 RSI 周期即丢包停机。
-    //
-    // 2000 点覆盖 12ms 周期下的完整 10s 窗口（10/0.012 ≈ 833）。4ms 周期下
-    // 10s 需 2500 点，超过 kMaxDrawPoints 时窗口被截短至 ~8s——轴会如实收窄
-    // （tStart = max(tEnd - window, tOldest)），不再假装有数据。
     static constexpr int kMaxDrawPoints = 2000;
 
     int m_windowSeconds = 10;
     Mode m_mode = Mode::Position;
-    QLineSeries *m_series = nullptr;
+    QLineSeries *m_series   = nullptr;
+    QLineSeries *m_threshold = nullptr;   // 阈值线
+    QLineSeries *m_zeroLine  = nullptr;   // 零线
     QValueAxis  *m_axisX = nullptr;
     QValueAxis  *m_axisY = nullptr;
-    QChartView  *m_view = nullptr;
-    QLabel      *m_placeholder = nullptr;   // 空态占位，与 m_view 叠放
+    QChartView  *m_view  = nullptr;
+    QLabel      *m_placeholder = nullptr;
+    QPushButton *m_pauseBtn   = nullptr;
+    QPushButton *m_clearBtn   = nullptr;
+    QPushButton *m_exportBtn  = nullptr;
 
-    // 抓取样本的暂存区。做成成员而非函数内 static：static 会被所有
-    // ErrorChart 实例共享，而 updateFrom 每秒调用 30 次，容量在构造时
-    // 一次分配后就不再进堆。
+    bool m_paused      = false;
+    double m_pausedTEnd = 0.0;
+    double m_thresholdVal = -1.0;   // < 0 表示未设置
+
     std::vector<ChartSample> m_buf;
 };

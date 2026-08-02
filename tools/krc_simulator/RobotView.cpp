@@ -24,11 +24,37 @@ void RobotView::updateRobot(const rlk::Skeleton &skel, const double qDeg[6])
     update();  // 异步，Qt 合并到显示刷新率
 }
 
+void RobotView::setMeshes(const std::vector<BodyMesh> &meshes)
+{
+    m_meshes = meshes;
+    m_homeInverse.clear();
+    for (const auto &m : m_meshes) {
+        Eigen::Matrix4d inv = m.homeTransform.inverse();
+        m_homeInverse.push_back(inv);
+    }
+    m_hasMeshes = !m_meshes.empty();
+}
+
 void RobotView::setCycleInfo(int cycle, int replies, int missed)
 {
     m_cycle = cycle;
     m_replies = replies;
     m_missed = missed;
+}
+
+std::vector<float> RobotView::transformVertices(const std::vector<float> &verts,
+                                                const Eigen::Matrix4d &m)
+{
+    std::vector<float> out;
+    out.reserve(verts.size());
+    for (size_t i = 0; i + 2 < verts.size(); i += 3) {
+        Eigen::Vector4d v(verts[i], verts[i+1], verts[i+2], 1.0);
+        Eigen::Vector4d vt = m * v;
+        out.push_back((float)vt(0));
+        out.push_back((float)vt(1));
+        out.push_back((float)vt(2));
+    }
+    return out;
 }
 
 // --------------- OpenGL ---------------
@@ -74,8 +100,12 @@ void RobotView::paintGL()
     drawAxes(200);
 
     if (m_hasData) {
-        drawLinks();
-        drawJoints();
+        if (m_hasMeshes) {
+            drawMeshes();
+        } else {
+            drawLinks();
+            drawJoints();
+        }
         drawTcp();
     }
 
@@ -192,6 +222,71 @@ void RobotView::drawTcp()
     glColor3f(1.0f, 0.2f, 0.2f);
     glBegin(GL_POINTS);
     glVertex3d(t.x, t.y, t.z);
+    glEnd();
+}
+
+void RobotView::drawMeshes()
+{
+    const auto &bodies = m_skel.bodies;
+    const int nBodies = (int)std::min(bodies.size(), m_meshes.size());
+    if (nBodies <= 0) return;
+
+    // 光照参数（无真实光源，用颜色渐变区分连杆）
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1.0f, 1.0f);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+    float lightPos[] = {500.0f, 500.0f, 2000.0f, 1.0f};
+    glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
+
+    for (int i = 0; i < nBodies; ++i) {
+        const auto &body = bodies[i];
+        const auto &mesh = m_meshes[i];
+        if (mesh.vertices.empty() || mesh.indices.empty()) continue;
+
+        // 从 home 位姿到当前位姿的 delta 变换
+        Eigen::Quaterniond qCur(body.qw, body.qx, body.qy, body.qz);
+        Eigen::Matrix4d TCur = Eigen::Matrix4d::Identity();
+        TCur.block<3,3>(0,0) = qCur.toRotationMatrix();
+        TCur(0,3) = body.x;
+        TCur(1,3) = body.y;
+        TCur(2,3) = body.z;
+
+        // delta = T_cur * T_home^(-1)，将 home 世界坐标映射到当前世界坐标
+        Eigen::Matrix4d delta = TCur * m_homeInverse[i];
+        std::vector<float> verts = transformVertices(mesh.vertices, delta);
+
+        // 颜色按 body 索引渐变
+        float t = nBodies > 1 ? float(i) / float(nBodies - 1) : 0.0f;
+        // 底座深灰 → TCP 亮橙色
+        float r = 0.3f + t * 0.7f;
+        float g = 0.3f + t * 0.4f;
+        float b = 0.3f + t * 0.05f;
+        glColor3f(r, g, b);
+
+        glBegin(GL_TRIANGLES);
+        for (int idx : mesh.indices) {
+            if (idx < 0 || idx * 3 + 2 >= (int)verts.size()) continue;
+            glVertex3f(verts[idx*3], verts[idx*3+1], verts[idx*3+2]);
+        }
+        glEnd();
+    }
+
+    glDisable(GL_LIGHTING);
+    glDisable(GL_LIGHT0);
+    glDisable(GL_COLOR_MATERIAL);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+
+    // 叠加骨架线（连杆）
+    glColor3f(0.1f, 0.1f, 0.1f);
+    glLineWidth(1.0f);
+    glBegin(GL_LINES);
+    for (int i = 0; i + 1 < nBodies && i + 1 < (int)bodies.size(); ++i) {
+        glVertex3d(bodies[i].x, bodies[i].y, bodies[i].z);
+        glVertex3d(bodies[i+1].x, bodies[i+1].y, bodies[i+1].z);
+    }
     glEnd();
 }
 

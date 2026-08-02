@@ -356,6 +356,41 @@ void RsiWorker::publishSnapshot(const Pose &actual, const Pose &err,
     s.peerPort     = m_peerLocked ? m_peerPort : 0;
     s.lifetimeLost = m_lifetimeLost;
     s.lastDelta    = m_lastDelta;
+
+    // ── 跟踪质量：误差与累积修正相对限值的比例 ──
+    if (cs == ControlState::Tracking) {
+        const double errPos = std::sqrt(err.x*err.x + err.y*err.y + err.z*err.z);
+        const double errRot = std::sqrt(err.a*err.a + err.b*err.b + err.c*err.c);
+        const double accPos = std::max({std::fabs(s.accum.x),
+                                        std::fabs(s.accum.y),
+                                        std::fabs(s.accum.z)});
+        const double accRot = std::max({std::fabs(s.accum.a),
+                                        std::fabs(s.accum.b),
+                                        std::fabs(s.accum.c)});
+        s.accumPosPct = (m_cfg.accumLimitPosMm > 0.0)
+                            ? accPos / m_cfg.accumLimitPosMm : 0.0;
+        s.accumRotPct = (m_cfg.accumLimitRotDeg > 0.0)
+                            ? accRot / m_cfg.accumLimitRotDeg : 0.0;
+        s.errorPosPct = (m_cfg.accumLimitPosMm > 0.0)
+                            ? errPos / m_cfg.accumLimitPosMm : 0.0;
+        s.errorRotPct = (m_cfg.accumLimitRotDeg > 0.0)
+                            ? errRot / m_cfg.accumLimitRotDeg : 0.0;
+        s.accumOverLimit = (s.accumPosPct >= 1.0) || (s.accumRotPct >= 1.0);
+
+        const double worstPct = std::max({s.accumPosPct, s.accumRotPct,
+                                          s.errorPosPct, s.errorRotPct});
+        if (worstPct >= 1.0)
+            s.trackingQuality = TrackingQuality::OverLimit;
+        else if (worstPct >= m_cfg.trackingQualityCriticalPct)
+            s.trackingQuality = TrackingQuality::NearLimit;
+        else if (worstPct >= m_cfg.trackingQualityWarnPct)
+            s.trackingQuality = TrackingQuality::LargeError;
+        else
+            s.trackingQuality = TrackingQuality::Normal;
+    } else {
+        s.trackingQuality = TrackingQuality::Inactive;
+    }
+
     if (m_cycleCount > 0) {
         // 拷贝到定容临时数组：nth_element 原地改，不能碰历史。无堆分配。
         const int n = m_cycleCount;

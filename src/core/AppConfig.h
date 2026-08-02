@@ -43,6 +43,8 @@ struct AppConfig
 
     int     refreshMs         = 33;
     int     chartWindowS      = 10;
+    double  trackingQualityWarnPct     = 0.5;   // 跟踪质量警告阈值（误差/累积 占限值比例）
+    double  trackingQualityCriticalPct = 0.8;   // 跟踪质量严重阈值
 
     static AppConfig defaults() { return AppConfig{}; }
 
