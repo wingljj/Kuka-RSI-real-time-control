@@ -95,6 +95,101 @@ private slots:
         QVERIFY(uilogic::risingEdges(prev, bad).packetLoss);
     }
 
+    // ── 丢包迟滞（缺陷 F 的另一半）──
+    //
+    // 边沿触发只压得住「持续为真」的告警。missedCount 不是那样的信号：
+    // RsiWorker 在每个正常帧把它归零，于是间歇丢包在快照里是 0/1/0/1 的
+    // 脉冲串，每个脉冲都是货真价实的上升沿。这一组测试锁住迟滞把脉冲拉平
+    // 成电平这件事——没有它，krc_simulator --drop 5 实测 8.5 秒记 142 条。
+
+    void intermittentLossLogsOnceNotPerPulse()
+    {
+        LossHold h;
+        AlarmEdge prev;
+        int logged = 0;
+        // 模拟 --drop 5：每 5 帧丢 1 帧，跑 300 个刷新帧
+        for (int i = 0; i < 300; ++i) {
+            const StatusSnapshot s = tracking(false, (i % 5 == 0) ? 1 : 0);
+            const AlarmEdge now = uilogic::currentAlarmsHeld(h, s, 50);
+            if (uilogic::edgesBetween(prev, now).packetLoss)
+                ++logged;
+            prev = now;
+        }
+        // 纯边沿触发在这里会记 60 条；迟滞把整段并成一条
+        QCOMPARE(logged, 1);
+    }
+
+    void lossHoldRecoversAfterQuietPeriod()
+    {
+        LossHold h;
+        AlarmEdge prev;
+        const int kClear = 10;
+        int logged = 0;
+
+        auto feed = [&](int missed) {
+            const StatusSnapshot s = tracking(false, missed);
+            const AlarmEdge now = uilogic::currentAlarmsHeld(h, s, kClear);
+            if (uilogic::edgesBetween(prev, now).packetLoss)
+                ++logged;
+            prev = now;
+        };
+
+        feed(1);
+        QCOMPARE(logged, 1);
+        for (int i = 0; i < kClear; ++i) feed(0);   // 安静足够久 → 这一段结束
+        feed(1);                                   // 新的一段：必须再记一条
+        QCOMPARE(logged, 2);
+    }
+
+    // 恢复必须要求「连续」干净，而不是「这一帧」干净。若把 quietFrames
+    // 的累加换成单帧判定，0/1/0/1 的每个 0 都算恢复，迟滞形同虚设。
+    void lossHoldNeedsConsecutiveQuietFrames()
+    {
+        LossHold h;
+        AlarmEdge prev;
+        int logged = 0;
+        auto feed = [&](int missed) {
+            const StatusSnapshot s = tracking(false, missed);
+            const AlarmEdge now = uilogic::currentAlarmsHeld(h, s, 10);
+            if (uilogic::edgesBetween(prev, now).packetLoss)
+                ++logged;
+            prev = now;
+        };
+        feed(1);
+        for (int i = 0; i < 30; ++i) { feed(0); feed(0); feed(1); }  // 干净帧数永不连续到 10
+        QCOMPARE(logged, 1);
+    }
+
+    // 断开必须结束这一段：否则重连后的第一次丢包被上一次会话的 active
+    // 吞掉，操作员在新会话里看不到任何丢包记录。
+    void disconnectEndsLossSegment()
+    {
+        LossHold h;
+        AlarmEdge prev;
+        int logged = 0;
+        auto feed = [&](const StatusSnapshot &s) {
+            const AlarmEdge now = uilogic::currentAlarmsHeld(h, s, 1000);
+            if (uilogic::edgesBetween(prev, now).packetLoss)
+                ++logged;
+            prev = now;
+        };
+        feed(tracking(false, 1));
+        QCOMPARE(logged, 1);
+        StatusSnapshot down = tracking(false, 0);
+        down.connected = false;
+        feed(down);
+        feed(tracking(false, 1));       // 重连后再丢包：必须重新记
+        QCOMPARE(logged, 2);
+    }
+
+    // 累计超限走的仍是纯电平，不该被丢包迟滞影响。
+    void heldAlarmsLeaveAccumUntouched()
+    {
+        LossHold h;
+        const StatusSnapshot s = tracking(true, 0);
+        QVERIFY(uilogic::currentAlarmsHeld(h, s, 50).accumOverLimit);
+    }
+
     // ── 按钮启用状态（缺陷 H 与状态机）──
 
     void faultEnablesOnlyReset()
@@ -232,6 +327,35 @@ private slots:
     void formatRkorrKeepsValuesAboveHalfQuantum()
     {
         QCOMPARE(uilogic::formatRkorr(0.00007, 0), QString("+0.0001 mm"));
+    }
+
+    // 颜色判定（MainWindow::onRefresh）与格式化（formatRkorr）必须共用同一个
+    // 零值门限。两处各写一个 5e-5 时，改一处漏一处就会出现「显示 0.0000 却
+    // 标成非零色」这类自相矛盾的格。这里断言二者永不打架：isRkorrZero 为真
+    // 的值格式化后必然不带正负号（即被显示成零），为假的必然带号。
+    void isRkorrZeroAgreesWithFormatRkorr()
+    {
+        const double samples[] = {0.0,      3e-5,   -3e-5,  4.9e-5, -4.9e-5,
+                                  5.1e-5,  -5.1e-5, 7e-5,   1e-4,   -1e-4,
+                                  0.00312, -0.00312};
+        for (double v : samples) {
+            for (int axis = 0; axis < 6; ++axis) {
+                const QString t = uilogic::formatRkorr(v, axis);
+                const bool signed_ = t.startsWith('+') || t.startsWith('-');
+                QVERIFY2(uilogic::isRkorrZero(v) != signed_,
+                         qPrintable(QStringLiteral("v=%1 axis=%2 text=%3")
+                                        .arg(v, 0, 'g', 6).arg(axis).arg(t)));
+            }
+        }
+    }
+
+    // 门限本身也要钉死在半个线上步长上：只测「两者一致」时，把 isRkorrZero
+    // 改成恒真、formatRkorr 跟着永远返回 0.0000，上一条照样绿。
+    void isRkorrZeroUsesHalfWireQuantum()
+    {
+        QVERIFY(uilogic::isRkorrZero(4.9e-5));
+        QVERIFY(!uilogic::isRkorrZero(5.1e-5));
+        QVERIFY(!uilogic::isRkorrZero(7e-5));   // 线上真发 0.0001，机器人真的在动
     }
 
     // ── 差值预览（缺陷 K）──

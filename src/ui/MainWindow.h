@@ -13,6 +13,7 @@
 #include "core/AppConfig.h"
 #include "net/RsiWorker.h"
 #include "net/SharedState.h"
+#include "ui/UiLogic.h"
 
 class ErrorChart;
 class StatusBar;
@@ -51,6 +52,12 @@ private:
     void restoreTargetSnapshot();
     void updateConnControls();
 
+    // 预览与「应用」按钮各自的唯一刷新入口。撤销 / 读取当前值都在抑制信号的
+    // 情况下改 spinbox，onTargetEdited 不会被调用——原先只能在每个调用点手写
+    // 一句固定文案，于是撤销后预览显示的偏差与实际值不符。
+    void refreshDeltaPreview();
+    void updateApplyButton();
+
     // 按行高撑满 rows 行。setFixedHeight(170) 装不下表头 + 6 行（实测仅 4 行
     // 可见），B/C 轴要滚动才看得到，而滚动条在栏边缘并不显眼——
     // 一个只显示四分之三数据的表格比没有表格更危险。
@@ -80,8 +87,16 @@ private:
     std::array<QLabel *, 6>         m_liveLabel{};
     QComboBox   *m_stepSel      = nullptr;
     QLabel      *m_deltaPreview  = nullptr;
+    QPushButton *m_applyBtn     = nullptr;
     double       m_appliedTarget[6] = {0,0,0,0,0,0};
     bool         m_targetApplied = true;
+
+    // 上一帧的告警状态，用于边沿触发。持续为真的告警每帧记一条，
+    // 4 秒就能把 200 条上限刷满、挤掉之前的真实事件。
+    AlarmEdge m_prevAlarms;
+    // 丢包告警的迟滞。missedCount 每个正常帧都被归零，间歇丢包在快照里是
+    // 一列脉冲而不是一段电平，单靠边沿触发压不住（实测 --drop 5 记 142 条）。
+    LossHold  m_lossHold;
 
     // ── 中栏：位姿对比表格项 ──
     std::array<QTableWidgetItem *, 6> m_actualItem{};

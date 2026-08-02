@@ -183,6 +183,8 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
             m_targetSpin[i]->setValue((&a.x)[i]);
         m_suppressTargetSignal = false;
         saveTargetSnapshot();
+        refreshDeltaPreview();
+        updateApplyButton();
     });
     m_commThread->start();
 
@@ -195,6 +197,9 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     resize(qMin(1400, wa.width() - 80), qMin(860, wa.height() - 80));
     updateConnControls();
     saveTargetSnapshot();
+    // 初始 m_targetApplied 为真，「应用目标」应当一开始就是灰的：还没改过
+    // 任何值就允许点，等于允许把开机默认的全零目标发给机器人。
+    updateApplyButton();
 }
 
 MainWindow::~MainWindow()
@@ -326,6 +331,12 @@ QWidget *MainWindow::buildLeftPanel()
             m_targetSpin[axis]->setValue(m_targetSpin[axis]->value() + step);
         });
         connect(sp, &QDoubleSpinBox::valueChanged, this, [this](double) {
+            // m_suppressTargetSignal 此前只写不读（四处置位全部无效），于是
+            // 「程序改值」与「操作员改值」走同一条路径。四个置位点末尾都会
+            // 自己把 m_targetApplied 摆正，所以旧代码结果上没错——但这个
+            // 保护栏形同虚设，下一个依赖它的改动就会踩空。读它一次，让
+            // 「抑制」真的抑制。
+            if (m_suppressTargetSignal) return;
             onTargetEdited();
         });
     }
@@ -359,8 +370,13 @@ QWidget *MainWindow::buildLeftPanel()
     auto *apply = new QPushButton("应用目标", tgtBox);
     apply->setStyleSheet(
         "QPushButton { background-color: #2563EB; color: #FFF; font-weight: bold; }");
+    // setDefault 只在按钮的 autoDefault 打开时生效（QPushButton 在非对话框
+    // 父窗口里默认关闭）。updateApplyButton 靠 setDefault 表达「改了没发」，
+    // 少了这行它就是一次静默的空操作。
+    apply->setAutoDefault(true);
     connect(apply, &QPushButton::clicked, this, &MainWindow::onApplyTarget);
     actRow->addWidget(apply);
+    m_applyBtn = apply;
     auto *undo = new QPushButton("撤销修改", tgtBox);
     undo->setProperty("cssClass", "secondary");
     connect(undo, &QPushButton::clicked, this, &MainWindow::onUndoTarget);
@@ -551,10 +567,14 @@ QWidget *MainWindow::buildRightPanel()
 
 void MainWindow::updateConnControls()
 {
-    if (m_ipEdit)      m_ipEdit->setEnabled(!m_listening);
-    if (m_portSpin)    m_portSpin->setEnabled(!m_listening);
-    if (m_listenBtn)   m_listenBtn->setEnabled(!m_listening);
-    if (m_unlistenBtn) m_unlistenBtn->setEnabled(m_listening);
+    // 与 onRefresh 用同一个 buttonStates，避免两处各写一套判定后逐渐分叉。
+    // 这个函数仍然需要：构造期还没有第一帧快照、bindFailed 回调也要在
+    // 下一次刷新到来之前立刻把按钮改回去。
+    const ButtonStates b = uilogic::buttonStates(m_state.snapshot(), m_listening);
+    if (m_ipEdit)      m_ipEdit->setEnabled(b.connEditable);
+    if (m_portSpin)    m_portSpin->setEnabled(b.connEditable);
+    if (m_listenBtn)   m_listenBtn->setEnabled(b.startListen);
+    if (m_unlistenBtn) m_unlistenBtn->setEnabled(b.stopListen);
 }
 
 void MainWindow::onStartListening()
@@ -572,6 +592,11 @@ void MainWindow::onStopListening()
 {
     if (!m_worker) return;
     QMetaObject::invokeMethod(m_worker, "stop", Qt::QueuedConnection);
+    // socket 一关就不可能再收发帧，跟踪也就无从谈起。不取消的话控制器
+    // 状态会停在 Tracking，状态卡片持续显示「跟踪中」——覆盖一台已经
+    // 断开的机器，这是最坏的一类显示错误。
+    QMetaObject::invokeMethod(m_worker, "setTracking", Qt::QueuedConnection,
+                              Q_ARG(bool, false));
     m_listening = false;
     updateConnControls();
 }
@@ -661,22 +686,31 @@ void MainWindow::restoreTargetSnapshot()
 // 目标编辑
 // ═══════════════════════════════════════════════
 
+void MainWindow::refreshDeltaPreview()
+{
+    double tgt[6];
+    for (int i = 0; i < 6; ++i)
+        tgt[i] = m_targetSpin[i]->value();
+    m_deltaPreview->setText(
+        uilogic::deltaPreview(tgt, m_state.snapshot().actual));
+}
+
+void MainWindow::updateApplyButton()
+{
+    // m_targetApplied 原先只写不读：目标改了没发，界面毫无提示。
+    // 用它驱动按钮的默认态，「改了没发」一眼可见。
+    // 用 setDefault 而不是配色：原生按钮的「默认按钮」有平台自带的
+    // 视觉强调（Windows 上是高亮边框），且回车键会触发它——正是
+    // 「刚改完值，按回车发出去」这个动作。
+    m_applyBtn->setDefault(!m_targetApplied);
+    m_applyBtn->setEnabled(!m_targetApplied);
+}
+
 void MainWindow::onTargetEdited()
 {
     m_targetApplied = false;
-    const StatusSnapshot s = m_state.snapshot();
-    // 差值预览
-    QString delta;
-    QTextStream ds(&delta);
-    ds << "差值预览（目标 − 当前）：";
-    for (int i = 0; i < 6; ++i) {
-        const double d = m_targetSpin[i]->value() - *(&s.actual.x + i);
-        if (std::fabs(d) > 0.005) {
-            ds << kAxisName[i] << "=" << QString::number(d, 'f', (i < 3) ? 1 : 2)
-               << kAxisUnit(i) << "  ";
-        }
-    }
-    m_deltaPreview->setText(delta.isEmpty() ? "差值预览：无偏差" : delta);
+    refreshDeltaPreview();
+    updateApplyButton();
 }
 
 void MainWindow::onApplyTarget()
@@ -689,20 +723,20 @@ void MainWindow::onApplyTarget()
     QMetaObject::invokeMethod(m_worker, "applyTarget", Qt::QueuedConnection,
                               Q_ARG(Pose, t));
     saveTargetSnapshot();
-    m_deltaPreview->setStyleSheet(
-        "font-family: Consolas, monospace; font-size: 9px; color: #16A34A; "
-        "padding: 4px 8px; background-color: #F0FDF4; border-radius: 4px;");
-    m_deltaPreview->setText("✓ 目标已应用");
     m_alarmLog->addEvent(AlarmLog::Info, "目标位姿已更新", "");
+    // 预览按实际值重算，而不是写一句「✓ 目标已应用」：目标发出去之后偏差
+    // 并不归零（机器人要走一段才到位），写死的文案会盖掉这个信息。
+    refreshDeltaPreview();
+    updateApplyButton();
 }
 
 void MainWindow::onUndoTarget()
 {
     restoreTargetSnapshot();
-    m_deltaPreview->setStyleSheet(
-        "font-family: Consolas, monospace; font-size: 9px; color: #64748B; "
-        "padding: 4px 8px; background-color: #F3F4F6; border-radius: 4px;");
-    m_deltaPreview->setText("已撤销未应用的修改");
+    // restoreTargetSnapshot 抑制了 valueChanged，onTargetEdited 不会被调用，
+    // 所以撤销之后必须显式重算——否则预览停留在撤销前那组值算出的偏差。
+    refreshDeltaPreview();
+    updateApplyButton();
 }
 
 // ═══════════════════════════════════════════════
@@ -729,7 +763,8 @@ void MainWindow::onReadActualTarget()
     for (int i = 0; i < 6; ++i) m_targetSpin[i]->setValue(v[i]);
     m_suppressTargetSignal = false;
     saveTargetSnapshot();
-    m_deltaPreview->setText("已读取当前实际位姿；尚未发送新的跟踪目标");
+    refreshDeltaPreview();
+    updateApplyButton();
 }
 
 void MainWindow::onPrepareTracking()
@@ -826,13 +861,13 @@ void MainWindow::onRefresh()
         m_errorItem[i]->setForeground(errColor);
         // 目标值
         m_targetItem[i]->setText(uilogic::formatValue(tgt[i], i));
-        // RKorr：零值灰、非零蓝——一眼看出哪个轴在动。阈值与 formatRkorr
-        // 里「四舍五入到 0.0000」的门限取同一个值，否则会出现「显示 0.0000
-        // 却是蓝色」这种自相矛盾的格。
+        // RKorr：零值灰、非零蓝——一眼看出哪个轴在动。零值判定与 formatRkorr
+        // 共用 uilogic::isRkorrZero，两处各写一个 5e-5 时改一处漏一处就会出现
+        // 「显示 0.0000 却是蓝色」这种自相矛盾的格。
         const double rk = (&s.lastDelta.x)[i];
         m_rkorrItem[i]->setText(uilogic::formatRkorr(rk, i));
         m_rkorrItem[i]->setForeground(
-            std::fabs(rk) < 5e-5 ? QColor("#9CA3AF") : QColor("#2563EB"));
+            uilogic::isRkorrZero(rk) ? QColor("#9CA3AF") : QColor("#2563EB"));
         // 左栏当前值
         m_liveLabel[i]->setText(uilogic::formatValue(act[i], i));
     }
@@ -851,36 +886,45 @@ void MainWindow::onRefresh()
                                    .arg(kParams[i].unit));
 
     // ── 使能按钮状态机 ──
-    if (s.state == ControlState::Fault) {
-        m_resetFaultBtn->setEnabled(true);
-        m_enableBtn->setEnabled(false);
-    } else if (s.state == ControlState::Tracking) {
-        m_resetFaultBtn->setEnabled(false);
-        m_enableBtn->setText("已使能跟踪");
-        m_enableBtn->setEnabled(false);
-    } else if (s.state == ControlState::Ready) {
-        m_resetFaultBtn->setEnabled(false);
-        m_enableBtn->setText("使能跟踪");
-        m_enableBtn->setEnabled(true);
-    } else {
-        m_resetFaultBtn->setEnabled(false);
-        m_enableBtn->setText("使能跟踪");
-        m_enableBtn->setEnabled(false);
-    }
-    m_stopBtn->setEnabled(s.state == ControlState::Tracking);
+    // 全部交给 uilogic::buttonStates，界面这边不再自己判状态。原先手写的
+    // 那条 `m_stopBtn->setEnabled(s.state == Tracking)` 已整段删除：留着它
+    // 会在 StaleFrame / Syncing 下继续把停止按钮置灰，而那正是最需要能停的
+    // 时刻（反馈已异常、PoseController 仍在发增量）。
+    const ButtonStates btn = uilogic::buttonStates(s, m_listening);
+    m_resetFaultBtn->setEnabled(btn.resetFault);
+    m_enableBtn->setEnabled(btn.enableTrack);
+    m_enableBtn->setText(s.state == ControlState::Tracking ? "已使能跟踪"
+                                                           : "使能跟踪");
+    m_stopBtn->setEnabled(btn.stopTrack);
+    m_listenBtn->setEnabled(btn.startListen);
+    m_unlistenBtn->setEnabled(btn.stopListen);
+    m_ipEdit->setEnabled(btn.connEditable);
+    m_portSpin->setEnabled(btn.connEditable);
 
     // ── 事件日志 ──
-    if (s.accumOverLimit && s.state == ControlState::Tracking) {
+    // 边沿触发：只在告警「发生」时记一条，而不是在它「持续」的每一帧。
+    // 丢包那一路还要先经迟滞拉平：missedCount 在每个正常帧被 RsiWorker 归零，
+    // 间歇丢包在快照里是 0/1/0/1 的脉冲串，每个脉冲都是货真价实的上升沿，
+    // 只做边沿触发挡不住（--drop 5 实测 8.5 秒 142 条）。
+    // 恢复门限取 1 秒的刷新帧数：短于一次 KRC 重传的间隔就判恢复，等于没有
+    // 迟滞；长到几十秒又会把两次独立的网络故障并成一条。
+    const int kLossClearFrames =
+        std::max(1, int(1000.0 / std::max(1, m_cfg.refreshMs)));
+    const AlarmEdge now  = uilogic::currentAlarmsHeld(m_lossHold, s, kLossClearFrames);
+    const AlarmEdge edge = uilogic::edgesBetween(m_prevAlarms, now);
+    if (edge.accumOverLimit)
         m_alarmLog->addEvent(AlarmLog::Fault,
             QStringLiteral("累计修正超限 位置 %1% 姿态 %2%")
-                .arg(int(s.accumPosPct*100)).arg(int(s.accumRotPct*100)),
-            "请停止跟踪并归零复位");
-    }
-    if (s.missedCount > 0 && s.connected) {
+                .arg(int(s.accumPosPct * 100)).arg(int(s.accumRotPct * 100)),
+            "请停止跟踪并复位故障");
+    if (edge.packetLoss)
         m_alarmLog->addEvent(AlarmLog::Warning,
-            QStringLiteral("连续丢包 %1").arg(s.missedCount),
+            QStringLiteral("出现丢包，连续 %1 帧").arg(s.missedCount),
             "检查网络或 KRC 周期");
-    }
+    // 存的必须是「本帧的告警电平」，不是 edgesBetween 的返回值——后者是
+    // 「本帧是否为上升沿」，持续告警时它恒为 false，下一帧就又成了上升沿，
+    // 刷屏原样复现。
+    m_prevAlarms = now;
 
     // ── 图表 ──
     m_chartPos->updateFrom(m_ring);

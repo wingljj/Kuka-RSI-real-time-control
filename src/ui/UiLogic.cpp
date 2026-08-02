@@ -2,6 +2,7 @@
 
 #include <QFontDatabase>
 #include <QStringList>
+#include <algorithm>
 #include <cmath>
 
 namespace uilogic {
@@ -17,13 +18,45 @@ AlarmEdge currentAlarms(const StatusSnapshot &s)
     return a;
 }
 
-AlarmEdge risingEdges(const AlarmEdge &prev, const StatusSnapshot &s)
+AlarmEdge edgesBetween(const AlarmEdge &prev, const AlarmEdge &now)
 {
-    const AlarmEdge now = currentAlarms(s);
     AlarmEdge e;
     e.accumOverLimit = now.accumOverLimit && !prev.accumOverLimit;
     e.packetLoss     = now.packetLoss     && !prev.packetLoss;
     return e;
+}
+
+AlarmEdge risingEdges(const AlarmEdge &prev, const StatusSnapshot &s)
+{
+    return edgesBetween(prev, currentAlarms(s));
+}
+
+AlarmEdge currentAlarmsHeld(LossHold &h, const StatusSnapshot &s, int clearFrames)
+{
+    AlarmEdge a = currentAlarms(s);
+
+    // 断开即结束这一段：重连后的第一次丢包应当重新记一条，而不是被
+    // 上一次会话残留的 active 吞掉。
+    if (!s.connected) {
+        h.active      = false;
+        h.quietFrames = 0;
+        a.packetLoss  = false;
+        return a;
+    }
+
+    if (a.packetLoss) {
+        h.active      = true;
+        h.quietFrames = 0;
+    } else if (h.active) {
+        // 恢复必须靠「连续干净」而不是「这一帧干净」：missedCount 在每个
+        // 正常帧被归零，只看单帧的话 0/1/0/1 的脉冲串每个 0 都算恢复，
+        // 下一个 1 又是新的一段，等于没有迟滞。
+        if (++h.quietFrames >= std::max(1, clearFrames))
+            h.active = false;
+    }
+
+    a.packetLoss = h.active;
+    return a;
 }
 
 ButtonStates buttonStates(const StatusSnapshot &s, bool listening)
@@ -76,7 +109,7 @@ QString formatValue(double v, int axis)
     return QStringLiteral("%1%2").arg(v, 0, 'f', 3).arg(axisUnit(axis));
 }
 
-QString formatRkorr(double v, int axis)
+bool isRkorrZero(double v)
 {
     // 与 buildSen 的量化步长对齐：小于半个步长的量线上就是 0，
     // 显示成 0 是如实反映，不是精度损失。
@@ -88,7 +121,12 @@ QString formatRkorr(double v, int axis)
     // 值不一致、顺手「统一」成 1e-4，界面就会把 0.00007 显示成 0.0000，
     // 而线上真发的是 0.0001、机器人真的在动。取不同的名字断掉这个念头。
     constexpr double kWireRoundToZero = 5e-5;
-    if (std::fabs(v) < kWireRoundToZero)
+    return std::fabs(v) < kWireRoundToZero;
+}
+
+QString formatRkorr(double v, int axis)
+{
+    if (isRkorrZero(v))
         return QStringLiteral("0.0000%1").arg(axisUnit(axis));
     return QStringLiteral("%1%2%3")
         .arg(v > 0 ? "+" : "")
