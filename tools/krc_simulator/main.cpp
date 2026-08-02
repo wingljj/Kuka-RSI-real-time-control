@@ -312,7 +312,10 @@ static int runHeadless(SimContext &ctx, double cycleMs, int cycles,
                             target.c = std::clamp(target.c, ctx.cartLim[10], ctx.cartLim[11]);
                         }
                         double qNew[6];
-                        if (rlk::inverse(target, qNew)) {
+                        // 以当前关节角为迭代起点：目标只比当前位姿远不到 1mm，
+                        // 从这里出发一两次迭代就收敛，逆解耗时不再随机器人走远
+                        // 而膨胀（否则发帧节拍被逆解拖崩，主机看门狗误判断流）。
+                        if (rlk::inverse(target, qNew, ctx.q)) {
                             for (int i = 0; i < 6; ++i) {
                                 // 关节限位 clamp（与 RL 内部限位双重保险；
                                 // --joint-limits 覆盖本地副本后在此生效）
@@ -731,7 +734,8 @@ int main(int argc, char **argv)
                     target.c = std::clamp(target.c, ctx.cartLim[10], ctx.cartLim[11]);
                 }
                 double qNew[6];
-                if (rlk::inverse(target, qNew)) {
+                // 同 headless 路径：当前关节角作种子，避免逆解拖垮 QTimer 节拍。
+                if (rlk::inverse(target, qNew, ctx.q)) {
                     for (int i = 0; i < 6; ++i)
                         ctx.q[i] = std::clamp(qNew[i], ctx.lim.min[i], ctx.lim.max[i]);
                 }

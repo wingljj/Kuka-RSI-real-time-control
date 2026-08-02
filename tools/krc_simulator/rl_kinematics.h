@@ -30,9 +30,20 @@ bool loadModel(const std::string &rlmdlPath);
 // 正解：q（rad）→ 笛卡尔位姿（mm；A/B/C 度，KUKA ZYX）。模型未加载返回全零 Pose。
 Pose forward(const double qRad[6]);
 
-// 逆解：目标位姿 → q（rad）。种子依次为 home、q=0、home 逐关节微扰，
-// 返回首个收敛解（保证在关节限位内）。奇异/不可达返回 false（调用方回零）。
-bool inverse(const Pose &target, double qRad[6]);
+// 逆解：目标位姿 → q（rad）。返回首个收敛解（保证在关节限位内）。
+// 奇异/不可达返回 false（调用方保持旧 q）。
+//
+// seedRad（可选，rad[6]）= 迭代起点，调用方应传机器人**当前**关节角。
+// 为什么必须是当前关节角：RSI 每周期的笛卡尔增量不到 1mm，从当前位形出发
+// 一两次雅可比迭代就收敛；而 home/零位这类固定种子与当前位形的距离随机器人
+// 运动单调累积——机器人不动时目标≈当前位姿，home 恰好也很近（所以静止工况
+// 看不出问题），一旦开始运动就越走越远、越解越慢，最终每个种子都烧完预算才
+// 失败。种子必须跟着机器人走，才能让求解耗时与运动距离解耦。
+//
+// 固定种子（home、q=0、home 逐关节微扰）排在 seedRad 之后保留为兜底：目标
+// 突变（新位姿指令）或从当前位形陷入局部极小时，仍要有一次全局搜索的机会。
+// 传 nullptr（默认）时退化为纯固定种子，供单测等无状态调用方使用。
+bool inverse(const Pose &target, double qRad[6], const double *seedRad = nullptr);
 
 // 关节限位（rad），loadModel 成功时从模型 joint 读取并缓存。
 const kr210::JointLimits &limits();

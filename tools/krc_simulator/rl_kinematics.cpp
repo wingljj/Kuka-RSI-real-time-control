@@ -58,6 +58,16 @@ rl::math::Transform toRlTransform(const Pose &target)
     return t;
 }
 
+// 单个种子的求解预算。定得这么小不是为了省 CPU，而是因为模拟器是单线程的
+// 「收帧 → 逆解 → 正解 → 发下一帧」：逆解花掉的时间会一比一变成发帧延迟。
+// 上位机看门狗是 240ms（max(200, cycleMs×20)），断流超过它 connected 就被置
+// false、下一帧又置回 true —— 用户看到的「已连接/监听中」抖动就是这么来的。
+// 因此约束不是「平均够快」而是「最坏情况也撑不爆一个发帧周期」：
+//   最坏总耗时 = 种子数 × 本预算 = 9 × 1ms = 9ms < 12ms 周期。
+// 即便所有种子都不收敛（目标真的不可达），节拍也不会被拖乱，逆解失败由调用方
+// 的「保持旧 q」兜住。放大到 4ms 就是 36ms（3 个周期），仍会连累几帧，不可取。
+constexpr std::chrono::microseconds kSeedBudget{1000};
+
 // 种子限制到关节限位内：solve 的成功判定要求 isValid(q)（越限解会被拒绝）。
 rl::math::Vector clampToLimits(const rl::math::Vector &q)
 {
@@ -124,19 +134,24 @@ Pose forward(const double qRad[6])
     return toPoseMm(g_kinematic->getOperationalPosition(0));
 }
 
-bool inverse(const Pose &target, double qRad[6])
+bool inverse(const Pose &target, double qRad[6], const double *seedRad)
 {
     if (!g_loaded || !g_kinematic)
         return false;
 
     const rl::math::Transform goal = toRlTransform(target);
 
-    // 种子：home → q=0 → home 逐关节微扰（确定性；RL 内部还有随机重启兜底）。
+    // 种子：当前关节角（若给）→ home → q=0 → home 逐关节微扰
+    //（确定性；RL 内部还有随机重启兜底）。
     const rl::math::Vector home = clampToLimits(g_kinematic->getHomePosition());
     const rl::math::Vector zero = rl::math::Vector::Zero(g_kinematic->getDofPosition());
 
     std::vector<rl::math::Vector> seeds;
-    seeds.reserve(8);
+    seeds.reserve(9);
+    // 当前关节角必须排第一：它是唯一与目标距离不随运动增长的种子，因此几乎总在
+    // 首个种子上就收敛——固定种子那 8 次昂贵的重试根本不会被执行到（详见头文件）。
+    if (seedRad)
+        seeds.push_back(clampToLimits(toRlQ(seedRad)));
     seeds.push_back(home);
     seeds.push_back(zero);
     for (std::size_t i = 0; i < 6 && i < g_kinematic->getDofPosition(); ++i) {
@@ -146,7 +161,7 @@ bool inverse(const Pose &target, double qRad[6])
     }
 
     rl::mdl::JacobianInverseKinematics ik(g_kinematic.get());
-    ik.setDuration(std::chrono::milliseconds(120));
+    ik.setDuration(kSeedBudget);
     ik.setEpsilon(1e-9);
     ik.addGoal(goal, 0);
 
