@@ -70,7 +70,11 @@ echo "==> Qt 运行库"
 for d in Qt6Core Qt6Gui Qt6Widgets Qt6Network Qt6Charts Qt6OpenGL Qt6OpenGLWidgets; do
   cp "$QTDIR/bin/$d.dll" dist/
 done
-# 没有 qwindows.dll 的话 GUI 程序根本起不来
+# 没有 qwindows.dll 的话 GUI 程序根本起不来。
+# 这一份同时服务 rsi_host.exe 与 krc_simulator.exe——两者在 dist/ 里同级，
+# 共享这个 platforms/。Qt 查平台插件时 exe 同级目录优先于
+# QT_QPA_PLATFORM_PLUGIN_PATH，所以装了别版 Qt 的机器也不会被那个环境变量带偏
+#（开发树里模拟器曾因此起不来，见 tools/krc_simulator/CMakeLists.txt 的说明）。
 cp "$QTDIR/plugins/platforms/qwindows.dll"        dist/platforms/
 cp "$QTDIR/plugins/styles/qwindowsvistastyle.dll" dist/styles/       2>/dev/null || true
 cp "$QTDIR/plugins/imageformats/qico.dll"         dist/imageformats/ 2>/dev/null || true
