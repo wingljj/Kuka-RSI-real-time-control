@@ -48,5 +48,5 @@ target_link_libraries(test_mesh_loader PRIVATE rl_kin Qt6::Test Qt6::Widgets)
 add_test(NAME test_mesh_loader COMMAND test_mesh_loader)
 
 add_executable(test_ui_logic test_ui_logic.cpp)
-target_link_libraries(test_ui_logic PRIVATE rsi_core Qt6::Test)
+target_link_libraries(test_ui_logic PRIVATE rsi_uilogic Qt6::Test)
 add_test(NAME test_ui_logic COMMAND test_ui_logic)

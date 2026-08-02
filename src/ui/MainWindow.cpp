@@ -3,6 +3,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -23,6 +24,7 @@
 #include "ui/CumulativeBar.h"
 #include "ui/ErrorChart.h"
 #include "ui/StatusBar.h"
+#include "ui/UiLogic.h"
 
 namespace {
 
@@ -52,6 +54,20 @@ const ParamRow kParams[6] = {
 };
 
 } // namespace
+
+void MainWindow::fitTableToRows(QTableWidget *tbl, int rows)
+{
+    tbl->resizeRowsToContents();
+    int h = tbl->horizontalHeader()->height() + 2 * tbl->frameWidth();
+    for (int r = 0; r < rows; ++r)
+        h += tbl->rowHeight(r);
+    tbl->setFixedHeight(h);
+    // 高度已按内容算准，两条滚动条都不该出现，而且必须都关掉。只关纵向的
+    // 那条不够：列宽之和一旦超出 viewport（左栏实测 348 对 316），横向滚动条
+    // 会从下方吃掉 17px——正好半行——末行 C 又被裁掉，缺陷 D 换个面目复现。
+    tbl->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    tbl->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+}
 
 // ═══════════════════════════════════════════════
 // 构造 / 析构
@@ -124,12 +140,18 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     auto *body = new QHBoxLayout;
     body->setSpacing(12);
 
+    // 两栏宽度都由各自表格的列宽反推，而不是先定 360/420 再硬塞列进去：
+    // 后者只能靠缩字号或裁尾巴收场，而这两张表存在的理由就是把数字看全。
+    // kPanelChrome 是 GroupBox 边框 + 布局边距实测占用（表宽 452 时 viewport
+    // 只剩 442，缺的 10px 加上左右各 12 的外边距）。
+    const int kPanelChrome = 34;
+
     auto *leftPanel  = buildLeftPanel();
-    leftPanel->setFixedWidth(360);
+    leftPanel->setFixedWidth(m_targetTableWidth + kPanelChrome);
     body->addWidget(leftPanel);
 
     auto *midPanel   = buildMidPanel();
-    midPanel->setFixedWidth(420);
+    midPanel->setFixedWidth(m_poseTableWidth + kPanelChrome);
     body->addWidget(midPanel);
 
     auto *rightPanel = buildRightPanel();
@@ -214,6 +236,10 @@ QWidget *MainWindow::buildLeftPanel()
     // ── 目标位姿表格 ──
     auto *tgtBox = new QGroupBox("目标位姿 (BASE)", w);
     auto *tgtV = new QVBoxLayout(tgtBox);
+    // 与中栏 poseBox 用同一组边距，两栏的「面板宽 − 表宽」之差才是同一个
+    // 常数（kPanelChrome）。默认的 9px 边距会让左栏比中栏多吃 10px，
+    // 表就比 viewport 宽 10px，横向滚动条随之出现。
+    tgtV->setContentsMargins(4, 4, 4, 4);
     tgtV->setSpacing(4);
 
     auto *tbl = new QTableWidget(6, 4, tgtBox);
@@ -225,11 +251,23 @@ QWidget *MainWindow::buildLeftPanel()
     tbl->setStyleSheet(
         "QTableWidget { border: none; font-size: 10px; } "
         "QTableWidget::item { padding: 0px 4px; }");
-    tbl->horizontalHeader()->setStretchLastSection(true);
+    // 列宽全部显式给出，不靠 stretchLastSection：实测它并没有把末列收到
+    // 剩余宽度（末列停在 defaultSectionSize=100，四列合计 338 > viewport 316），
+    // 于是横向滚动条常驻并从下方吃掉半行，把第六行 C 压出可视区。
+    // 「调整」列只装两个 22px 按钮加 2px 间距，60px 够用且留出余量。
+    QFont tgtNumF = uilogic::monospaceFont();
+    tgtNumF.setPointSize(10);
+    const QFontMetrics tgtFm(tgtNumF);
+    // 当前值列要放得下最宽的合法读数 "-4000.000 mm"；目标值列是 QDoubleSpinBox，
+    // 还要额外留出上下箭头的宽度（spinbox 有自己的边框，比表格单元多吃 8px）。
+    const int wLive = tgtFm.horizontalAdvance("-4000.000 mm") + 14;
+    const int wSpin = wLive + 18;
+    tbl->horizontalHeader()->setStretchLastSection(false);
     tbl->setColumnWidth(0, 28);
-    tbl->setColumnWidth(1, 110);
-    tbl->setColumnWidth(2, 110);
-    tbl->setFixedHeight(170);
+    tbl->setColumnWidth(1, wSpin);
+    tbl->setColumnWidth(2, wLive);
+    tbl->setColumnWidth(3, 60);
+    m_targetTableWidth = 28 + wSpin + wLive + 60;
 
     for (int i = 0; i < 6; ++i) {
         // 轴名
@@ -291,6 +329,7 @@ QWidget *MainWindow::buildLeftPanel()
             onTargetEdited();
         });
     }
+    fitTableToRows(tbl, 6);
     tgtV->addWidget(tbl);
 
     // 步长选择
@@ -360,24 +399,37 @@ QWidget *MainWindow::buildMidPanel()
     tbl->setStyleSheet(
         "QTableWidget { border: none; font-size: 10px; } "
         "QTableWidget::item { padding: 0px 6px; }");
-    // 列宽显式给全并关掉 stretchLastSection：开着 stretch 时最后一列的
-    // setColumnWidth 不生效，而「RKorr 输出」表头把它的 minimumSectionSize
-    // 顶到 100px，四列 92 加起来超出 viewport 18px——横向滚动条常驻，
-    // 右对齐的数值尾巴（"-12.345 mm" 的单位）正好落在被截掉的那一段里。
-    // 数值看着完整、其实少了尾巴，与本任务修的两个缺陷是同一类问题。
+    // 列宽从字体度量算出来，不写死像素：数值列必须放得下最宽的合法读数
+    // "-4000.000 mm"（轴行程上限，实测 94px），写死 86 时 1804.000 这种
+    // 四位坐标会换行成两行，把整表撑高又顶出滚动条。
+    // 同时 stretchLastSection 必须关掉——开着时最后一列的 setColumnWidth
+    // 不生效。约束只有一条：五列之和等于 viewport，多一像素就出横向滚动条，
+    // 而右对齐数值的尾巴（单位）正好落在被截掉的那一段里。
+    // 注：col4 原先的 100 不是被表头文字「RKorr 输出」顶出来的（实测
+    // minimumSectionSize=28，表头文字只需 47px），它只是 Qt 的
+    // defaultSectionSize，改小完全生效——别去找那个不存在的约束。
+    QFont numF = uilogic::monospaceFont();
+    numF.setPointSize(10);
+    const QFontMetrics numFm(numF);
+    const int kCellPad = 14;   // 样式表 padding 0px 6px，两侧共 12，留 2px 余量
+    const int kAxisCol = 28;
+    // 位姿 / 误差 / 目标：最宽读数是行程上限；RKorr 每帧增量受限速约束，
+    // 量级远小（vmax 13mm/s × 12ms ≈ 0.16mm），按自己的最宽串单独算。
+    const int wData  = numFm.horizontalAdvance("-4000.000 mm") + kCellPad;
+    const int wRkorr = numFm.horizontalAdvance("-0.1560 deg") + kCellPad;
     tbl->horizontalHeader()->setStretchLastSection(false);
-    tbl->setColumnWidth(0, 28);
-    tbl->setColumnWidth(1, 86);
-    tbl->setColumnWidth(2, 86);
-    tbl->setColumnWidth(3, 86);
-    tbl->setColumnWidth(4, 100);
+    tbl->setColumnWidth(0, kAxisCol);
+    tbl->setColumnWidth(1, wData);
+    tbl->setColumnWidth(2, wData);
+    tbl->setColumnWidth(3, wData);
+    tbl->setColumnWidth(4, wRkorr);
+    // 面板宽度反过来由列宽决定，而不是先定 420 再硬塞五列进去：
+    // 后者只能靠缩字号或裁尾巴收场，而这张表存在的理由就是把数字看全。
+    m_poseTableWidth = kAxisCol + 3 * wData + wRkorr;
     // 六行必须一屏放下：默认行高下只露出 X/Y/Z/A，B 与 C 被挤到滚动条以外，
     // 轴名从「看不见」变成「要滚动才看得见」，对操作员是同一个问题。
-    // 表头高度按字体度量取而不是写死——换 DPI 缩放档或系统字体变大时
-    // 表头会长高，写死的总高会重新裁掉 C 行，即缺陷 B 换台机器就复发。
-    const int kRowH = 22;
-    tbl->verticalHeader()->setDefaultSectionSize(kRowH);
-    tbl->setFixedHeight(tbl->horizontalHeader()->height() + 6 * kRowH + 4);
+    // 高度交给 fitTableToRows 按实测行高算（见其声明处的理由）。
+    tbl->verticalHeader()->setDefaultSectionSize(22);
 
     for (int i = 0; i < 6; ++i) {
         auto *ax = new QTableWidgetItem(kAxisName[i]);
@@ -386,12 +438,15 @@ QWidget *MainWindow::buildMidPanel()
         auto axF = ax->font(); axF.setBold(true); ax->setFont(axF);
         tbl->setItem(i, 0, ax);
 
+        // 读数列一律用系统等宽字体（numF，见上方列宽计算）。原先四列各写一次
+        // setFamily("Consolas")：QFont 找不到该族不会报错，只会静默回退成比例
+        // 字体，右对齐还在但小数点不再成列——而成列正是这几列存在的理由。
+
         // 当前实际
         auto *act = new QTableWidgetItem("--");
         act->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         act->setFlags(Qt::NoItemFlags);
-        auto actF = act->font(); actF.setFamily("Consolas"); actF.setPointSize(10);
-        actF.setBold(true); act->setFont(actF);
+        auto actF = numF; actF.setBold(true); act->setFont(actF);
         act->setForeground(QColor("#1F2937"));
         tbl->setItem(i, 1, act);
         m_actualItem[i] = act;
@@ -400,8 +455,7 @@ QWidget *MainWindow::buildMidPanel()
         auto *err = new QTableWidgetItem("--");
         err->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         err->setFlags(Qt::NoItemFlags);
-        auto errF = err->font(); errF.setFamily("Consolas"); errF.setPointSize(10);
-        errF.setBold(true); err->setFont(errF);
+        auto errF = numF; errF.setBold(true); err->setFont(errF);
         err->setForeground(QColor("#64748B"));
         tbl->setItem(i, 2, err);
         m_errorItem[i] = err;
@@ -410,12 +464,21 @@ QWidget *MainWindow::buildMidPanel()
         auto *tgt = new QTableWidgetItem("--");
         tgt->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         tgt->setFlags(Qt::NoItemFlags);
-        auto tgtF2 = tgt->font(); tgtF2.setFamily("Consolas"); tgtF2.setPointSize(10);
-        tgt->setFont(tgtF2);
+        tgt->setFont(numF);
         tgt->setForeground(QColor("#2563EB"));
         tbl->setItem(i, 3, tgt);
         m_targetItem[i] = tgt;
+
+        // RKorr 输出：本帧实际发给 KRC 的增量，与左边三列并排才有意义——
+        // 「误差这么大，主机到底发了多少出去」是同一眼要回答的问题。
+        auto *rk = new QTableWidgetItem("--");
+        rk->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        rk->setFlags(Qt::NoItemFlags);
+        rk->setFont(numF);
+        tbl->setItem(i, 4, rk);
+        m_rkorrItem[i] = rk;
     }
+    fitTableToRows(tbl, 6);
     auto *poseLay = new QVBoxLayout(poseBox);
     poseLay->setContentsMargins(4, 4, 4, 4);
     poseLay->addWidget(tbl);
@@ -749,23 +812,29 @@ void MainWindow::onRefresh()
                            s.error.a, s.error.b, s.error.c};
     const double tgt[6] = {s.target.x, s.target.y, s.target.z,
                            s.target.a, s.target.b, s.target.c};
-    const char *units[6] = {" mm", " mm", " mm", " deg", " deg", " deg"};
 
     for (int i = 0; i < 6; ++i) {
         // 当前实际
-        m_actualItem[i]->setText(QStringLiteral("%1%2").arg(act[i], 0, 'f', 3).arg(units[i]));
+        m_actualItem[i]->setText(uilogic::formatValue(act[i], i));
         // 实时误差（着色）
         const double ep = (i < 3) ? s.errorPosPct : s.errorRotPct;
         const QColor errColor = (ep >= 1.0)   ? QColor("#DC2626")
                                 : (ep >= 0.8) ? QColor("#D97706")
                                 : (ep >= 0.5) ? QColor("#D97706")
                                 :               QColor("#16A34A");
-        m_errorItem[i]->setText(QStringLiteral("%1%2").arg(err[i], 0, 'f', 3).arg(units[i]));
+        m_errorItem[i]->setText(uilogic::formatValue(err[i], i));
         m_errorItem[i]->setForeground(errColor);
         // 目标值
-        m_targetItem[i]->setText(QStringLiteral("%1%2").arg(tgt[i], 0, 'f', 3).arg(units[i]));
+        m_targetItem[i]->setText(uilogic::formatValue(tgt[i], i));
+        // RKorr：零值灰、非零蓝——一眼看出哪个轴在动。阈值与 formatRkorr
+        // 里「四舍五入到 0.0000」的门限取同一个值，否则会出现「显示 0.0000
+        // 却是蓝色」这种自相矛盾的格。
+        const double rk = (&s.lastDelta.x)[i];
+        m_rkorrItem[i]->setText(uilogic::formatRkorr(rk, i));
+        m_rkorrItem[i]->setForeground(
+            std::fabs(rk) < 5e-5 ? QColor("#9CA3AF") : QColor("#2563EB"));
         // 左栏当前值
-        m_liveLabel[i]->setText(QStringLiteral("%1%2").arg(act[i], 0, 'f', 3).arg(units[i]));
+        m_liveLabel[i]->setText(uilogic::formatValue(act[i], i));
     }
 
     // ── 安全限制 ──

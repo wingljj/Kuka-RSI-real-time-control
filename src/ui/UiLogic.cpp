@@ -1,5 +1,6 @@
 #include "ui/UiLogic.h"
 
+#include <QFontDatabase>
 #include <QStringList>
 #include <cmath>
 
@@ -120,6 +121,14 @@ QString deltaPreview(const double target[6], const Pose &actual)
     if (parts.isEmpty())
         return QStringLiteral("目标与当前位姿无偏差");
     return QStringLiteral("目标 − 当前：") + parts.join(QStringLiteral("　"));
+}
+
+QFont monospaceFont()
+{
+    // 向系统要等宽字体，而不是点名 Consolas：QFont 找不到指定族时不会报错，
+    // 只会悄悄换成默认比例字体，于是「数值列右对齐」看起来还在、小数点却
+    // 参差不齐。系统字体在任何 Qt 支持的平台上都保证存在。
+    return QFontDatabase::systemFont(QFontDatabase::FixedFont);
 }
 
 } // namespace uilogic

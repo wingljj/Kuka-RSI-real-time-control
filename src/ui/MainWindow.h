@@ -51,6 +51,13 @@ private:
     void restoreTargetSnapshot();
     void updateConnControls();
 
+    // 按行高撑满 rows 行。setFixedHeight(170) 装不下表头 + 6 行（实测仅 4 行
+    // 可见），B/C 轴要滚动才看得到，而滚动条在栏边缘并不显眼——
+    // 一个只显示四分之三数据的表格比没有表格更危险。
+    // 高度按实际行高与表头度量算，而不是写死常数：换 DPI 缩放档或系统字体
+    // 变大时表头与行都会长高，写死的总高会重新裁掉 C 行。
+    static void fitTableToRows(QTableWidget *tbl, int rows);
+
     AppConfig    m_cfg;
     SharedState  m_state;
     SampleRing   m_ring;
@@ -80,6 +87,9 @@ private:
     std::array<QTableWidgetItem *, 6> m_actualItem{};
     std::array<QTableWidgetItem *, 6> m_errorItem{};
     std::array<QTableWidgetItem *, 6> m_targetItem{};
+    // RKorr 输出：本帧实际发给 KRC 的增量。数据来自 StatusSnapshot::lastDelta，
+    // 通信层早就在填，界面此前从未显示——操作员无从判断「主机到底发了什么」。
+    std::array<QTableWidgetItem *, 6> m_rkorrItem{};
 
     // ── 控制按钮 ──
     QPushButton *m_enableBtn    = nullptr;
@@ -102,4 +112,10 @@ private:
     std::array<QLabel *, 6> m_paramVal{};
 
     bool m_suppressTargetSignal = false;
+
+    // 两张表所需的总宽（由各自列宽相加得出，见 buildLeftPanel /
+    // buildMidPanel）。面板宽度取它而不是写死常数：写死时表比面板宽就出
+    // 横向滚动条，而横向滚动条会从下方吃掉半行，把第六行 C 挤出可视区。
+    int m_targetTableWidth = 0;
+    int m_poseTableWidth   = 0;
 };

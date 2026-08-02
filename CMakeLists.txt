@@ -20,12 +20,18 @@ add_library(rsi_core STATIC
     src/core/RsiCodec.cpp
     src/core/PoseController.cpp
     src/core/SessionGuard.cpp
-    src/ui/UiLogic.cpp
     src/core/TargetTrajectory.cpp
     tools/krc_simulator/kinematics.cpp
 )
 target_include_directories(rsi_core PUBLIC src tools/krc_simulator ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(rsi_core PUBLIC Qt6::Core)
+
+# UiLogic 单独成库而不是留在 rsi_core 里：它需要 QFontDatabase（QtGui），
+# 而 QTEST_MAIN 按 QT_GUI_LIB 是否定义在 QCoreApplication 与 QGuiApplication
+# 之间二选一。把 Qt6::Gui 挂到 rsi_core 上，十三个纯算法单测会一起变成需要
+# 窗口站的 GUI 程序——为一个字体函数付这个代价不划算。
+add_library(rsi_uilogic STATIC src/ui/UiLogic.cpp)
+target_link_libraries(rsi_uilogic PUBLIC rsi_core Qt6::Gui)
 
 # Robotics Library (RL) 0.7.0 封装（rl_kinematics，模拟器正逆解）。
 # 配置钉：-Drl_DIR=D:/Software/rl-build/lib/cmake/rl（小写！）、
@@ -53,7 +59,7 @@ add_executable(rsi_host
     src/ui/AlarmLog.cpp
 )
 target_link_libraries(rsi_host PRIVATE
-    rsi_net Qt6::Core Qt6::Network Qt6::Widgets Qt6::Charts)
+    rsi_net rsi_uilogic Qt6::Core Qt6::Network Qt6::Widgets Qt6::Charts)
 
 enable_testing()
 add_subdirectory(tests)

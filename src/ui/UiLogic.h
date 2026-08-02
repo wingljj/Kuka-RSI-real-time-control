@@ -1,4 +1,5 @@
 #pragma once
+#include <QFont>
 #include <QString>
 #include "core/Pose.h"
 #include "net/SharedState.h"
@@ -59,5 +60,11 @@ QString formatRkorr(double v, int axis);
 // 差值预览文案：列出目标与实际偏差超过 0.005 的轴。全部在容差内时
 // 返回「无偏差」。
 QString deltaPreview(const double target[6], const Pose &actual);
+
+// ── 字体 ──
+
+// 数值显示用的系统等宽字体。硬编码 "Consolas" 在没装该字体的机器上会
+// 静默回退到比例字体，小数点从此不对齐——而对齐正是读数列存在的理由。
+QFont monospaceFont();
 
 } // namespace uilogic
