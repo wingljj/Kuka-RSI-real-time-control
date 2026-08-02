@@ -79,8 +79,15 @@ QString formatRkorr(double v, int axis)
 {
     // 与 buildSen 的量化步长对齐：小于半个步长的量线上就是 0，
     // 显示成 0 是如实反映，不是精度损失。
-    constexpr double kWireQuantum = 5e-5;
-    if (std::fabs(v) < kWireQuantum)
+    //
+    // 刻意不叫 kWireQuantum：PoseController.cpp 里另有一个同名常量，值是
+    // 1e-4（线上量化步长本身，用作死区——小于它的增量线上发不出去，不该
+    // 计入累积账本）。这里要的是「4 位小数四舍五入到 0」的阈值，即那个
+    // 步长的一半。两者语义不同、值也必须不同：若有人 grep 到两个同名常量
+    // 值不一致、顺手「统一」成 1e-4，界面就会把 0.00007 显示成 0.0000，
+    // 而线上真发的是 0.0001、机器人真的在动。取不同的名字断掉这个念头。
+    constexpr double kWireRoundToZero = 5e-5;
+    if (std::fabs(v) < kWireRoundToZero)
         return QStringLiteral("0.0000%1").arg(axisUnit(axis));
     return QStringLiteral("%1%2%3")
         .arg(v > 0 ? "+" : "")
@@ -96,7 +103,14 @@ QString deltaPreview(const double target[6], const Pose &actual)
     // 于是 isEmpty() 永不为真、「无偏差」分支永不可达。
     QStringList parts;
     for (int i = 0; i < 6; ++i) {
-        const double d = target[i] - act[i];
+        // 姿态轴取最短角路径，位置轴裸减。预览必须与控制器实际会走的路径
+        // 一致，否则界面在教操作员一件与机器行为相反的事：PoseController::step
+        // 用四元数算最短旋转，目标 A=-179.999 / 实际 A=179.999 时它只走 0.002°，
+        // 而裸减法会把这显示成 -359.998°。这不是理论边界——KUKA 工具朝下时
+        // C≈±180 是常见姿态，RSI 反馈在 180 附近换符号是常态，而目标输入框
+        // 的范围恰好是 -180..180，两者一撞就出「偏差 360 度」。
+        const double d = (i < 3) ? (target[i] - act[i])
+                                 : wrap180(target[i] - act[i]);
         if (std::fabs(d) > 0.005)
             parts << QStringLiteral("%1 %2%3")
                          .arg(kAxisName[i])

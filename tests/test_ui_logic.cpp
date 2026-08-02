@@ -214,7 +214,7 @@ private slots:
         QCOMPARE(uilogic::formatRkorr(0.0, 0), QString("0.0000 mm"));
     }
 
-    // 上一条只测了严格的 0.0，而 0.0 走不走 kWireQuantum 分支输出都是
+    // 上一条只测了严格的 0.0，而 0.0 走不走 kWireRoundToZero 分支输出都是
     // "0.0000 mm"——把量化阈值改成 0 测试照样绿，这个常量等于没测。
     // 真正需要钉死的是「线上会被量化成 0、但数值上不是 0」的那一段：
     // 幅值小于量化步长时机器人根本不动，界面若打出 "+0.0000"/"-0.0000"，
@@ -223,6 +223,15 @@ private slots:
     {
         QCOMPARE(uilogic::formatRkorr(0.00003, 0),  QString("0.0000 mm"));
         QCOMPARE(uilogic::formatRkorr(-0.00003, 3), QString("0.0000 deg"));
+    }
+
+    // 阈值必须是 5e-5（半个线上步长），不能是 PoseController 里那个同名的
+    // 1e-4（步长本身）。0.00007 正落在两者之间：线上四舍五入后真发 0.0001、
+    // 机器人真的会动，界面必须显示 0.0001 而不是 0.0000。少了这条，把阈值
+    // 从 5e-5 「统一」成 1e-4 的改动测试拦不住。
+    void formatRkorrKeepsValuesAboveHalfQuantum()
+    {
+        QCOMPARE(uilogic::formatRkorr(0.00007, 0), QString("+0.0001 mm"));
     }
 
     // ── 差值预览（缺陷 K）──
@@ -260,6 +269,64 @@ private slots:
         actual.y = 0.001;                // 远小于 0.005，属于噪声不是偏差
         const double target[6] = {0, 0, 0, 0, 0, 0};
         QVERIFY(uilogic::deltaPreview(target, actual).contains("无偏差"));
+    }
+
+    // 上面几条都只用 contains("X") 做断言，于是一整类错误测不出来：
+    // 符号反转（标签写「目标 − 当前」，反了操作员就把修正方向读反）、
+    // 轴名取错下标（全打成 X）、单位取错下标（角度轴显示 mm）。
+    // 用一个非 X 的角度轴造偏差 + QCOMPARE 整串，一次把三者钉死。
+    void deltaPreviewSignAxisNameAndUnit()
+    {
+        Pose actual;                     // 全零
+        const double target[6] = {0, 0, 0, 0, 0, 5.0};   // C 目标 +5
+        QCOMPARE(uilogic::deltaPreview(target, actual),
+                 QString("目标 − 当前：C 5.000 deg"));
+    }
+
+    // 循环上界必须覆盖到 C：写成 i < 5 时，操作员改了 C 目标而界面回
+    // 「无偏差」——最坏的一种错，因为它看起来像「已确认无事」。
+    void deltaPreviewCoversLastAxis()
+    {
+        Pose actual;
+        const double target[6] = {0, 0, 0, 0, 0, 1.0};
+        QVERIFY(!uilogic::deltaPreview(target, actual).contains("无偏差"));
+    }
+
+    // 缺陷 C1：姿态轴必须走最短角路径。目标 A=-179.999、实际 A=179.999 时
+    // 裸减法得 -359.998°，而 PoseController::step 用四元数只会走 0.002°——
+    // 预览与控制器行为直接矛盾，界面在教操作员一件与机器相反的事。
+    // KUKA 工具朝下时 C≈±180 是常见姿态，RSI 反馈在 180 附近换符号是常态，
+    // 目标输入框范围又恰好是 -180..180，所以这是日常路径而非理论边界。
+    void deltaPreviewUsesShortestAnglePath()
+    {
+        // 审查者给的原始例子：真实最短路径是 0.002°，而它恰好落在 0.005 容差
+        // 之内，所以正确输出是「无偏差」。裸减法会得到 -359.998（远超容差）
+        // 并打出 "A -359.998 deg"——两者对操作员的含义天差地别。
+        Pose near;
+        near.a = 179.999;
+        const double tNear[6] = {0, 0, 0, -179.999, 0, 0};
+        const QString sNear = uilogic::deltaPreview(tNear, near);
+        QVERIFY(sNear.contains("无偏差"));
+        QVERIFY(!sNear.contains("359"));   // 绕远路的那个数字不该出现
+
+        // 超出容差的环绕：真实最短路径 2°，必须显示 2 而不是 -358。
+        // 上面那条只能证明「没打出 359」，证不了环绕后的数值算得对，
+        // 因为 wrap180 换成恒返回 0 它也绿。这条把数值本身钉死。
+        Pose far;
+        far.a = 179.0;
+        const double tFar[6] = {0, 0, 0, -179.0, 0, 0};
+        QCOMPARE(uilogic::deltaPreview(tFar, far),
+                 QString("目标 − 当前：A 2.000 deg"));
+    }
+
+    // 位置轴反过来必须保持裸减：X 走直线，没有 360 环绕一说。
+    // 若有人图省事把 wrap180 套到全部 6 轴，1280mm 的目标会被折成 -160mm。
+    void deltaPreviewDoesNotWrapLinearAxes()
+    {
+        Pose actual;                     // 全零
+        const double target[6] = {1280.0, 0, 0, 0, 0, 0};
+        QCOMPARE(uilogic::deltaPreview(target, actual),
+                 QString("目标 − 当前：X 1280.00 mm"));
     }
 };
 
