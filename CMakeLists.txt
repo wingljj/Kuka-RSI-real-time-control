@@ -11,7 +11,7 @@ set(CMAKE_AUTOMOC ON)
 # 失败。Qt 走 CMAKE_PREFIX_PATH，不受影响（见 docs/rl-build-notes.md）。
 set(CMAKE_FIND_USE_REGISTRY OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Charts Test OpenGLWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Charts Test)
 
 add_library(rsi_core STATIC
     src/core/AppConfig.cpp
@@ -51,10 +51,9 @@ add_executable(rsi_host
     src/ui/CommCards.cpp
     src/ui/CumulativeBar.cpp
     src/ui/AlarmLog.cpp
-    src/ui/TcpView3D.cpp
 )
 target_link_libraries(rsi_host PRIVATE
-    rsi_net Qt6::Core Qt6::Network Qt6::Widgets Qt6::Charts Qt6::OpenGLWidgets opengl32)
+    rsi_net Qt6::Core Qt6::Network Qt6::Widgets Qt6::Charts)
 
 enable_testing()
 add_subdirectory(tests)

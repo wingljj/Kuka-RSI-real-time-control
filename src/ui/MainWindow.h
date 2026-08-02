@@ -19,7 +19,6 @@ class StatusBar;
 class CommCards;
 class CumulativeBar;
 class AlarmLog;
-class TcpView3D;
 
 class MainWindow : public QMainWindow
 {
@@ -64,7 +63,6 @@ private:
     CommCards      *m_commCards = nullptr;
     CumulativeBar  *m_cumulBar  = nullptr;
     AlarmLog       *m_alarmLog  = nullptr;
-    TcpView3D      *m_tcpView   = nullptr;
     ErrorChart     *m_chartPos  = nullptr;
     ErrorChart     *m_chartRot  = nullptr;
 

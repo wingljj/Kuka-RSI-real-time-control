@@ -8,7 +8,7 @@ StatusBar::StatusBar(QWidget *parent) : QWidget(parent)
     v->setContentsMargins(0, 0, 0, 4);
     v->setSpacing(4);
 
-    // ═══ 上排：4 状态卡片 ═══
+    // ═══ 4 状态卡片 ═══
     auto *cards = new QHBoxLayout;
     cards->setSpacing(8);
 
@@ -48,37 +48,6 @@ StatusBar::StatusBar(QWidget *parent) : QWidget(parent)
     cards->addStretch();
     v->addLayout(cards);
 
-    // ═══ 下排：流程步骤条 ═══
-    auto *flow = new QHBoxLayout;
-    flow->setSpacing(0);
-    flow->setContentsMargins(4, 0, 4, 0);
-    flow->addStretch();
-
-    const char *stepNames[5] = {"监听", "等待连接", "同步位姿", "使能跟踪", "停止跟踪"};
-    for (int i = 0; i < 5; ++i) {
-        m_steps[i].icon = new QLabel(this);
-        m_steps[i].icon->setFixedSize(20, 20);
-        m_steps[i].icon->setAlignment(Qt::AlignCenter);
-        m_steps[i].icon->setStyleSheet(
-            "background-color: #E5E7EB; color: #9CA3AF; border-radius: 10px; "
-            "font-size: 10px; font-weight: bold;");
-        m_steps[i].icon->setText(QString::number(i + 1));
-        flow->addWidget(m_steps[i].icon);
-
-        m_steps[i].label = new QLabel(stepNames[i], this);
-        m_steps[i].label->setStyleSheet("font-size: 9px; color: #9CA3AF; padding: 0 3px;");
-        flow->addWidget(m_steps[i].label);
-
-        if (i < 4) {
-            auto *arrow = new QLabel("→", this);
-            arrow->setStyleSheet("color: #D1D5DB; font-size: 10px; padding: 0 2px;");
-            flow->addWidget(arrow);
-            m_arrows[i] = arrow;
-        }
-    }
-    flow->addStretch();
-    v->addLayout(flow);
-
     // 警告条
     m_warning = new QLabel(this);
     m_warning->setWordWrap(true);
@@ -104,27 +73,6 @@ void StatusBar::Card::set(const QString &iconText, const QString &labelText,
         "QFrame { background-color: %1; border: 1px solid %2; "
         "border-radius: 6px; }")
         .arg(bgColor, fgColor));
-}
-
-void StatusBar::setStepActive(int idx, bool active, bool enabled)
-{
-    const QString bg = active   ? "#2563EB"
-                       : enabled ? "#FFFFFF"
-                                 : "#F3F4F6";
-    const QString fg = active   ? "#FFFFFF"
-                       : enabled ? "#1F2937"
-                                 : "#D1D5DB";
-    const QString border = active   ? "#2563EB"
-                           : enabled ? "#D9E0E7"
-                                     : "#E5E7EB";
-    m_steps[idx].icon->setStyleSheet(QStringLiteral(
-        "background-color: %1; color: %2; border: 2px solid %3; "
-        "border-radius: 10px; font-size: 10px; font-weight: bold;")
-        .arg(bg, fg, border));
-    m_steps[idx].label->setStyleSheet(QStringLiteral(
-        "font-size: 9px; color: %1; padding: 0 3px; font-weight: %2;")
-        .arg(active ? "#2563EB" : enabled ? "#64748B" : "#D1D5DB",
-             active ? "bold" : "normal"));
 }
 
 void StatusBar::updateFrom(const StatusSnapshot &s, bool listening)
@@ -188,31 +136,6 @@ void StatusBar::updateFrom(const StatusSnapshot &s, bool listening)
         m_qualCard.set("✕", "跟踪质量", "超限", "#FEF2F2", "#DC2626"); break;
     default:
         m_qualCard.set("—", "跟踪质量", "无数据", "#F9FAFB", "#9CA3AF"); break;
-    }
-
-    // ── 流程步骤条 ──
-    const int activeStep = [&]() -> int {
-        switch (s.state) {
-        case ControlState::Disconnected:              return listening ? 1 : 0;
-        case ControlState::WaitingFirstFrame:
-        case ControlState::Syncing:                    return 2;
-        case ControlState::Ready:                      return 3;
-        case ControlState::Tracking:                   return 4;
-        case ControlState::StaleFrame:                 return 2;
-        case ControlState::Fault:                      return -1;
-        default:                                       return 0;
-        }
-    }();
-    const bool listeningFlag = listening || s.connected;
-    setStepActive(0, activeStep == 0, true);
-    setStepActive(1, activeStep == 1, listeningFlag);
-    setStepActive(2, activeStep == 2, s.connected);
-    setStepActive(3, activeStep == 3, s.state == ControlState::Ready || s.state == ControlState::Tracking);
-    setStepActive(4, activeStep == 4, s.state == ControlState::Tracking);
-
-    // 故障时特殊处理：所有步骤灰色
-    if (s.state == ControlState::Fault) {
-        for (int i = 0; i < 5; ++i) setStepActive(i, false, false);
     }
 }
 

@@ -1,12 +1,8 @@
 #include "ui/ErrorChart.h"
 
 #include <QChart>
-#include <QDateTime>
-#include <QFile>
 #include <QGridLayout>
-#include <QHBoxLayout>
 #include <QPainter>
-#include <QTextStream>
 #include <algorithm>
 
 ErrorChart::ErrorChart(int windowSeconds, Mode mode, QWidget *parent)
@@ -70,80 +66,17 @@ ErrorChart::ErrorChart(int windowSeconds, Mode mode, QWidget *parent)
     m_placeholder->setAlignment(Qt::AlignCenter);
     m_placeholder->setStyleSheet("color: #888; font-size: 14px;");
 
-    // 按钮栏
-    m_pauseBtn = new QPushButton("⏸ 暂停", this);
-    m_pauseBtn->setMaximumWidth(60);
-    m_pauseBtn->setStyleSheet("font-size: 9px;");
-    connect(m_pauseBtn, &QPushButton::clicked, this, &ErrorChart::onPauseToggled);
-
-    m_clearBtn = new QPushButton("清空", this);
-    m_clearBtn->setMaximumWidth(50);
-    m_clearBtn->setStyleSheet("font-size: 9px;");
-    connect(m_clearBtn, &QPushButton::clicked, this, &ErrorChart::onClear);
-
-    m_exportBtn = new QPushButton("CSV", this);
-    m_exportBtn->setMaximumWidth(50);
-    m_exportBtn->setStyleSheet("font-size: 9px;");
-    connect(m_exportBtn, &QPushButton::clicked, this, &ErrorChart::onExport);
-
-    auto *btnRow = new QHBoxLayout;
-    btnRow->setContentsMargins(0, 0, 0, 0);
-    btnRow->addWidget(m_pauseBtn);
-    btnRow->addWidget(m_clearBtn);
-    btnRow->addWidget(m_exportBtn);
-    btnRow->addStretch();
-
+    // placeholder 与图表叠在同一格：无数据时盖住空图，有数据时让位给曲线。
     auto *lay = new QGridLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
-    lay->addLayout(btnRow, 0, 0);
-    lay->addWidget(m_view, 1, 0);
-    lay->addWidget(m_placeholder, 1, 0);
+    lay->addWidget(m_view, 0, 0);
+    lay->addWidget(m_placeholder, 0, 0);
 }
 
 void ErrorChart::setThresholdLine(double value)
 {
     m_thresholdVal = value;
-}
-
-void ErrorChart::setSubMode(int subMode)
-{
-    // 子模式仅影响标题；实际数据仍为合成误差（需要 per-axis ring 才能拆分）
-    const bool isPos = m_mode == Mode::Position;
-    const char *labels[4] = {"合成", "X", "Y", "Z"};
-    auto *chart = m_view->chart();
-    if (isPos)
-        chart->setTitle(QStringLiteral("位置误差 (%1) mm").arg(labels[subMode & 3]));
-    else
-        chart->setTitle(QStringLiteral("姿态误差 (%1) °").arg(labels[subMode & 3]));
-}
-
-void ErrorChart::onPauseToggled()
-{
-    m_paused = !m_paused;
-    m_pauseBtn->setText(m_paused ? "▶ 继续" : "⏸ 暂停");
-}
-
-void ErrorChart::onClear()
-{
-    m_series->clear();
-    m_threshold->clear();
-    m_zeroLine->clear();
-}
-
-void ErrorChart::onExport()
-{
-    const QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
-    const QString name = (m_mode == Mode::Position)
-                             ? QStringLiteral("pos_error_%1.csv").arg(ts)
-                             : QStringLiteral("rot_error_%1.csv").arg(ts);
-    QFile f(name);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
-    QTextStream out(&f);
-    out << "t_sec,error\n";
-    const auto pts = m_series->points();
-    for (const auto &p : pts)
-        out << p.x() << "," << p.y() << "\n";
 }
 
 void ErrorChart::updateFrom(const SampleRing &ring)
@@ -157,13 +90,6 @@ void ErrorChart::updateFrom(const SampleRing &ring)
     }
 
     const double tEnd = m_buf[n - 1].tSec;
-    if (m_paused) {
-        // 暂停时不更新数据
-        m_placeholder->setVisible(true);
-        m_view->setVisible(true);
-        return;
-    }
-
     const double tOldest = m_buf[0].tSec;
     const double tStart  = std::max(std::max(0.0, tEnd - double(m_windowSeconds)),
                                     tOldest);

@@ -23,7 +23,6 @@
 #include "ui/CumulativeBar.h"
 #include "ui/ErrorChart.h"
 #include "ui/StatusBar.h"
-#include "ui/TcpView3D.h"
 
 namespace {
 
@@ -48,7 +47,7 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     outer->setContentsMargins(12, 8, 12, 8);
     outer->setSpacing(8);
 
-    // ── 顶部：StatusBar（4 卡片 + 流程步骤条 + 警告） ──
+    // ── 顶部：StatusBar（4 卡片 + 警告） ──
     m_statusBar = new StatusBar(this);
     m_statusBar->setWarning(
         "软停止：RKorr=0，RSI 回包保持。不是急停。紧急情况请按示教器物理急停。", false);
@@ -89,13 +88,6 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     btnBar->addWidget(m_stopBtn);
 
     btnBar->addStretch();
-
-    auto *rkorrLabel = new QLabel(this);
-    rkorrLabel->setStyleSheet(
-        "font-family: Consolas, monospace; font-size: 10px; color: #64748B; "
-        "padding: 3px 10px; background: #F3F4F6; border-radius: 4px;");
-    rkorrLabel->setText("RKorr 输出  |  跟踪状态");
-    btnBar->addWidget(rkorrLabel);
 
     outer->addLayout(btnBar);
 
@@ -428,7 +420,7 @@ QWidget *MainWindow::buildMidPanel()
 }
 
 // ═══════════════════════════════════════════════
-// 右栏：图表 + 通信卡片 + 3D TCP
+// 右栏：图表 + 通信卡片
 // ═══════════════════════════════════════════════
 
 QWidget *MainWindow::buildRightPanel()
@@ -445,10 +437,6 @@ QWidget *MainWindow::buildRightPanel()
 
     m_commCards = new CommCards(w);
     v->addWidget(m_commCards);
-
-    m_tcpView = new TcpView3D(w);
-    m_tcpView->setMinimumHeight(180);
-    v->addWidget(m_tcpView, 1);
 
     return w;
 }
@@ -744,10 +732,6 @@ void MainWindow::onRefresh()
 
     // ── 通信卡片 ──
     m_commCards->updateFrom(s, m_cfg.cycleMs);
-
-    // ── 3D TCP ──
-    if (s.connected)
-        m_tcpView->updatePoses(s.actual, s.target);
 
     // ── 控制参数只读 ──
     m_paramVal[0]->setText(QString::number(m_cfg.kpPos, 'f', 3));
