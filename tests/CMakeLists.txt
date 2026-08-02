@@ -50,3 +50,9 @@ add_test(NAME test_mesh_loader COMMAND test_mesh_loader)
 add_executable(test_ui_logic test_ui_logic.cpp)
 target_link_libraries(test_ui_logic PRIVATE rsi_uilogic Qt6::Test)
 add_test(NAME test_ui_logic COMMAND test_ui_logic)
+
+# RsiWorker 的会话/间隙路由单测：链接 rsi_net（内含 RsiWorker），
+# 用真实 UDP 环回驱动，因为被测的判据依赖 QElapsedTimer 与看门狗定时器。
+add_executable(test_rsi_worker test_rsi_worker.cpp)
+target_link_libraries(test_rsi_worker PRIVATE rsi_net Qt6::Test Qt6::Network)
+add_test(NAME test_rsi_worker COMMAND test_rsi_worker)

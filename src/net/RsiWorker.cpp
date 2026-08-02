@@ -63,7 +63,7 @@ void RsiWorker::start()
     // 一次 teardown 存活，下个 start() 才能分辨"真正的会话重启"与"快速的
     // stop()→start()"。进程启动后的首个 start() 时它从未 start 过，isValid()
     // 为假，首帧走 beginSession()；此后的 start() 仍持有上一帧的时间戳，
-    // elapsed() 很小，首帧走 resetToActual()，保住 KRC 侧已施加的修正。
+    // elapsed() 很小，首帧不换锚点、不清账本，保住 KRC 侧已施加的修正。
     // 在这里 invalidate() 会让 isValid() 恒假，判据形同虚设。
 
     emit listening();
@@ -161,7 +161,8 @@ void RsiWorker::onDatagram()
         // 丢包，而那正是"任何分支都必须回包"这条约束要避免的后果。
         const quint64 echoIpoc = f.ipoc ? f.ipoc : m_ipocTracker.lastGood();
         Pose    delta;   // 默认零增量
-        bool    wasFirstFrame = false;
+        bool    wasFirstFrame   = false;   // 本帧是 IPOC 序列的首帧（含间隙恢复）
+        bool    wasSessionStart = false;   // 且是真正的会话重启（新账本、新锚点）
 
         if (f.valid) {
             const IpocEvent ev = m_ipocTracker.classify(f.ipoc);
@@ -184,9 +185,42 @@ void RsiWorker::onDatagram()
                     // 对跨间隙的首帧同样适用——不在这里清掉，第一帧就会拿
                     // 间隙前的位姿当锚点，物理跳变判定可能误杀会话恢复帧。
                     m_havePrevPose = false;
-                } else
-                    m_ctl.resetToActual(f.rist);
-                wasFirstFrame = true;
+                }
+                // ── else：看门狗间隙恢复。刻意什么都不做。────────────────
+                // 这里曾经调用 m_ctl.resetToActual(f.rist)，那是一个真实缺陷：
+                // resetToActual 的设计用途是"界面上手动归零"，它会把目标改写
+                // 成当前实际、把状态打回 Idle、并重置目标轨迹。于是一次
+                // 240ms（= 看门狗间隔）的网络抖动就足以让一段正在运行的跟踪
+                // 无声停止、实时误差归零，而操作员设定的目标被丢弃——现场
+                // 报告的"跟到一半突然停了"正是这三件事。
+                //
+                // 恢复通信不是操作员的意图表达，不该改变操作员的意图。间隙
+                // 恢复需要做的只有"重建 IPOC 基准"，而这一件事 classify() 自己
+                // 已经做完了（它在 First 分支里锁存了新的 lastGood）。所以这
+                // 一支正确的实现就是空的。
+                //
+                // 为什么保留跟踪状态是安全的：step() 的第 1 层限值
+                // （vmax × cycle，默认 0.6mm/周期）是绝对的单周期上限，控制律
+                // 里没有积分项、不存在饱和积分，所以间隙期间误差涨到多大，
+                // 恢复后第一帧发出的增量仍然只有 0.6mm——与操作员在界面上
+                // 直接改一个远目标完全同量级，不是新引入的风险。
+                //
+                // 为什么这里刻意 *不* 清 m_havePrevPose（与上面的会话重启相反）：
+                // KRC 没有重启，间隙前后是同一段连续运动，两帧之间可比。留着
+                // 它，下面的 exceedsPhysicalJump 就会拿间隙前的位姿做一次跳变
+                // 检查——它用的是一个周期的预算（12ms → 6mm），对一段几百
+                // 毫秒的间隙而言过严，但过严的方向是安全的：至多把恢复首帧
+                // 判为 stale、本周期回零增量，下一帧即自愈（m_staleCount 会被
+                // 清零，够不到 staleFrameLimit）。这等于白得一次"间隙期间机器
+                // 人是否被挪动过"的检查。
+                //
+                // 为什么真正的会话重启仍必须走 beginSession 清账本：那时 KRL
+                // 程序重跑过，KRC 侧的 POSCORR 累积量确实已经回零，主机的安全
+                // 锚点必须跟着移到新的 RIst₀，否则主机账本与 KRC 层 4/5 的限值
+                // 不再共享原点。而间隙恢复时 KRC 从未重启、它的累积量原封不动，
+                // 此时移锚点等于在已施加的修正之上再发一份全新预算。
+                wasFirstFrame   = true;
+                wasSessionStart = genuineSessionStart;
             }
 
             if (m_cycleTimerValid) {
@@ -306,7 +340,16 @@ void RsiWorker::onDatagram()
             // snapshot() 来同步目标位姿，若先发信号它读到的还是本帧之前的
             // 快照（首帧时即全零）。今天只是显示错，但一旦「使能跟踪」
             // 依赖这个目标值，就会变成带着错误目标启动跟踪。
-            if (wasFirstFrame)
+            //
+            // 只在真正的会话重启时发，看门狗间隙恢复时不发。这个信号的语义
+            // 是"控制器的目标刚被重置成实际位姿了，界面请跟着同步"——只有
+            // beginSession 那一支真的做了这件事。间隙恢复不改目标（见上面
+            // 那段），此时若照发，GUI 会把目标输入框改写成当前实际位姿并
+            // saveTargetSnapshot()，于是界面显示的目标与控制器持有的目标从此
+            // 不一致，而「应用目标」按钮还是灰的——操作员看不到自己的目标
+            // 已经在界面上被悄悄换掉。控制器保住了目标而界面丢了，比两边
+            // 一起丢更难排查。
+            if (wasSessionStart)
                 emit firstFrameReceived();
         }
     }
