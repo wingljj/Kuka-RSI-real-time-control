@@ -109,6 +109,62 @@ QString formatValue(double v, int axis)
     return QStringLiteral("%1%2").arg(v, 0, 'f', 3).arg(axisUnit(axis));
 }
 
+// ── 误差列（旋转向量）──
+
+QString errorAxisLabel(int axis)
+{
+    // 位置三行沿用 X/Y/Z：误差就是 target − actual，与行首同义，
+    // 给它们也换个名字只会让真正需要警觉的那三行淹没在噪声里。
+    static const char *kRotLabel[3] = {"Rx", "Ry", "Rz"};
+    return (axis < 3) ? QString::fromLatin1(kAxisName[axis])
+                      : QString::fromLatin1(kRotLabel[axis - 3]);
+}
+
+QString formatError(double v, int axis)
+{
+    if (axis < 3)
+        return formatValue(v, axis);
+    // 姿态三行把 Rx/Ry/Rz 写进单元格本身。选前缀而非仅 tooltip 的理由：
+    // 这一列每 20ms 刷新一次、操作员是扫读，tooltip 要悬停才出现，
+    // 而误读的代价是把一个正确结果当成 bug 报上来。前缀让「这不是 A/B/C」
+    // 在视线扫过的那一瞬间就成立。
+    return QStringLiteral("%1 %2").arg(errorAxisLabel(axis),
+                                       formatValue(v, axis));
+}
+
+QString errorColumnTooltip()
+{
+    return QStringLiteral(
+        "误差列的含义\n"
+        "\n"
+        "位置 X/Y/Z：目标 − 当前，直接相减。\n"
+        "\n"
+        "姿态 Rx/Ry/Rz：把当前姿态一次转到目标姿态的最短旋转（SO(3)），\n"
+        "分解到世界坐标 X/Y/Z 轴上的三个分量，单位度。\n"
+        "它不是 A、B、C 三个欧拉角各自的差值——两者只在小角度下才接近，\n"
+        "在大角度、尤其万向节死锁（B≈±90°）附近可以完全不同。\n"
+        "\n"
+        "例：目标 ABC=(70, 90, 70)，当前 ABC=(0, 0, 0)，本列显示 0 / 90 / 0。\n"
+        "这是对的：B=90° 时 A 与 C 绕同一条轴旋转，(70, 90, 70) 与 (0, 90, 0)\n"
+        "是同一个姿态，最短路径就是绕世界 Y 轴转 90°。\n"
+        "\n"
+        "本列显示的就是控制器实际会走的那条路径（RKorr 输出列即由它算出），\n"
+        "所以它比逐轴欧拉角差更能说明机器人接下来会怎么动。");
+}
+
+QString errorCellTooltip(int axis)
+{
+    if (axis < 3)
+        return QString();   // 位置行就是相减，无需解释
+    static const char *kWorldAxis[3] = {"X", "Y", "Z"};
+    return QStringLiteral(
+               "%1：最短旋转绕世界 %2 轴的分量（度）。\n"
+               "不是 %3 轴的欧拉角差值。")
+        .arg(errorAxisLabel(axis),
+             QString::fromLatin1(kWorldAxis[axis - 3]),
+             QString::fromLatin1(kAxisName[axis]));
+}
+
 bool isRkorrZero(double v)
 {
     // 与 buildSen 的量化步长对齐：小于半个步长的量线上就是 0，

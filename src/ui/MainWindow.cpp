@@ -17,6 +17,7 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <cmath>
 #include "core/SessionGuard.h"
 #include "ui/AlarmLog.h"
@@ -406,8 +407,12 @@ QWidget *MainWindow::buildMidPanel()
     // 写进去的 X/Y/Z/A/B/C 永远显示不出来，六行数字谁也不知道是哪个轴。
     // 第 4 列 RKorr 输出留空，Task 5 填充。
     auto *tbl = new QTableWidget(6, 5, poseBox);
+    // 误差列的表头不叫「实时误差」：那三个字暗示它与左右两列同构，而后三行
+    // 装的是 SO(3) 最短旋转在世界坐标轴上的分量，不是 A/B/C 三个欧拉角之差。
+    // 现场已经因此报过一次假 bug（详见 uilogic::errorColumnTooltip）。
     tbl->setHorizontalHeaderLabels(
-        {"轴", "当前实际", "实时误差", "目标位姿", "RKorr 输出"});
+        {"轴", "当前实际", "误差（旋转向量）", "目标位姿", "RKorr 输出"});
+    tbl->horizontalHeaderItem(2)->setToolTip(uilogic::errorColumnTooltip());
     tbl->verticalHeader()->setVisible(false);
     tbl->setShowGrid(false);
     tbl->setSelectionMode(QAbstractItemView::NoSelection);
@@ -429,19 +434,29 @@ QWidget *MainWindow::buildMidPanel()
     const QFontMetrics numFm(numF);
     const int kCellPad = 14;   // 样式表 padding 0px 6px，两侧共 12，留 2px 余量
     const int kAxisCol = 28;
-    // 位姿 / 误差 / 目标：最宽读数是行程上限；RKorr 每帧增量受限速约束，
+    // 位姿 / 目标：最宽读数是行程上限；RKorr 每帧增量受限速约束，
     // 量级远小（vmax 13mm/s × 12ms ≈ 0.16mm），按自己的最宽串单独算。
     const int wData  = numFm.horizontalAdvance("-4000.000 mm") + kCellPad;
     const int wRkorr = numFm.horizontalAdvance("-0.1560 deg") + kCellPad;
+    // 误差列比数值列宽：姿态三行带 Rx/Ry/Rz 前缀（见 uilogic::formatError），
+    // 最宽串是旋转分量取满量程的 "Rz -180.000 deg"，比位置行的行程上限还长。
+    // 不按前缀重算这一列，尾巴上的 "deg" 会被裁掉——而单位正是这列要说清的
+    // 事情之一。表头文字也一并纳入：它比原来长，虽然目前仍窄于数据串，
+    // 但改字号时不该靠人记得回来手算。
+    const QFontMetrics hdrFm(tbl->horizontalHeader()->font());
+    const int wError = std::max({
+        numFm.horizontalAdvance("-4000.000 mm") + kCellPad,
+        numFm.horizontalAdvance("Rz -180.000 deg") + kCellPad,
+        hdrFm.horizontalAdvance("误差（旋转向量）") + kCellPad});
     tbl->horizontalHeader()->setStretchLastSection(false);
     tbl->setColumnWidth(0, kAxisCol);
     tbl->setColumnWidth(1, wData);
-    tbl->setColumnWidth(2, wData);
+    tbl->setColumnWidth(2, wError);
     tbl->setColumnWidth(3, wData);
     tbl->setColumnWidth(4, wRkorr);
     // 面板宽度反过来由列宽决定，而不是先定 420 再硬塞五列进去：
     // 后者只能靠缩字号或裁尾巴收场，而这张表存在的理由就是把数字看全。
-    m_poseTableWidth = kAxisCol + 3 * wData + wRkorr;
+    m_poseTableWidth = kAxisCol + 2 * wData + wError + wRkorr;
     // 六行必须一屏放下：默认行高下只露出 X/Y/Z/A，B 与 C 被挤到滚动条以外，
     // 轴名从「看不见」变成「要滚动才看得见」，对操作员是同一个问题。
     // 高度交给 fitTableToRows 按实测行高算（见其声明处的理由）。
@@ -473,6 +488,12 @@ QWidget *MainWindow::buildMidPanel()
         err->setFlags(Qt::NoItemFlags);
         auto errF = numF; errF.setBold(true); err->setFont(errF);
         err->setForeground(QColor("#64748B"));
+        // 姿态三行额外挂 tooltip：单元格里的 Rx/Ry/Rz 前缀足以拦住误读，
+        // 但拦住之后操作员会问「那这到底是什么」，答案要在原地拿得到。
+        // 位置三行的 tooltip 是空串（见 errorCellTooltip），不设。
+        const QString errTip = uilogic::errorCellTooltip(i);
+        if (!errTip.isEmpty())
+            err->setToolTip(errTip);
         tbl->setItem(i, 2, err);
         m_errorItem[i] = err;
 
@@ -857,7 +878,9 @@ void MainWindow::onRefresh()
                                 : (ep >= 0.8) ? QColor("#D97706")
                                 : (ep >= 0.5) ? QColor("#D97706")
                                 :               QColor("#16A34A");
-        m_errorItem[i]->setText(uilogic::formatValue(err[i], i));
+        // formatError 而非 formatValue：姿态三行要带 Rx/Ry/Rz 前缀，
+        // 否则它们会被行首的 A/B/C 认领（理由见 UiLogic.h 误差列一节）。
+        m_errorItem[i]->setText(uilogic::formatError(err[i], i));
         m_errorItem[i]->setForeground(errColor);
         // 目标值
         m_targetItem[i]->setText(uilogic::formatValue(tgt[i], i));

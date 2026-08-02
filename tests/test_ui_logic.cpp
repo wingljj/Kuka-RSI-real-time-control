@@ -1,4 +1,6 @@
 #include <QtTest>
+#include <cmath>
+#include "core/PoseOps.h"
 #include "ui/UiLogic.h"
 
 namespace {
@@ -451,6 +453,89 @@ private slots:
         const double target[6] = {1280.0, 0, 0, 0, 0, 0};
         QCOMPARE(uilogic::deltaPreview(target, actual),
                  QString("目标 − 当前：X 1280.00 mm"));
+    }
+
+    // ── 误差列的标注（现场误报的那一列）──
+    //
+    // 背景：操作员设目标 ABC=(70, 90, 70)、当前全零，误差列显示 0 / 90 / 0，
+    // 他按行首的 A/B/C 读成「B 差 90 度，A 和 C 没差」，报成算法 bug。
+    // 数字是对的（B=90° 万向节死锁，两个姿态等价，最短路径是绕世界 Y 转 90°），
+    // 错的是标签：那三行是 SO(3) 旋转向量在世界轴上的分量，不是欧拉角差。
+
+    void errorAxisLabelDistinguishesRotationFromEuler()
+    {
+        // 位置行沿用 X/Y/Z：那里确实就是 target − actual，改名只会制造噪声。
+        QCOMPARE(uilogic::errorAxisLabel(0), QString("X"));
+        QCOMPARE(uilogic::errorAxisLabel(2), QString("Z"));
+        // 姿态行必须与行首的 A/B/C 明确不同名，否则误读原样复现。
+        QCOMPARE(uilogic::errorAxisLabel(3), QString("Rx"));
+        QCOMPARE(uilogic::errorAxisLabel(4), QString("Ry"));
+        QCOMPARE(uilogic::errorAxisLabel(5), QString("Rz"));
+    }
+
+    void formatErrorPrefixesRotationRowsOnly()
+    {
+        // 位置行与 formatValue 完全一致：多加前缀会占宽度，而它们不需要澄清。
+        QCOMPARE(uilogic::formatError(12.5, 0), uilogic::formatValue(12.5, 0));
+        QCOMPARE(uilogic::formatError(12.5, 0), QString("12.500 mm"));
+        // 姿态行带前缀。前缀写进单元格文本而不是只挂 tooltip：这一列是扫读的，
+        // 悬停才出现的说明拦不住「A 差多少」这种读法。
+        QCOMPARE(uilogic::formatError(90.0, 4), QString("Ry 90.000 deg"));
+        QCOMPARE(uilogic::formatError(-1.25, 5), QString("Rz -1.250 deg"));
+    }
+
+    // 把现场那组数从算法一路走到界面文本，端到端钉死一次：只测 formatError
+    // 的话，errorPoseDeg 若哪天被改成逐轴欧拉角差，这里照样绿，而界面就会
+    // 显示一个 PoseController 不会执行的量。
+    void gimbalLockCaseIsLabelledAsRotationVector()
+    {
+        Pose target;  target.a = 70.0; target.b = 90.0; target.c = 70.0;
+        Pose actual;  // 全零
+        const Pose e = poseops::errorPoseDeg(target, actual);
+
+        // 数学部分：(70, 90, 70) 与 (0, 90, 0) 是同一姿态，最短路径 = 绕世界 Y 转 90°
+        QVERIFY(std::fabs(e.a - 0.0)  < 1e-6);
+        QVERIFY(std::fabs(e.b - 90.0) < 1e-6);
+        QVERIFY(std::fabs(e.c - 0.0)  < 1e-6);
+
+        // 界面部分：这三行不能再被读成「A 差 0、B 差 90、C 差 0」
+        const QString rx = uilogic::formatError(e.a, 3);
+        const QString ry = uilogic::formatError(e.b, 4);
+        const QString rz = uilogic::formatError(e.c, 5);
+        QCOMPARE(ry, QString("Ry 90.000 deg"));
+        for (const QString &t : {rx, ry, rz}) {
+            QVERIFY2(t.startsWith('R'), qPrintable(t));
+            // 行首轴名 A/B/C 绝不能出现在误差单元格里——同名正是误读的来源
+            QVERIFY2(!t.contains('A') && !t.contains('B') && !t.contains('C'),
+                     qPrintable(t));
+        }
+    }
+
+    // tooltip 是这一列唯一能展开讲清楚「为什么不是欧拉角差」的地方。
+    // 断言它真的讲了，而不是一句「误差」了事——空串或占位文案照样能编译。
+    void errorColumnTooltipExplainsTheDifference()
+    {
+        const QString t = uilogic::errorColumnTooltip();
+        QVERIFY(t.contains(QStringLiteral("最短旋转")));
+        QVERIFY(t.contains(QStringLiteral("欧拉角")));   // 必须点名它「不是」什么
+        QVERIFY(t.contains(QStringLiteral("万向节")));   // 差别最大的那个场景
+        // 现场那组数留在 tooltip 里：下次再有人看到 0/90/0，
+        // 悬停一次就能确认这正是已知且正确的情形。
+        QVERIFY(t.contains(QStringLiteral("70")));
+        QVERIFY(t.contains(QStringLiteral("90")));
+    }
+
+    void errorCellTooltipOnlyOnRotationRows()
+    {
+        // 位置行就是相减，加说明只会稀释真正需要读的那三条
+        QVERIFY(uilogic::errorCellTooltip(0).isEmpty());
+        QVERIFY(uilogic::errorCellTooltip(2).isEmpty());
+        // 姿态行要同时说清「是世界轴分量」和「不是对应欧拉角的差」
+        const QString t = uilogic::errorCellTooltip(4);
+        QVERIFY(t.contains(QStringLiteral("Ry")));
+        QVERIFY(t.contains(QStringLiteral("世界")));
+        QVERIFY(t.contains(QStringLiteral("欧拉角")));
+        QVERIFY(t.contains('B'));           // 点名它不是 B 轴的差
     }
 };
 
