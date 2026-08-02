@@ -96,6 +96,9 @@ private:
 
     // ── 参数 ──
     QPushButton *m_paramsBtn = nullptr;
+    // 顺序固定：kpPos, kpRot, vmaxPos, vmaxRot, accumPos, accumRot。
+    // 标签在 buildMidPanel 里与数值成对创建，改动其一必须同时改另一个，
+    // 否则又会回到「标签说的是这个参数、数值是另一个」的状态。
     std::array<QLabel *, 6> m_paramVal{};
 
     bool m_suppressTargetSignal = false;

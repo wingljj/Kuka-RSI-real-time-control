@@ -100,6 +100,13 @@ QGroupBox::title {
 /* ── 标签 ── */
 QLabel { color: #1F2937; }
 QLabel[cssClass="secondary"] { color: #64748B; }
+/* 只读数值：等宽字体让小数点对齐，读参数时一眼能看出量级差异 */
+QLabel[cssClass="fieldLabel"] { color: #64748B; }
+QLabel[cssClass="readout"] {
+    font-family: Consolas, monospace;
+    color: #1F2937;
+    padding: 1px 6px;
+}
 
 /* ── 进度条 ── */
 QProgressBar {

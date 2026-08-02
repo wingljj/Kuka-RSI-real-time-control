@@ -64,6 +64,9 @@ echo "==> RL 模型（Comau Racer 7-1.4，--model 指定路径）"
 cp "D:/QTproj/rl/rl-master/3dmodel/robot.rlmdl.xml" dist/robot.rlmdl.xml
 
 echo "==> Qt 运行库"
+# Qt6OpenGL/Qt6OpenGLWidgets 别删：rsi_host 已不再依赖 OpenGL（3D 视图已移除），
+# 但同一个 dist/ 里的 krc_simulator.exe 仍然真实依赖这两个 DLL，
+# 「顺手清理」的结果是打出来的包里模拟器起不来。
 for d in Qt6Core Qt6Gui Qt6Widgets Qt6Network Qt6Charts Qt6OpenGL Qt6OpenGLWidgets; do
   cp "$QTDIR/bin/$d.dll" dist/
 done

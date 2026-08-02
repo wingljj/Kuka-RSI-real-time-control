@@ -327,8 +327,12 @@ QWidget *MainWindow::buildMidPanel()
 
     // ── 位姿对比 ──
     auto *poseBox = new QGroupBox("位姿对比", w);
-    auto *tbl = new QTableWidget(6, 3, poseBox);
-    tbl->setHorizontalHeaderLabels({"当前实际（只读）", "实时误差", "目标位姿"});
+    // 轴名占第 0 列而不是垂直表头：表头下一行就被 setVisible(false) 隐藏，
+    // 写进去的 X/Y/Z/A/B/C 永远显示不出来，六行数字谁也不知道是哪个轴。
+    // 第 4 列 RKorr 输出留空，Task 5 填充。
+    auto *tbl = new QTableWidget(6, 5, poseBox);
+    tbl->setHorizontalHeaderLabels(
+        {"轴", "当前实际", "实时误差", "目标位姿", "RKorr 输出"});
     tbl->verticalHeader()->setVisible(false);
     tbl->setShowGrid(false);
     tbl->setSelectionMode(QAbstractItemView::NoSelection);
@@ -337,15 +341,22 @@ QWidget *MainWindow::buildMidPanel()
         "QTableWidget { border: none; font-size: 10px; } "
         "QTableWidget::item { padding: 0px 6px; }");
     tbl->horizontalHeader()->setStretchLastSection(true);
-    tbl->setColumnWidth(0, 130);
-    tbl->setColumnWidth(1, 130);
-    tbl->setFixedHeight(170);
+    tbl->setColumnWidth(0, 28);
+    tbl->setColumnWidth(1, 92);
+    tbl->setColumnWidth(2, 92);
+    tbl->setColumnWidth(3, 92);
+    // 六行必须一屏放下：默认行高下只露出 X/Y/Z/A，B 与 C 被挤到滚动条以外，
+    // 轴名从「看不见」变成「要滚动才看得见」，对操作员是同一个问题。
+    // 高度 = 表头 + 6×22 行 + 余量，宁可留白也不要出现纵向滚动条。
+    tbl->verticalHeader()->setDefaultSectionSize(22);
+    tbl->setFixedHeight(190);
 
     for (int i = 0; i < 6; ++i) {
         auto *ax = new QTableWidgetItem(kAxisName[i]);
         ax->setFlags(Qt::NoItemFlags);
+        ax->setTextAlignment(Qt::AlignCenter);
         auto axF = ax->font(); axF.setBold(true); ax->setFont(axF);
-        tbl->setVerticalHeaderItem(i, ax);
+        tbl->setItem(i, 0, ax);
 
         // 当前实际
         auto *act = new QTableWidgetItem("--");
@@ -354,7 +365,7 @@ QWidget *MainWindow::buildMidPanel()
         auto actF = act->font(); actF.setFamily("Consolas"); actF.setPointSize(10);
         actF.setBold(true); act->setFont(actF);
         act->setForeground(QColor("#1F2937"));
-        tbl->setItem(i, 0, act);
+        tbl->setItem(i, 1, act);
         m_actualItem[i] = act;
 
         // 误差
@@ -364,7 +375,7 @@ QWidget *MainWindow::buildMidPanel()
         auto errF = err->font(); errF.setFamily("Consolas"); errF.setPointSize(10);
         errF.setBold(true); err->setFont(errF);
         err->setForeground(QColor("#64748B"));
-        tbl->setItem(i, 1, err);
+        tbl->setItem(i, 2, err);
         m_errorItem[i] = err;
 
         // 目标（只显示，不编辑——编辑在左栏）
@@ -374,7 +385,7 @@ QWidget *MainWindow::buildMidPanel()
         auto tgtF2 = tgt->font(); tgtF2.setFamily("Consolas"); tgtF2.setPointSize(10);
         tgt->setFont(tgtF2);
         tgt->setForeground(QColor("#2563EB"));
-        tbl->setItem(i, 2, tgt);
+        tbl->setItem(i, 3, tgt);
         m_targetItem[i] = tgt;
     }
     auto *poseLay = new QVBoxLayout(poseBox);
@@ -391,24 +402,36 @@ QWidget *MainWindow::buildMidPanel()
     safeV->addWidget(m_cumulBar);
 
     // 控制参数只读行
-    auto *paramGrid = new QGridLayout;
-    paramGrid->setSpacing(4);
-    paramGrid->addWidget(new QLabel("Kp 位置", safeBox), 1, 0);
-    paramGrid->addWidget(new QLabel("Kp 姿态", safeBox), 2, 0);
-    paramGrid->addWidget(new QLabel("限速位置", safeBox), 1, 2);
-    paramGrid->addWidget(new QLabel("限速姿态", safeBox), 2, 2);
-    paramGrid->addWidget(new QLabel("上限位置", safeBox), 1, 4);
-    paramGrid->addWidget(new QLabel("上限姿态", safeBox), 2, 4);
-    for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 2; ++c) {
-            auto *val = new QLabel("--", safeBox);
-            val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            val->setStyleSheet("font-family: Consolas, monospace; font-size: 10px; "
-                               "color: #1F2937; padding: 1px 6px;");
-            paramGrid->addWidget(val, r + 1, c * 2 + 1);
-            m_paramVal[r * 2 + c] = val;
-        }
-    safeV->addLayout(paramGrid);
+    // 标签与数值在同一次循环里成对创建。原实现把标签按
+    // (1,0)(2,0)(1,2)(2,2)(1,4)(2,4) 摆放、数值按 (r+1, c*2+1) 摆放，
+    // 六个参数里只有第一个对得上——操作员照标签读到的是别的参数。
+    // 成对创建让这种错位在结构上不可能发生。
+    struct ParamRow { const char *label; };
+    const ParamRow kParams[6] = {
+        {"Kp 位置"},   {"Kp 姿态"},
+        {"限速位置"},  {"限速姿态"},
+        {"累积上限位置"}, {"累积上限姿态"},
+    };
+
+    auto *paramForm = new QGridLayout;
+    paramForm->setHorizontalSpacing(12);
+    paramForm->setVerticalSpacing(4);
+    for (int i = 0; i < 6; ++i) {
+        const int row = i / 2;
+        const int col = (i % 2) * 2;
+        auto *name = new QLabel(kParams[i].label, safeBox);
+        name->setProperty("cssClass", "fieldLabel");
+        paramForm->addWidget(name, row, col);
+
+        auto *val = new QLabel("--", safeBox);
+        val->setProperty("cssClass", "readout");
+        val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        paramForm->addWidget(val, row, col + 1);
+        m_paramVal[i] = val;
+    }
+    paramForm->setColumnStretch(1, 1);
+    paramForm->setColumnStretch(3, 1);
+    safeV->addLayout(paramForm);
 
     m_paramsBtn = new QPushButton("编辑控制参数…", safeBox);
     connect(m_paramsBtn, &QPushButton::clicked, this, &MainWindow::onEditParams);
@@ -736,10 +759,10 @@ void MainWindow::onRefresh()
     // ── 控制参数只读 ──
     m_paramVal[0]->setText(QString::number(m_cfg.kpPos, 'f', 3));
     m_paramVal[1]->setText(QString::number(m_cfg.kpRot, 'f', 3));
-    m_paramVal[2]->setText(QString::number(m_cfg.vmaxPosMmS, 'f', 1));
-    m_paramVal[3]->setText(QString::number(m_cfg.vmaxRotDegS, 'f', 1));
-    m_paramVal[4]->setText(QString::number(m_cfg.accumLimitPosMm, 'f', 1));
-    m_paramVal[5]->setText(QString::number(m_cfg.accumLimitRotDeg, 'f', 1));
+    m_paramVal[2]->setText(QStringLiteral("%1 mm/s").arg(m_cfg.vmaxPosMmS, 0, 'f', 1));
+    m_paramVal[3]->setText(QStringLiteral("%1 deg/s").arg(m_cfg.vmaxRotDegS, 0, 'f', 1));
+    m_paramVal[4]->setText(QStringLiteral("%1 mm").arg(m_cfg.accumLimitPosMm, 0, 'f', 1));
+    m_paramVal[5]->setText(QStringLiteral("%1 deg").arg(m_cfg.accumLimitRotDeg, 0, 'f', 1));
 
     // ── 使能按钮状态机 ──
     if (s.state == ControlState::Fault) {
