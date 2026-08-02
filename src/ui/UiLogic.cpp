@@ -37,7 +37,19 @@ ButtonStates buttonStates(const StatusSnapshot &s, bool listening)
     // 否则点了没反应，操作员会以为是程序卡死。
     b.resetFault  = (s.state == ControlState::Fault);
     b.enableTrack = (s.state == ControlState::Ready);
-    b.stopTrack   = (s.state == ControlState::Tracking);
+
+    // 停止永远应该比启动更容易触发。停止跟踪的可用范围因此比 Tracking 更宽：
+    // publishSnapshot 的优先级是 Fault > StaleFrame > Syncing > Tracking > Ready，
+    // 于是跟踪中一旦反馈跳变，ControlState 会变成 StaleFrame 或 Syncing，
+    // 而 PoseController 内部仍是 TrackState::Tracking、仍在发增量
+    // （forceFault 只在连续 stale 达到 staleFrameLimit 时才触发）。
+    // 那正是最需要能停的时刻：反馈已经异常而机器人还在动。若这里只认
+    // Tracking，按钮恰好在此时变灰，操作员只能干看着。
+    // 注意反向不成立：enableTrack 必须严格限于 Ready，放宽启用条件
+    // 等于允许在状态未知时开始发增量。
+    b.stopTrack   = (s.state == ControlState::Tracking
+                     || s.state == ControlState::StaleFrame
+                     || s.state == ControlState::Syncing);
 
     return b;
 }

@@ -65,6 +65,36 @@ private slots:
         QVERIFY(!uilogic::currentAlarms(s).packetLoss);
     }
 
+    // 缺陷 F 有两条告警通道，边沿逻辑必须逐条测。只测 accumOverLimit 时，
+    // 把 packetLoss 的 `&& !prev` 整个删掉测试仍全绿——而持续丢包下
+    // missedCount>0 && connected 每帧为真，日志照样 4 秒刷满。
+    void lossAlarmFiresOnceOnRisingEdge()
+    {
+        AlarmEdge prev;                       // 全 false
+        const StatusSnapshot s = tracking(false, 3);
+
+        const AlarmEdge first = uilogic::risingEdges(prev, s);
+        QVERIFY(first.packetLoss);            // 第一次：记一条
+
+        prev = uilogic::currentAlarms(s);
+        const AlarmEdge second = uilogic::risingEdges(prev, s);
+        QVERIFY(!second.packetLoss);          // 持续为真：不再记
+    }
+
+    void lossAlarmRefiresAfterClearing()
+    {
+        AlarmEdge prev = uilogic::currentAlarms(tracking(false, 3));
+
+        // 丢包恢复：missedCount 归零
+        const StatusSnapshot ok = tracking(false, 0);
+        QVERIFY(!uilogic::risingEdges(prev, ok).packetLoss);
+        prev = uilogic::currentAlarms(ok);
+
+        // 再次丢包：应重新记一条
+        const StatusSnapshot bad = tracking(false, 3);
+        QVERIFY(uilogic::risingEdges(prev, bad).packetLoss);
+    }
+
     // ── 按钮启用状态（缺陷 H 与状态机）──
 
     void faultEnablesOnlyReset()
@@ -75,6 +105,17 @@ private slots:
         const ButtonStates b = uilogic::buttonStates(s, true);
         QVERIFY(b.resetFault);
         QVERIFY(!b.enableTrack);              // Fault 必须先复位
+    }
+
+    // 复位不该受监听状态影响：Fault 是锁存的，停止监听不会清除它。
+    // 若 resetFault 附加 `&& listening`，操作员停掉监听后就再也清不掉故障，
+    // 只能重启程序。
+    void resetFaultIgnoresListening()
+    {
+        StatusSnapshot s;
+        s.state = ControlState::Fault;
+        QVERIFY(uilogic::buttonStates(s, true).resetFault);
+        QVERIFY(uilogic::buttonStates(s, false).resetFault);
     }
 
     void readyEnablesTracking()
@@ -96,6 +137,32 @@ private slots:
         const ButtonStates b = uilogic::buttonStates(s, true);
         QVERIFY(b.stopTrack);
         QVERIFY(!b.enableTrack);
+    }
+
+    // StaleFrame 下 ControlState 已不是 Tracking，但 PoseController 内部仍是
+    // TrackState::Tracking、仍在发增量。此时最需要能停——反馈已经异常而机器人
+    // 还在动。若 stopTrack 只认 Tracking，这里按钮是灰的，操作员只能干看着。
+    void staleFrameStillAllowsStop()
+    {
+        StatusSnapshot s;
+        s.state = ControlState::StaleFrame;
+        s.connected = true;
+        const ButtonStates b = uilogic::buttonStates(s, true);
+        QVERIFY(b.stopTrack);
+        QVERIFY(!b.enableTrack);              // 使能仍严格限于 Ready
+        QVERIFY(!b.resetFault);
+    }
+
+    // Syncing 同理：首帧对齐的瞬间，控制器已进入跟踪路径。
+    void syncingStillAllowsStop()
+    {
+        StatusSnapshot s;
+        s.state = ControlState::Syncing;
+        s.connected = true;
+        const ButtonStates b = uilogic::buttonStates(s, true);
+        QVERIFY(b.stopTrack);
+        QVERIFY(!b.enableTrack);
+        QVERIFY(!b.resetFault);
     }
 
     void notListeningLocksEverything()

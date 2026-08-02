@@ -37,7 +37,7 @@ AlarmEdge risingEdges(const AlarmEdge &prev, const StatusSnapshot &s);
 
 // ── 控件启用状态 ──
 
-// 按钮启用状态。
+// 按钮启用状态。停止跟踪的可用范围刻意宽于 Tracking，理由见 .cpp。
 ButtonStates buttonStates(const StatusSnapshot &s, bool listening);
 
 } // namespace uilogic
