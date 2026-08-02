@@ -191,6 +191,76 @@ private slots:
         QVERIFY(b.stopListen);
         QVERIFY(!b.connEditable);
     }
+
+    // ── 数值格式化 ──
+
+    void formatValueUsesThreeDecimals()
+    {
+        QCOMPARE(uilogic::formatValue(1280.4, 0), QString("1280.400 mm"));
+        QCOMPARE(uilogic::formatValue(-0.5, 4),   QString("-0.500 deg"));
+    }
+
+    void formatRkorrUsesFourDecimals()
+    {
+        // 4 位小数 = RsiCodec::buildSen 的线上量化位数。显示 3 位会把
+        // 0.00005 这种「线上就是 0」的量显示成 0.000，看不出差别。
+        QCOMPARE(uilogic::formatRkorr(0.00312, 0), QString("+0.0031 mm"));
+        QCOMPARE(uilogic::formatRkorr(-0.00312, 3), QString("-0.0031 deg"));
+    }
+
+    void formatRkorrZeroHasNoSign()
+    {
+        // 零增量是常态（未跟踪时每帧都是零），带个 "+0.0000" 很吵
+        QCOMPARE(uilogic::formatRkorr(0.0, 0), QString("0.0000 mm"));
+    }
+
+    // 上一条只测了严格的 0.0，而 0.0 走不走 kWireQuantum 分支输出都是
+    // "0.0000 mm"——把量化阈值改成 0 测试照样绿，这个常量等于没测。
+    // 真正需要钉死的是「线上会被量化成 0、但数值上不是 0」的那一段：
+    // 幅值小于量化步长时机器人根本不动，界面若打出 "+0.0000"/"-0.0000"，
+    // 操作员会以为有一个方向明确的微小修正正在发出。
+    void formatRkorrSubQuantumHasNoSign()
+    {
+        QCOMPARE(uilogic::formatRkorr(0.00003, 0),  QString("0.0000 mm"));
+        QCOMPARE(uilogic::formatRkorr(-0.00003, 3), QString("0.0000 deg"));
+    }
+
+    // ── 差值预览（缺陷 K）──
+
+    void deltaPreviewReportsNoDeviation()
+    {
+        // 原代码里 delta 起手就写入了前缀，isEmpty() 永不为真，
+        // 「无偏差」是死代码
+        Pose actual;
+        actual.x = 100.0;
+        const double target[6] = {100.0, 0, 0, 0, 0, 0};
+        QVERIFY(uilogic::deltaPreview(target, actual).contains("无偏差"));
+    }
+
+    void deltaPreviewListsDeviatingAxesOnly()
+    {
+        Pose actual;
+        actual.x = 100.0;
+        actual.z = 50.0;
+        const double target[6] = {105.0, 0, 50.0, 0, 0, 0};
+        const QString s = uilogic::deltaPreview(target, actual);
+        QVERIFY(s.contains("X"));
+        QVERIFY(!s.contains("Z"));       // Z 无偏差，不该列出
+        QVERIFY(!s.contains("无偏差"));
+    }
+
+    // 上面两条都用「精确相等」当无偏差样本，于是把容差 0.005 改成 0 测试
+    // 仍全绿——容差本身没被测到。而容差是有实际含义的：目标框是 3 位小数
+    // 输入，实际位姿是 RSI 反馈的连续量，两者永远不会位到位精确相等。
+    // 没有容差的话「无偏差」分支在真机上永不可达，缺陷 K 就以另一种形式
+    // 复活了。这里用一个亚容差偏差把这条线钉住。
+    void deltaPreviewIgnoresSubToleranceDeviation()
+    {
+        Pose actual;
+        actual.y = 0.001;                // 远小于 0.005，属于噪声不是偏差
+        const double target[6] = {0, 0, 0, 0, 0, 0};
+        QVERIFY(uilogic::deltaPreview(target, actual).contains("无偏差"));
+    }
 };
 
 QTEST_MAIN(TestUiLogic)

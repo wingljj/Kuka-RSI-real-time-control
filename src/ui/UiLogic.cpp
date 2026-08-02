@@ -1,5 +1,8 @@
 #include "ui/UiLogic.h"
 
+#include <QStringList>
+#include <cmath>
+
 namespace uilogic {
 
 AlarmEdge currentAlarms(const StatusSnapshot &s)
@@ -52,6 +55,57 @@ ButtonStates buttonStates(const StatusSnapshot &s, bool listening)
                      || s.state == ControlState::Syncing);
 
     return b;
+}
+
+// ── 数值格式化 ──
+
+namespace {
+
+const char *kAxisName[6] = {"X", "Y", "Z", "A", "B", "C"};
+
+} // namespace
+
+QString axisUnit(int axis)
+{
+    return (axis < 3) ? QStringLiteral(" mm") : QStringLiteral(" deg");
+}
+
+QString formatValue(double v, int axis)
+{
+    return QStringLiteral("%1%2").arg(v, 0, 'f', 3).arg(axisUnit(axis));
+}
+
+QString formatRkorr(double v, int axis)
+{
+    // 与 buildSen 的量化步长对齐：小于半个步长的量线上就是 0，
+    // 显示成 0 是如实反映，不是精度损失。
+    constexpr double kWireQuantum = 5e-5;
+    if (std::fabs(v) < kWireQuantum)
+        return QStringLiteral("0.0000%1").arg(axisUnit(axis));
+    return QStringLiteral("%1%2%3")
+        .arg(v > 0 ? "+" : "")
+        .arg(v, 0, 'f', 4)
+        .arg(axisUnit(axis));
+}
+
+QString deltaPreview(const double target[6], const Pose &actual)
+{
+    const double act[6] = {actual.x, actual.y, actual.z,
+                           actual.a, actual.b, actual.c};
+    // 先收集，再决定文案。原实现把前缀直接写进结果串，
+    // 于是 isEmpty() 永不为真、「无偏差」分支永不可达。
+    QStringList parts;
+    for (int i = 0; i < 6; ++i) {
+        const double d = target[i] - act[i];
+        if (std::fabs(d) > 0.005)
+            parts << QStringLiteral("%1 %2%3")
+                         .arg(kAxisName[i])
+                         .arg(d, 0, 'f', (i < 3) ? 2 : 3)
+                         .arg(axisUnit(i));
+    }
+    if (parts.isEmpty())
+        return QStringLiteral("目标与当前位姿无偏差");
+    return QStringLiteral("目标 − 当前：") + parts.join(QStringLiteral("　"));
 }
 
 } // namespace uilogic
