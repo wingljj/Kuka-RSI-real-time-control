@@ -1,6 +1,8 @@
 #include "ui/CommCards.h"
 #include <QGridLayout>
 #include <QFrame>
+#include <QPalette>
+#include <QVBoxLayout>
 
 CommCards::CommCards(QWidget *parent) : QWidget(parent)
 {
@@ -15,13 +17,17 @@ CommCards::CommCards(QWidget *parent) : QWidget(parent)
         v->setContentsMargins(6, 4, 6, 4);
         v->setSpacing(1);
         c.title = new QLabel(title, frame);
-        c.title->setStyleSheet("font-size: 8px; color: #888; font-weight: bold;");
+        QFont titleF = c.title->font();
+        titleF.setBold(true);
+        c.title->setFont(titleF);
         v->addWidget(c.title);
+        // 两行读数用系统等宽字体，不点名 Consolas：找不到该族时 QFont 不报错，
+        // 只会静默换成比例字体，两张卡片上下两行的数字从此不成列。
         c.line1 = new QLabel("--", frame);
-        c.line1->setStyleSheet("font-size: 11px; font-family: Consolas, monospace;");
+        c.line1->setFont(uilogic::monospaceFont());
         v->addWidget(c.line1);
         c.line2 = new QLabel("", frame);
-        c.line2->setStyleSheet("font-size: 8px; color: #666; font-family: Consolas, monospace;");
+        c.line2->setFont(uilogic::monospaceFont());
         v->addWidget(c.line2);
         grid->addWidget(frame, 0, col);
     };
@@ -32,13 +38,19 @@ CommCards::CommCards(QWidget *parent) : QWidget(parent)
     makeCard(m_ipoc,  "IPOC",    3);
 }
 
-void CommCards::Card::setColors(const char *bg, const char *fg)
+void CommCards::Card::setSeverity(uilogic::Severity sev)
 {
-    if (auto *p = title->parentWidget()) {
-        p->setStyleSheet(QStringLiteral(
-            "QFrame { background-color: %1; border: 1px solid %2; "
-            "border-radius: 4px; }")
-            .arg(QLatin1String(bg), QLatin1String(fg)));
+    // 只给两行读数上色，标题保持系统默认——标题是「这张卡片在说什么」，
+    // 与好坏无关。色值统一走 severityColor：这里原先用的是 Bootstrap 那组
+    // （#28a745/#ffc107/#dc3545），而 QSS 用 Tailwind 那组，同一个「正常」
+    // 在界面上是两种绿。
+    const QColor fg = uilogic::severityColor(sev);
+    for (QLabel *l : {line1, line2}) {
+        if (l->palette().color(QPalette::WindowText) == fg)
+            continue;   // 每 refreshMs 调用一次，颜色没变就别触发重绘
+        QPalette p = l->palette();
+        p.setColor(QPalette::WindowText, fg);
+        l->setPalette(p);
     }
 }
 
@@ -53,11 +65,11 @@ void CommCards::updateFrom(const StatusSnapshot &s, double configuredCycleMs)
     m_cycle.line2->setText(
         QStringLiteral("P99 %1").arg(s.cycleP99Ms, 0, 'f', 2));
     if (!s.connected)
-        m_cycle.setColors("#f5f5f5", "#ccc");
+        m_cycle.setSeverity(uilogic::Severity::Idle);
     else if (cycleBad)
-        m_cycle.setColors("#fff3cd", "#ffc107");
+        m_cycle.setSeverity(uilogic::Severity::Warn);
     else
-        m_cycle.setColors("#d4edda", "#28a745");
+        m_cycle.setSeverity(uilogic::Severity::Ok);
 
     // ── 回包耗时 ──
     const bool replyBad = s.maxReplyUs > 1000.0;
@@ -66,11 +78,11 @@ void CommCards::updateFrom(const StatusSnapshot &s, double configuredCycleMs)
     m_reply.line2->setText(
         QStringLiteral("最大 %1").arg(s.maxReplyUs, 0, 'f', 0));
     if (!s.connected)
-        m_reply.setColors("#f5f5f5", "#ccc");
+        m_reply.setSeverity(uilogic::Severity::Idle);
     else if (replyBad)
-        m_reply.setColors("#fff3cd", "#ffc107");
+        m_reply.setSeverity(uilogic::Severity::Warn);
     else
-        m_reply.setColors("#d4edda", "#28a745");
+        m_reply.setSeverity(uilogic::Severity::Ok);
 
     // ── 丢包 ──
     m_loss.line1->setText(
@@ -78,11 +90,11 @@ void CommCards::updateFrom(const StatusSnapshot &s, double configuredCycleMs)
     m_loss.line2->setText(
         QStringLiteral("累计 %1").arg(s.lifetimeLost));
     if (!s.connected)
-        m_loss.setColors("#f5f5f5", "#ccc");
+        m_loss.setSeverity(uilogic::Severity::Idle);
     else if (s.missedCount > 0 || s.lifetimeLost > 0)
-        m_loss.setColors("#f8d7da", "#dc3545");
+        m_loss.setSeverity(uilogic::Severity::Fault);
     else
-        m_loss.setColors("#d4edda", "#28a745");
+        m_loss.setSeverity(uilogic::Severity::Ok);
 
     // ── IPOC ──
     const bool ipocBad = s.missedCount > 0;  // 丢包即 IPOC 不连续
@@ -90,9 +102,9 @@ void CommCards::updateFrom(const StatusSnapshot &s, double configuredCycleMs)
     m_ipoc.line2->setText(
         ipocBad ? "不连续" : (s.connected ? "连续递增" : "—"));
     if (!s.connected)
-        m_ipoc.setColors("#f5f5f5", "#ccc");
+        m_ipoc.setSeverity(uilogic::Severity::Idle);
     else if (ipocBad)
-        m_ipoc.setColors("#f8d7da", "#dc3545");
+        m_ipoc.setSeverity(uilogic::Severity::Fault);
     else
-        m_ipoc.setColors("#d4edda", "#28a745");
+        m_ipoc.setSeverity(uilogic::Severity::Ok);
 }

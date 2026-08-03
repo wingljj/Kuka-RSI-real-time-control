@@ -1,4 +1,5 @@
 #pragma once
+#include <QColor>
 #include <QFont>
 #include <QString>
 #include "core/Pose.h"
@@ -133,5 +134,19 @@ QString deltaPreview(const double target[6], const Pose &actual);
 // 数值显示用的系统等宽字体。硬编码 "Consolas" 在没装该字体的机器上会
 // 静默回退到比例字体，小数点从此不对齐——而对齐正是读数列存在的理由。
 QFont monospaceFont();
+
+// ── 语义色 ──
+
+// 状态语义等级。与 QSS 时代的 ok/warn/fault/idle 一一对应，
+// 但现在只用来选一个 QColor，不再拼样式表字符串。
+// 刻意没有「信息/蓝色」这一档：原先用蓝表示的就绪/同步中/等待首帧都是
+// 「没出问题、还没开始跑」，与 Idle 同类，而多一档就多一次两处色板分叉的机会。
+enum class Severity { Idle, Ok, Warn, Fault };
+
+// 语义色。取值来自原 QSS 色板，但施加方式改为 QPalette /
+// QTableWidgetItem::setForeground——样式表会级联到后代部件，
+// 本次审查里 "QFrame{...}" 污染卡片内每个 QLabel 就是这么来的
+//（QLabel 继承自 QFrame）。直接设颜色没有级联，也就没有这一类错误。
+QColor severityColor(Severity s);
 
 } // namespace uilogic

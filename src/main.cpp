@@ -54,18 +54,11 @@ int main(int argc, char **argv)
                 .arg(tried.join("\n")));
     }
 
-    // 加载全局样式表
-    const QStringList qssPaths{
-        appDir.filePath("config/style.qss"),
-        appDir.filePath("../src/ui/style.qss"),
-    };
-    for (const QString &qss : qssPaths) {
-        QFile f(qss);
-        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            app.setStyleSheet(QString::fromUtf8(f.readAll()));
-            break;
-        }
-    }
+    // 刻意不加载任何样式表：界面用系统原生外观。硬编码的浅色背景会盖掉
+    // 操作员在系统层面设的高对比度主题（工业现场的视觉辅助设置），
+    // 而样式表选择器还会级联到后代部件——本次审查里 "QFrame{...}"
+    // 污染状态卡片内每个 QLabel 就是这么来的。语义色改由
+    // uilogic::severityColor 经 QPalette 施加，不级联。
 
     MainWindow w(cfg);
     w.show();

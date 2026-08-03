@@ -127,10 +127,4 @@ private:
     std::array<QLabel *, 6> m_paramVal{};
 
     bool m_suppressTargetSignal = false;
-
-    // 两张表所需的总宽（由各自列宽相加得出，见 buildLeftPanel /
-    // buildMidPanel）。面板宽度取它而不是写死常数：写死时表比面板宽就出
-    // 横向滚动条，而横向滚动条会从下方吃掉半行，把第六行 C 挤出可视区。
-    int m_targetTableWidth = 0;
-    int m_poseTableWidth   = 0;
 };

@@ -6,7 +6,8 @@
 #include "net/SharedState.h"
 
 // 累积修正进度条：6 轴各一行，标签 + 进度条 + 数值 + 状态指示。
-// 绿色(<50%) / 琥珀(50–80%) / 深琥珀(80–100%) / 红色(>100%)。
+// 档位由状态文字给出：正常(<50%) / 注意(50–80%) / 警告(80–100%) / 超限(>100%)，
+// 文字色跟着 uilogic::severityColor。进度条本身保持原生外观（理由见 .cpp）。
 class CumulativeBar : public QWidget
 {
     Q_OBJECT

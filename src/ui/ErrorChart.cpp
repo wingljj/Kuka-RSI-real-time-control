@@ -3,7 +3,9 @@
 #include <QChart>
 #include <QGridLayout>
 #include <QPainter>
+#include <QPalette>
 #include <algorithm>
+#include "ui/UiLogic.h"
 
 ErrorChart::ErrorChart(int windowSeconds, Mode mode, QWidget *parent)
     : QWidget(parent), m_windowSeconds(std::max(1, windowSeconds)),
@@ -64,7 +66,15 @@ ErrorChart::ErrorChart(int windowSeconds, Mode mode, QWidget *parent)
         isPos ? "等待 RSI 数据…\n请启动 KRL PoseTrack 程序"
               : "等待姿态误差数据…", this);
     m_placeholder->setAlignment(Qt::AlignCenter);
-    m_placeholder->setStyleSheet("color: #888; font-size: 14px;");
+    // 「无数据」正是 Severity::Idle 那一档，色值走同一个函数而不是再写一个灰。
+    // 字号在系统字号上加两号：这段字要盖住整张空图，与图内的轴标签同号会
+    // 看起来像图的一部分。
+    QPalette phPal = m_placeholder->palette();
+    phPal.setColor(QPalette::WindowText, uilogic::severityColor(uilogic::Severity::Idle));
+    m_placeholder->setPalette(phPal);
+    QFont phFont = m_placeholder->font();
+    phFont.setPointSize(phFont.pointSize() + 2);
+    m_placeholder->setFont(phFont);
 
     // placeholder 与图表叠在同一格：无数据时盖住空图，有数据时让位给曲线。
     auto *lay = new QGridLayout(this);

@@ -54,6 +54,19 @@ const ParamRow kParams[6] = {
     {"累积上限姿态",  &AppConfig::accumLimitRotDeg, " deg",   1},
 };
 
+// 把表格宽度钉死在「列宽之和 + 边框」上，使 viewport 正好等于列宽之和。
+// 和必须读回实际列宽，不能拿打算设的那几个数相加：QHeaderView 会把过窄的列
+// 抬到 minimumSectionSize，实测左表因此比算出来的多 1px。横向滚动条是关掉的
+//（见 fitTableToRows），多出来的这 1px 不会以滚动条示警，只会静默裁掉末列
+// 右对齐数值的尾巴——而尾巴上正是单位。
+void pinTableWidth(QTableWidget *tbl)
+{
+    int sum = 0;
+    for (int c = 0; c < tbl->columnCount(); ++c)
+        sum += tbl->columnWidth(c);
+    tbl->setFixedWidth(sum + 2 * tbl->frameWidth());
+}
+
 } // namespace
 
 void MainWindow::fitTableToRows(QTableWidget *tbl, int rows)
@@ -94,8 +107,10 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     auto *btnBar = new QHBoxLayout;
     btnBar->setSpacing(6);
 
+    // 按钮一律原生外观。原先靠动态属性 + QSS 属性选择器染成蓝/橙/红，
+    // 那些属性只为选择器存在，样式表一删就是死代码。危险动作的区分改由
+    // 文字（「停止跟踪」）和启用状态承担——底色在高对比度主题下本就不可信。
     m_listenBtn = new QPushButton("开始监听", this);
-    m_listenBtn->setProperty("cssClass", "primary");
     connect(m_listenBtn, &QPushButton::clicked, this, &MainWindow::onStartListening);
     btnBar->addWidget(m_listenBtn);
 
@@ -103,24 +118,19 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     connect(m_unlistenBtn, &QPushButton::clicked, this, &MainWindow::onStopListening);
     btnBar->addWidget(m_unlistenBtn);
 
-    auto *sep1 = new QLabel("→", this);
-    sep1->setStyleSheet("color: #D1D5DB; font-size: 14px;");
-    btnBar->addWidget(sep1);
+    btnBar->addWidget(new QLabel("→", this));
 
     m_resetFaultBtn = new QPushButton("复位故障", this);
-    m_resetFaultBtn->setProperty("cssClass", "warning");
     m_resetFaultBtn->setEnabled(false);
     connect(m_resetFaultBtn, &QPushButton::clicked, this, &MainWindow::onResetFault);
     btnBar->addWidget(m_resetFaultBtn);
 
     m_enableBtn = new QPushButton("使能跟踪", this);
     m_enableBtn->setEnabled(false);
-    m_enableBtn->setProperty("cssClass", "primary");
     connect(m_enableBtn, &QPushButton::clicked, this, &MainWindow::onPrepareTracking);
     btnBar->addWidget(m_enableBtn);
 
     m_stopBtn = new QPushButton("停止跟踪", this);
-    m_stopBtn->setProperty("cssClass", "danger");
     connect(m_stopBtn, &QPushButton::clicked, this, &MainWindow::onStopTracking);
     btnBar->addWidget(m_stopBtn);
 
@@ -128,11 +138,20 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 
     outer->addLayout(btnBar);
 
-    // 联锁拦截
+    // 联锁拦截。红字 + 加粗 + 原生边框：文字色用 severityColor(Fault)，
+    // 背景不动——写死的浅红底会盖掉操作员设的高对比度主题，而这条恰恰是
+    // 最不该看不清的一行。
     m_interlockLabel = new QLabel(this);
-    m_interlockLabel->setStyleSheet(
-        "color: #DC2626; font-weight: bold; padding: 4px 10px; "
-        "background-color: #FEF2F2; border: 1px solid #FECACA; border-radius: 4px;");
+    {
+        QPalette p = m_interlockLabel->palette();
+        p.setColor(QPalette::WindowText,
+                   uilogic::severityColor(uilogic::Severity::Fault));
+        m_interlockLabel->setPalette(p);
+        QFont f = m_interlockLabel->font();
+        f.setBold(true);
+        m_interlockLabel->setFont(f);
+    }
+    m_interlockLabel->setFrameShape(QFrame::StyledPanel);
     m_interlockLabel->setWordWrap(true);
     m_interlockLabel->hide();
     outer->addWidget(m_interlockLabel);
@@ -143,16 +162,16 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 
     // 两栏宽度都由各自表格的列宽反推，而不是先定 360/420 再硬塞列进去：
     // 后者只能靠缩字号或裁尾巴收场，而这两张表存在的理由就是把数字看全。
-    // kPanelChrome 是 GroupBox 边框 + 布局边距实测占用（表宽 452 时 viewport
-    // 只剩 442，缺的 10px 加上左右各 12 的外边距）。
-    const int kPanelChrome = 34;
-
+    // 两张表在 build* 里已按列宽之和 setFixedWidth，所以这里取 sizeHint 即可，
+    // 不再写「+34」那种实测常数：那 34 是 QSS 给 QGroupBox 的 padding 加边框，
+    // 样式表一删就不再成立，而算少一像素就是末列被裁（横向滚动条已关掉，
+    // 超宽不会以滚动条示警，直接吃掉尾巴上的单位）。
     auto *leftPanel  = buildLeftPanel();
-    leftPanel->setFixedWidth(m_targetTableWidth + kPanelChrome);
+    leftPanel->setFixedWidth(leftPanel->sizeHint().width());
     body->addWidget(leftPanel);
 
     auto *midPanel   = buildMidPanel();
-    midPanel->setFixedWidth(m_poseTableWidth + kPanelChrome);
+    midPanel->setFixedWidth(midPanel->sizeHint().width());
     body->addWidget(midPanel);
 
     auto *rightPanel = buildRightPanel();
@@ -254,26 +273,31 @@ QWidget *MainWindow::buildLeftPanel()
     tbl->setShowGrid(false);
     tbl->setSelectionMode(QAbstractItemView::NoSelection);
     tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    tbl->setStyleSheet(
-        "QTableWidget { border: none; font-size: 10px; } "
-        "QTableWidget::item { padding: 0px 4px; }");
     // 列宽全部显式给出，不靠 stretchLastSection：实测它并没有把末列收到
     // 剩余宽度（末列停在 defaultSectionSize=100，四列合计 338 > viewport 316），
     // 于是横向滚动条常驻并从下方吃掉半行，把第六行 C 压出可视区。
     // 「调整」列只装两个 22px 按钮加 2px 间距，60px 够用且留出余量。
-    QFont tgtNumF = uilogic::monospaceFont();
-    tgtNumF.setPointSize(10);
+    // 字号不再点名 10：删掉 QSS 后系统字号说了算，写死 10 会让读数比周围的
+    // 标签小一号，而这几列正是要最先被看清的。
+    const QFont tgtNumF = uilogic::monospaceFont();
     const QFontMetrics tgtFm(tgtNumF);
     // 当前值列要放得下最宽的合法读数 "-4000.000 mm"；目标值列是 QDoubleSpinBox，
     // 还要额外留出上下箭头的宽度（spinbox 有自己的边框，比表格单元多吃 8px）。
     const int wLive = tgtFm.horizontalAdvance("-4000.000 mm") + 14;
-    const int wSpin = wLive + 18;
+    const int wSpin = wLive + 30;
+    const int wAxis = tgtFm.horizontalAdvance("W") + 16;
+    // +/- 是方形小按钮。边长跟着字高走：写死 22 是配合 QSS 里 12px 字号的，
+    // 回到系统字号后 "+" 会顶到边框上。
+    const int kStepBtn = std::max(22, tgtFm.height() + 6);
+    const int wStep = 2 * kStepBtn + 10;
     tbl->horizontalHeader()->setStretchLastSection(false);
-    tbl->setColumnWidth(0, 28);
+    tbl->setColumnWidth(0, wAxis);
     tbl->setColumnWidth(1, wSpin);
     tbl->setColumnWidth(2, wLive);
-    tbl->setColumnWidth(3, 60);
-    m_targetTableWidth = 28 + wSpin + wLive + 60;
+    tbl->setColumnWidth(3, wStep);
+    // 表格自己钉住宽度，面板宽度再由它反推（见构造函数）。宽度不再存成成员：
+    // 面板已经能从 sizeHint 拿到，存一份只会多一个「写了没人读」的字段。
+    pinTableWidth(tbl);
 
     for (int i = 0; i < 6; ++i) {
         // 轴名
@@ -289,18 +313,18 @@ QWidget *MainWindow::buildLeftPanel()
         sp->setSingleStep(0.5);
         sp->setSuffix(kAxisUnit(i));
         sp->setKeyboardTracking(false);
-        sp->setStyleSheet("QDoubleSpinBox { border: 1px solid #D9E0E7; border-radius: 3px; "
-                          "font-family: Consolas, monospace; padding: 1px 4px; } "
-                          "QDoubleSpinBox:focus { border-color: #2563EB; }");
+        // 等宽字体让六个输入框里的小数点成列；边框和聚焦高亮交回给系统主题，
+        // 原来那两条选择器画的浅灰边框在深色主题下会消失。
+        sp->setFont(tgtNumF);
         tbl->setCellWidget(i, 1, sp);
         m_targetSpin[i] = sp;
 
         // 当前值 label
+        // 只读读数：等宽 + 右对齐就够了。原先那块浅灰底 + 圆角让它看起来像
+        // 一个可以输入的框，而它恰恰是不可编辑的那一列。
         auto *live = new QLabel("--", tbl);
         live->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        live->setStyleSheet(
-            "font-family: Consolas, monospace; font-size: 10px; "
-            "color: #1F2937; background: #F3F4F6; border-radius: 2px; padding: 2px 6px;");
+        live->setFont(tgtNumF);
         tbl->setCellWidget(i, 2, live);
         m_liveLabel[i] = live;
 
@@ -310,13 +334,11 @@ QWidget *MainWindow::buildLeftPanel()
         btnL->setContentsMargins(0, 0, 0, 0);
         btnL->setSpacing(2);
         auto *minus = new QPushButton("−", btnW);
-        minus->setFixedSize(22, 22);
-        minus->setStyleSheet("QPushButton { font-size: 12px; padding: 0; }");
+        minus->setFixedSize(kStepBtn, kStepBtn);
         btnL->addWidget(minus);
         m_stepMinus[i] = minus;
         auto *plus = new QPushButton("+", btnW);
-        plus->setFixedSize(22, 22);
-        plus->setStyleSheet("QPushButton { font-size: 12px; padding: 0; }");
+        plus->setFixedSize(kStepBtn, kStepBtn);
         btnL->addWidget(plus);
         m_stepPlus[i] = plus;
         btnL->addStretch();
@@ -354,23 +376,23 @@ QWidget *MainWindow::buildLeftPanel()
     stepRow->addStretch();
     tgtV->addLayout(stepRow);
 
-    // 差值预览（浅黄提示条）
+    // 差值预览。原生边框代替浅黄底：它列的是「目标 − 当前」的逐轴数字，
+    // 等宽字体让这些数字成列比底色更要紧；而黄底暗示「警告」，实际上
+    // 有偏差是编辑目标后的常态，不是异常。
     m_deltaPreview = new QLabel("差值预览：编辑目标值后此处显示当前偏差", tgtBox);
-    m_deltaPreview->setStyleSheet(
-        "font-family: Consolas, monospace; font-size: 9px; color: #92400E; "
-        "padding: 4px 8px; background-color: #FEF3C7; border-radius: 4px;");
+    m_deltaPreview->setFont(uilogic::monospaceFont());
+    m_deltaPreview->setFrameShape(QFrame::StyledPanel);
     m_deltaPreview->setWordWrap(true);
     tgtV->addWidget(m_deltaPreview);
 
     // 操作按钮
     auto *actRow = new QHBoxLayout;
     auto *setCur = new QPushButton("读取当前值", tgtBox);
-    setCur->setProperty("cssClass", "secondary");
     connect(setCur, &QPushButton::clicked, this, &MainWindow::onReadActualTarget);
     actRow->addWidget(setCur);
+    // 「应用目标」不再涂成蓝底白字：强调交给下面的 setDefault，那是平台自带的
+    // 默认按钮外观，操作员在别的 Windows 程序里已经认得它。
     auto *apply = new QPushButton("应用目标", tgtBox);
-    apply->setStyleSheet(
-        "QPushButton { background-color: #2563EB; color: #FFF; font-weight: bold; }");
     // setDefault 只在按钮的 autoDefault 打开时生效（QPushButton 在非对话框
     // 父窗口里默认关闭）。updateApplyButton 靠 setDefault 表达「改了没发」，
     // 少了这行它就是一次静默的空操作。
@@ -379,7 +401,6 @@ QWidget *MainWindow::buildLeftPanel()
     actRow->addWidget(apply);
     m_applyBtn = apply;
     auto *undo = new QPushButton("撤销修改", tgtBox);
-    undo->setProperty("cssClass", "secondary");
     connect(undo, &QPushButton::clicked, this, &MainWindow::onUndoTarget);
     actRow->addWidget(undo);
     actRow->addStretch();
@@ -417,9 +438,6 @@ QWidget *MainWindow::buildMidPanel()
     tbl->setShowGrid(false);
     tbl->setSelectionMode(QAbstractItemView::NoSelection);
     tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    tbl->setStyleSheet(
-        "QTableWidget { border: none; font-size: 10px; } "
-        "QTableWidget::item { padding: 0px 6px; }");
     // 列宽从字体度量算出来，不写死像素：数值列必须放得下最宽的合法读数
     // "-4000.000 mm"（轴行程上限，实测 94px），写死 86 时 1804.000 这种
     // 四位坐标会换行成两行，把整表撑高又顶出滚动条。
@@ -429,11 +447,12 @@ QWidget *MainWindow::buildMidPanel()
     // 注：col4 原先的 100 不是被表头文字「RKorr 输出」顶出来的（实测
     // minimumSectionSize=28，表头文字只需 47px），它只是 Qt 的
     // defaultSectionSize，改小完全生效——别去找那个不存在的约束。
-    QFont numF = uilogic::monospaceFont();
-    numF.setPointSize(10);
+    const QFont numF = uilogic::monospaceFont();
     const QFontMetrics numFm(numF);
-    const int kCellPad = 14;   // 样式表 padding 0px 6px，两侧共 12，留 2px 余量
-    const int kAxisCol = 28;
+    // 单元格左右留白。原来是样式表里的 padding 0px 6px，删掉样式表后由这个
+    // 余量顶上——原生 item 只有一两像素的边距，不留出来数字会贴着列线。
+    const int kCellPad = 14;
+    const int kAxisCol = numFm.horizontalAdvance("W") + 16;
     // 位姿 / 目标：最宽读数是行程上限；RKorr 每帧增量受限速约束，
     // 量级远小（vmax 13mm/s × 12ms ≈ 0.16mm），按自己的最宽串单独算。
     const int wData  = numFm.horizontalAdvance("-4000.000 mm") + kCellPad;
@@ -456,7 +475,8 @@ QWidget *MainWindow::buildMidPanel()
     tbl->setColumnWidth(4, wRkorr);
     // 面板宽度反过来由列宽决定，而不是先定 420 再硬塞五列进去：
     // 后者只能靠缩字号或裁尾巴收场，而这张表存在的理由就是把数字看全。
-    m_poseTableWidth = kAxisCol + 2 * wData + wError + wRkorr;
+    // 表格自己钉住宽度，面板宽度再由它反推（见构造函数）。
+    pinTableWidth(tbl);
     // 六行必须一屏放下：默认行高下只露出 X/Y/Z/A，B 与 C 被挤到滚动条以外，
     // 轴名从「看不见」变成「要滚动才看得见」，对操作员是同一个问题。
     // 高度交给 fitTableToRows 按实测行高算（见其声明处的理由）。
@@ -478,7 +498,7 @@ QWidget *MainWindow::buildMidPanel()
         act->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         act->setFlags(Qt::NoItemFlags);
         auto actF = numF; actF.setBold(true); act->setFont(actF);
-        act->setForeground(QColor("#1F2937"));
+        // 不设前景色：这一列没有语义，写死深灰会在深色主题下变成黑底黑字。
         tbl->setItem(i, 1, act);
         m_actualItem[i] = act;
 
@@ -487,7 +507,9 @@ QWidget *MainWindow::buildMidPanel()
         err->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         err->setFlags(Qt::NoItemFlags);
         auto errF = numF; errF.setBold(true); err->setFont(errF);
-        err->setForeground(QColor("#64748B"));
+        // 首帧到来前是 "--"，属于「无数据」这一档；有数据后由 onRefresh 按
+        // 误差占比改成 Ok/Warn/Fault。
+        err->setForeground(uilogic::severityColor(uilogic::Severity::Idle));
         // 姿态三行额外挂 tooltip：单元格里的 Rx/Ry/Rz 前缀足以拦住误读，
         // 但拦住之后操作员会问「那这到底是什么」，答案要在原地拿得到。
         // 位置三行的 tooltip 是空串（见 errorCellTooltip），不设。
@@ -502,7 +524,6 @@ QWidget *MainWindow::buildMidPanel()
         tgt->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         tgt->setFlags(Qt::NoItemFlags);
         tgt->setFont(numF);
-        tgt->setForeground(QColor("#2563EB"));
         tbl->setItem(i, 3, tgt);
         m_targetItem[i] = tgt;
 
@@ -538,11 +559,12 @@ QWidget *MainWindow::buildMidPanel()
         const int row = i / 2;
         const int col = (i % 2) * 2;
         auto *name = new QLabel(kParams[i].label, safeBox);
-        name->setProperty("cssClass", "fieldLabel");
         paramForm->addWidget(name, row, col);
 
+        // 只读数值：等宽 + 右对齐，六个参数的小数点成列才能一眼看出量级差异。
+        // 原先靠动态属性让 QSS 的 readout 规则挑中它，属性一删就得自己带字体。
         auto *val = new QLabel("--", safeBox);
-        val->setProperty("cssClass", "readout");
+        val->setFont(uilogic::monospaceFont());
         val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         paramForm->addWidget(val, row, col + 1);
         m_paramVal[i] = val;
@@ -656,7 +678,13 @@ void MainWindow::onEditParams()
     for (QWidget *f : fields) f->setEnabled(!locked);
     if (locked) {
         auto *note = new QLabel("运行中：参数已锁定。停止跟踪后可修改。", &dlg);
-        note->setStyleSheet("color: #D97706; font-weight: bold;");
+        QPalette notePal = note->palette();
+        notePal.setColor(QPalette::WindowText,
+                         uilogic::severityColor(uilogic::Severity::Warn));
+        note->setPalette(notePal);
+        QFont noteF = note->font();
+        noteF.setBold(true);
+        note->setFont(noteF);
         form->addRow(note);
     }
 
@@ -874,23 +902,30 @@ void MainWindow::onRefresh()
         m_actualItem[i]->setText(uilogic::formatValue(act[i], i));
         // 实时误差（着色）
         const double ep = (i < 3) ? s.errorPosPct : s.errorRotPct;
-        const QColor errColor = (ep >= 1.0)   ? QColor("#DC2626")
-                                : (ep >= 0.8) ? QColor("#D97706")
-                                : (ep >= 0.5) ? QColor("#D97706")
-                                :               QColor("#16A34A");
+        // 色值来自 uilogic::severityColor 而不是就地写十六进制：原先内联样式
+        // 与 QSS 各带一套色板，同一个「正常」在界面上是两种绿。
+        const QColor errColor = uilogic::severityColor(
+            (ep >= 1.0)   ? uilogic::Severity::Fault
+            : (ep >= 0.5) ? uilogic::Severity::Warn
+                          : uilogic::Severity::Ok);
         // formatError 而非 formatValue：姿态三行要带 Rx/Ry/Rz 前缀，
         // 否则它们会被行首的 A/B/C 认领（理由见 UiLogic.h 误差列一节）。
         m_errorItem[i]->setText(uilogic::formatError(err[i], i));
         m_errorItem[i]->setForeground(errColor);
         // 目标值
         m_targetItem[i]->setText(uilogic::formatValue(tgt[i], i));
-        // RKorr：零值灰、非零蓝——一眼看出哪个轴在动。零值判定与 formatRkorr
-        // 共用 uilogic::isRkorrZero，两处各写一个 5e-5 时改一处漏一处就会出现
-        // 「显示 0.0000 却是蓝色」这种自相矛盾的格。
+        // RKorr：零值压成灰（Idle），非零恢复系统默认文字色——一眼看出哪个轴
+        // 在动。非零那档刻意不再涂蓝：蓝在 Severity 里没有对应档，再引入一个
+        // 色值就又是一套独立色板。零值判定与 formatRkorr 共用
+        // uilogic::isRkorrZero，两处各写一个 5e-5 时改一处漏一处就会出现
+        // 「显示 0.0000 却不是灰的」这种自相矛盾的格。
         const double rk = (&s.lastDelta.x)[i];
         m_rkorrItem[i]->setText(uilogic::formatRkorr(rk, i));
-        m_rkorrItem[i]->setForeground(
-            uilogic::isRkorrZero(rk) ? QColor("#9CA3AF") : QColor("#2563EB"));
+        if (uilogic::isRkorrZero(rk))
+            m_rkorrItem[i]->setForeground(
+                uilogic::severityColor(uilogic::Severity::Idle));
+        else
+            m_rkorrItem[i]->setData(Qt::ForegroundRole, QVariant());
         // 左栏当前值
         m_liveLabel[i]->setText(uilogic::formatValue(act[i], i));
     }

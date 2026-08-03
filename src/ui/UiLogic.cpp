@@ -225,4 +225,18 @@ QFont monospaceFont()
     return QFontDatabase::systemFont(QFontDatabase::FixedFont);
 }
 
+QColor severityColor(Severity s)
+{
+    // 唯一色板。原先内联样式用 Bootstrap 的一组（#28a745/#ffc107/#dc3545）、
+    // QSS 用 Tailwind 的另一组（#16A34A/#D97706/#DC2626），同一个「正常」
+    // 在界面上是两种绿——两处各写一遍色值，迟早各走各的。
+    switch (s) {
+    case Severity::Ok:    return QColor(0x16, 0xA3, 0x4A);
+    case Severity::Warn:  return QColor(0xD9, 0x77, 0x06);
+    case Severity::Fault: return QColor(0xDC, 0x26, 0x26);
+    case Severity::Idle:  break;
+    }
+    return QColor(0x6B, 0x72, 0x80);
+}
+
 } // namespace uilogic
