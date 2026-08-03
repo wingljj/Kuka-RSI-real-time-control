@@ -25,10 +25,15 @@ void PoseController::configure(const AppConfig &cfg)
     const double cycleS = std::fabs(cfg.cycleMs) / 1000.0;
     // 这两个是"一个完整周期的满预算"上限，不是每帧照发的常数：step() 按
     // 实测帧间隔在 [0, 1] 区间内按比例发放（见 step() 里的长注释）。
+    // 正因为是按比例发放，vmax 才是真正的 mm/s 速度上限，而不只是"每帧配额"：
+    // cycleMs 只决定单帧能领到的上限，填错档位（12ms vs 真实 4ms）会让限值的
+    // 时间分辨率变粗，但不会让平均速度超过 vmax。旧的按周期发放没有这个性质。
     m_stepLimitPos = std::fabs(cfg.vmaxPosMmS) * cycleS;
     m_stepLimitRot = std::fabs(cfg.vmaxRotDegS) * cycleS;
 
     // 轨迹时长在 setTarget 时经 m_cfg.targetTrajectoryMs 使用（≤0 = 立即完成）。
+    // 注意它是"轨迹自己的时间"的时长，而轨迹时间由 step() 按实测墙钟推进，
+    // 不是墙钟时长：通信静默期间轨迹不走，所以实际耗时 ≥ 这个值（见 step()）。
 
     // 非正周期会让步长上限为 0，表现为静默不动而 state() 仍报 Tracking。
     // 用粘滞标志承载，而不是 Fault 状态——Fault 会被随后的 beginSession 清除。
@@ -109,32 +114,28 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
         return Pose{};
     }
 
-    // 目标来源：轨迹未完成时用轨迹采样（五次多项式 + Slerp，起点速度 0），
-    // 完成即最终目标（固定时长语义：到点即达，而非指数逼近永远追不上）。
-    // 先采样后推进：目标变化后的首周期采样 = 起点（= 实际），增量 0，
-    // 运动平滑起步；推进用配置周期换算的秒数。
-    Pose errSrc = m_traj.isFinished() ? m_target : m_traj.sample();
-    if (!m_traj.isFinished())
-        m_traj.advance(m_cfg.cycleMs / 1000.0);
-
-    // 位置误差：逐轴差（无奇异问题）。姿态误差：SO(3) 最短旋转（旋转向量，
-    // 世界坐标 rad）——奇异/边界目标下不再逐轴 wrap 跳变。
-    const Pose errPos = poseSub(errSrc, actual);   // 仅用 x/y/z
-    const poseops::Quat qA = poseops::quatFromABC(actual.a, actual.b, actual.c);
-    const poseops::Quat qT = poseops::quatFromABC(errSrc.a, errSrc.b, errSrc.c);
-    const poseops::Quat qE = poseops::quatError(qT, qA);
-    double rotErr[3];
-    poseops::rotVecFromQuat(qE, rotErr);
-
-    // ── 本周期的步长预算：按实际流逝时间发放，上限一个配置周期 ──
+    // ── 本周期的时间量：距上一次 step 真正过去的墙钟，上限一个配置周期 ──
     //
-    // 为什么不能按配置周期发放：RSI 是增量接口，"这一帧该发多少"本来就是
+    // 这一个值同时给两件事计价：轨迹推进多少、步长限值发放多少。刻意只有
+    // 一个时间源，理由见下面"为什么轨迹也按它推进"。
+    //
+    // 为什么限值不能按配置周期发放：RSI 是增量接口，"这一帧该发多少"本来就是
     // "距上次发送过去了多久 × 允许速度"。用配置周期是个隐含假设——每帧恰好
     // 间隔一个周期。主机线程停顿（OS 调度、GC 等）时这个假设破裂：KRC 继续
     // 按 12ms 发包，几十个数据报积压在接收缓冲里，主机恢复后在几毫秒墙钟内
     // 连续排空；而每一帧都带着间隙前那个陈旧位姿（KRC 没收到修正、机器人
     // 没动），误差始终顶格。于是每帧都吐满额增量：实测一次 500ms 停顿排空
     // 41 帧 = 24.6mm，正是 KRC 侧 POSCORR 硬限（25mm）的量级。
+    //
+    // 【这套机制真正的价值，比上面那条更强】按配置周期发放时，vmax 其实是
+    // "每帧配额"而不是速度上限——只有当"帧率 = 1/cycleMs"成立时两者才等价。
+    // 而 cycleMs 是人填的配置项，没有任何东西保证它等于 KRC 的真实 IPO 节拍：
+    // KUKA 的 IPO 只有 4ms 与 12ms 两档，填错一档是最容易犯的配置错误。把它
+    // 配成 12ms 而真实节拍是 4ms，旧码就每 4ms 发一次 0.6mm = 150 mm/s，是
+    // 配置 vmax（50 mm/s）的 3 倍，而界面上的每一个数字都正常。按实测墙钟
+    // 发放后，同一个错配下恰好还是 50 mm/s——vmax 从"每帧配额"变成了真正的
+    // 速度上限，cycleMs 配错只降低限值的时间分辨率，再也不能突破幅值。
+    // 这条路径与积压排空无关，是同一个改动顺带、彻底堵掉的另一条超速路径。
     //
     // 为什么不能改用"实测周期 < 阈值就不发"：实测按真实 12ms 边界配速的
     // 118 帧里，有 10 帧（8.5%）的实测间隔低于 1ms——主机被抢占一次（实测
@@ -154,10 +155,51 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
     const double elapsedMs = (std::isfinite(sinceLastStepMs) && sinceLastStepMs > 0.0)
                                  ? std::min(sinceLastStepMs, cycleMsAbs)
                                  : 0.0;
-    // elapsedMs == cycleMsAbs 时比例恰为 1.0（同值相除），限值与封顶前逐位相同。
+    // 比例相对"按配置周期"单调不增，且 Δt ≥ 周期时相等——不是"处处逐位
+    // 相同"。相等只在 Δt ≥ 周期时成立：那时 min(Δt,T)/T 在浮点上恰为 1.0，
+    // x * 1.0 == x 逐位精确；Δt 只比周期小 1 个 ULP 就不再相等。所以正常
+    // 配速下的代价不是零，而是一点等效速度亏损：封顶砍掉偏长的一侧、却照实
+    // 计价偏短的一侧，双侧抖动下实测亏损约 1–3%（帧间隔 sd 0.5ms 时 1.66%）。
+    // 这个方向是安全的（只会更慢），量级也远小于 vmax 本身该留的余量。
     const double budget       = elapsedMs / cycleMsAbs;
     const double stepLimitPos = m_stepLimitPos * budget;
     const double stepLimitRot = m_stepLimitRot * budget;
+
+    // 目标来源：轨迹未完成时用轨迹采样（五次多项式 + Slerp，起点速度 0），
+    // 完成即最终目标（固定时长语义：到点即达，而非指数逼近永远追不上）。
+    // 先采样后推进：目标变化后的首周期采样 = 起点（= 实际），增量 0，
+    // 运动平滑起步。
+    //
+    // 【为什么轨迹也按 elapsedMs 推进，而不是按配置周期】它必须与步长限值
+    // 共用同一个时间基。两个时间基混用时，积压排空会把五次多项式"起点速度
+    // 0"的性质整个抹掉：41 帧积压各自只领到几十微秒的限值预算（幅值确实
+    // 安全了），可每帧都把轨迹推进一整个配置周期，一次排空推进 492ms——
+    // targetTrajectoryMs 默认 1000ms，那是半条轨迹。于是恢复后第一个满预算
+    // 帧立刻顶格 0.6mm，而没有排空时同一帧是 0.000mm。操作员层面的后果（实测，
+    // 见 test_pose_controller 的 trajectoryTimeBase_* 两个用例）：同一条 2mm
+    // 移动指令，无排空时 82 帧 / 984ms（2.0 mm/s），排空 41 帧后只剩 41 帧 /
+    // 492ms（4.1 mm/s）——快一倍，且快多少完全由网络抖动决定。改成同源之后
+    // 是 82 帧 vs 81 帧，差的那一帧正是排空真正占用的 3ms 墙钟。
+    //
+    // 【代价，用户已知并接受】KRC 停发期间轨迹不推进，所以操作员设的
+    // "1 秒移动"实际会长于 1 秒，滞后量 = 这条轨迹跨过的累计静默时长。
+    // 为什么统一时间基比"1 秒就是 1 秒"更重要：滞后是可预期的、单调的、
+    // 方向安全的（只会更慢，永不超速），而且操作员看着运动没走完就知道通信
+    // 在丢帧——它本身是个诚实的指示。而混合时间基下的行为根本无法推理：
+    // 同一条指令的实际速度成了网络抖动的函数，既没法事前预演，也没法事后
+    // 从日志复现。安全关键代码里"行为可推理"必须排在"标称时长准确"之前。
+    Pose errSrc = m_traj.isFinished() ? m_target : m_traj.sample();
+    if (!m_traj.isFinished())
+        m_traj.advance(elapsedMs / 1000.0);
+
+    // 位置误差：逐轴差（无奇异问题）。姿态误差：SO(3) 最短旋转（旋转向量，
+    // 世界坐标 rad）——奇异/边界目标下不再逐轴 wrap 跳变。
+    const Pose errPos = poseSub(errSrc, actual);   // 仅用 x/y/z
+    const poseops::Quat qA = poseops::quatFromABC(actual.a, actual.b, actual.c);
+    const poseops::Quat qT = poseops::quatFromABC(errSrc.a, errSrc.b, errSrc.c);
+    const poseops::Quat qE = poseops::quatError(qT, qA);
+    double rotErr[3];
+    poseops::rotVecFromQuat(qE, rotErr);
 
     // 第 1 层限值：位置按欧氏范数限幅（三轴同时到限时合成速度不超 √3×——
     // 逐轴 clamp 会让对角运动达到 √3×limit），姿态按旋转向量范数限幅。

@@ -319,6 +319,62 @@ private slots:
         QTRY_COMPARE(r.snap().state, ControlState::Tracking);
     }
 
+    // ── First 分支重开预算基准（onDatagram 里那句 m_sinceLastStep.start()）──
+    //
+    // 这条路径与上面的突发排空是两件不同的事，很容易被混为一谈：主机侧停顿
+    // 时 KRC 的 IPOC 流是连续的，IpocTracker 从未被 reset，所以排空帧一律
+    // 分类为 Normal，根本进不了 First 分支。IpocEvent::First 只可能出现在
+    // IpocTracker::reset() 之后，而生产里只有 onWatchdog()/start() 会 reset
+    // ——也就是说这一支只在"看门狗抢在 readyRead 之前赢得竞争"时才会走到。
+    //
+    // 用"KRC 停发"而不是"主机停顿"来构造它：停发期间事件循环照转、且没有任何
+    // 数据报与看门狗抢事件，看门狗必然先跑，这是那场竞争的确定性一侧。想在
+    // 测试里制造真正的竞争（既有积压又让定时器抢先）是抛硬币，不该写进用例。
+    //
+    // 钉住的性质：恢复后第一次 step 的预算从"恢复这一刻"起算。删掉那句
+    // start() 时，基准在看门狗里已被 invalidate()，恢复后第一个 Normal 帧只能
+    // 领到 0 预算——恢复后第一帧静默不动一次，而其它断言全部照常通过。
+    void watchdogGapRecovery_restartsStepBudgetBasis()
+    {
+        Rig r(59237);
+        r.feed(poseAt(kActualX), 1000, 3);
+
+        // 远目标：误差 100mm × kp 0.3 = 30mm ≫ 0.6mm 限值，每帧都顶格，
+        // 于是"这一帧领到多少预算"能被回包里的 RKorr.X 直接读出来。
+        r.worker->applyTarget(poseAt(kActualX + 100.0));
+        r.worker->setTracking(true);
+        r.feed(poseAt(kActualX), 1003, 3);
+        QCOMPARE(r.snap().state, ControlState::Tracking);
+
+        // KRC 停发 600ms：> 看门狗 240ms（必触发 reset + invalidate），
+        // < sessionGapMs 1200ms（不算真会话重启，跟踪与目标都保住）。
+        QTest::qWait(600);
+        QVERIFY2(!r.snap().connected, "看门狗没触发，本用例没测到要测的路径");
+        r.drainReplies();          // 只统计恢复事件本身发出的增量
+
+        // 恢复首帧：走 First 分支。它自己不 step（First 不在 Normal/Gap 之列），
+        // 所以必须回零增量——先钉住这一点，否则下面那帧的读数含义就不纯。
+        r.feed(poseAt(kActualX), 2000, 1);
+        const auto [n1, firstFrameX] = r.drainReplies();
+        QCOMPARE(n1, 1);
+        QCOMPARE(firstFrameX, 0.0);
+
+        // 恢复整一个周期之后再来一帧。基准若在 First 帧重开过，它领到的是
+        // 一个完整周期的预算（12ms → 0.6mm，被封顶）；若没重开，基准仍是
+        // invalid，step() 拿到 0 预算，这一帧发 0.0000。
+        QTest::qWait(12);
+        r.feed(poseAt(kActualX), 2001, 1);
+        const auto [n2, afterX] = r.drainReplies();
+        qInfo("GAP-RECOVERY first step after recovery = %.4f mm", afterX);
+        QCOMPARE(n2, 1);
+        QVERIFY2(afterX > 0.55,
+                 qPrintable(QStringLiteral(
+                     "恢复后第一帧只发了 %1 mm：预算基准没在 First 帧重开")
+                                .arg(afterX)));
+        // 封顶仍然生效：跨越 600ms 静默的那一段绝不能被当成预算发出去。
+        QVERIFY(afterX <= 0.6 + 1e-9);
+    }
+
     // 正常配速下预算必须与"按配置周期算"一致：这是"单调安全"论证的另一半，
     // 否则一个把预算无脑调小的实现也能通过上面那个用例。
     void normalPacing_stillEmitsFullPerCycleBudget()

@@ -639,6 +639,80 @@ private slots:
         }
     }
 
+    // ── 轨迹时间基必须与步长限值同源 ──
+    // 度量刻意取"操作员看得见的量"：一条 2mm 移动指令要走多少帧才走完。排空
+    // 41 帧之后这个数字必须不变。轨迹若仍按配置周期推进，排空就把五次多项式
+    // "起点速度 0"的性质整个抹掉——41 帧积压把轨迹推进 492ms（默认轨迹时长
+    // 1000ms，半条），恢复后第一个满预算帧直接顶格，于是同一条指令的实际
+    // 速度成了网络抖动的函数。变异实测（把 advance() 改回配置周期）：无排空
+    // 82 帧 984ms（2.0 mm/s），排空后 41 帧 492ms（4.1 mm/s），快一倍。
+    void trajectoryTimeBase_backlogDrainDoesNotCompressTheMove()
+    {
+        // 先排空 backlog 帧（整批只占 kDrainMs 墙钟），再按 12ms 正常配速跑，
+        // 返回"正常配速下还要几帧才走完这 2mm"。
+        constexpr double kDrainMs = 3.0;
+        constexpr int    kBacklog = 41;
+        auto framesToFinish2mm = [](int backlog) {
+            AppConfig c = testCfg();
+            c.targetTrajectoryMs = 1000.0;   // 生产默认值，正是"41 帧 = 半条轨迹"的前提
+            PoseController pc;
+            pc.configure(c);
+            pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+            pc.setTracking(true);
+            pc.setTarget(Pose{2.0, 0, 0, 0, 0, 0});
+            Pose actual{};
+            for (int i = 0; i < backlog; ++i)
+                actual.x += pc.step(actual, kDrainMs / kBacklog).x;
+            int frames = 0;
+            while (actual.x < 1.999 && frames < 10000) {
+                actual.x += pc.step(actual, kCycleMs).x;
+                ++frames;
+            }
+            return frames;
+        };
+        const int clean   = framesToFinish2mm(0);
+        const int drained = framesToFinish2mm(kBacklog);
+        qInfo("2mm move: clean %d frames (%.0f ms), after %d-frame drain %d frames (%.0f ms)",
+              clean, clean * kCycleMs, kBacklog, drained, drained * kCycleMs);
+
+        // 正常运行不得回归：无积压时每帧的 elapsed 恰是一个配置周期，
+        // min(Δt,T)/T 恰为 1.0，轨迹推进量与"按 m_cfg.cycleMs 推进"逐位相同，
+        // 帧数必须还是修复前那个 82（≈ 五次多项式走到 99.95% 的时刻 u≈0.975
+        // → 975ms / 12ms，再加一帧闭环滞后）。写死数字是安全的：这条路径是
+        // 纯算术，不含任何计时或调度，跨机器可复现。
+        QCOMPARE(clean, 82);
+        // 排空最多"偷走"它真正占用的 3ms 墙钟（= 0.25 帧），故帧数差 ≤ 1。
+        // 轨迹改回按配置周期推进时这里是 78 vs 37。
+        QVERIFY2(qAbs(drained - clean) <= 1,
+                 qPrintable(QStringLiteral(
+                     "排空把 2mm 移动从 %1 帧压缩到 %2 帧：轨迹与限值不同源")
+                                .arg(clean).arg(drained)));
+    }
+
+    // 排空恢复后的第一个满预算帧必须仍是"起点速度 0"的那个 0——这是上面那个
+    // 用例的逐帧版本，直接钉住审查者度量的那个量（backlog=41 时 delta 由
+    // 0.600000mm 变回 0.000000mm）。分开写是因为它不依赖 2mm 这个具体行程，
+    // 日后有人改了轨迹时长/增益也不会连带失效。
+    void trajectoryTimeBase_fullBudgetFrameAfterDrainStaysAtTrajectoryStart()
+    {
+        AppConfig c = testCfg();
+        c.targetTrajectoryMs = 1000.0;
+        PoseController pc;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});   // 远目标：轨迹一推进就足以顶格
+        // 41 帧积压在 3ms 墙钟内排空：限值预算合计只值 3ms，轨迹也只该走 3ms。
+        for (int i = 0; i < 41; ++i)
+            pc.step(Pose{0, 0, 0, 0, 0, 0}, 3.0 / 41.0);
+        // 恢复后第一个满预算帧。轨迹按配置周期推进时它是 0.6mm（顶格）。
+        const double d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs).x;
+        qInfo("first full-budget frame after drain = %.6f mm", d);
+        QVERIFY2(d < 0.01,
+                 qPrintable(QStringLiteral("排空后首个满预算帧发了 %1 mm，"
+                                           "轨迹被排空推进过头").arg(d)));
+    }
+
     // 姿态路径必须与位置路径同步收紧。只改一条路的话，排空期间机器人照样
     // 能走满 41 帧的角度预算（0.12°/帧 × 41 ≈ 4.9°，POSCORR 姿态限 25°）。
     void attitudeStepBudget_scalesAndCapsLikePosition()
