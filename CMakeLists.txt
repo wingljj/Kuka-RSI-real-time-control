@@ -49,16 +49,22 @@ target_link_libraries(rl_kin PUBLIC rsi_core rl::mdl)
 add_library(rsi_net STATIC src/net/RsiWorker.cpp)
 target_link_libraries(rsi_net PUBLIC rsi_core Qt6::Network)
 
-add_executable(rsi_host
-    src/main.cpp
+# 窗口与部件单独成库而不是直接列进 rsi_host 的源文件：单测要构造真实的
+# MainWindow 才能验证「控件初始启用态」这类只存在于部件实例上的事实
+#（判定函数返回什么都不管用——缺陷恰恰是判定结果没有被施加到控件上）。
+# 可执行文件里的源文件是链接不到测试目标的。
+add_library(rsi_ui STATIC
     src/ui/MainWindow.cpp
     src/ui/ErrorChart.cpp
     src/ui/CommCards.cpp
     src/ui/CumulativeBar.cpp
     src/ui/AlarmLog.cpp
 )
-target_link_libraries(rsi_host PRIVATE
-    rsi_net rsi_uilogic Qt6::Core Qt6::Network Qt6::Widgets Qt6::Charts)
+target_link_libraries(rsi_ui PUBLIC
+    rsi_net rsi_uilogic Qt6::Widgets Qt6::Charts)
+
+add_executable(rsi_host src/main.cpp)
+target_link_libraries(rsi_host PRIVATE rsi_ui Qt6::Core Qt6::Network)
 
 enable_testing()
 add_subdirectory(tests)

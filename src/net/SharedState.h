@@ -35,7 +35,12 @@ struct StatusSnapshot
     QString    faultReason;
     int        missedCount     = 0;
     double     measuredCycleMs = 0.0;
-    double     maxReplyUs      = 0.0;
+    // 回包耗时分两个字段。只有 maxReplyUs 的话，「当前回包耗时」这个量在快照里
+    // 根本不存在：它是会话内单调最大值，一次瞬时尖峰会永久留在读数上，界面
+    // 也就无法用来观察链路是否已经恢复——超过门限后卡片会永远锁在告警色，
+    // 把一条历史告警当成当前状态呈现。所以瞬时值必须单独有一份。
+    double     replyUs         = 0.0;  // 最近一帧的收到→发出耗时
+    double     maxReplyUs      = 0.0;  // 会话内最大（start() 归零）
     quint64    frameCount      = 0;
     bool       connected       = false;
     quint32    peerIp4      = 0;    // 对端 IPv4（0=未锁定）

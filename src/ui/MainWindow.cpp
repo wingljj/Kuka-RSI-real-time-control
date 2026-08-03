@@ -324,18 +324,25 @@ void MainWindow::buildMenus()
     // ── 监听 ──
     QMenu *listenMenu = menuBar()->addMenu("监听(&L)");
     m_startListenAct = listenMenu->addAction("开始监听");
+    m_startListenAct->setObjectName("startListenAct");
     m_startListenAct->setShortcut(QKeySequence("F5"));
     connect(m_startListenAct, &QAction::triggered, this, &MainWindow::onStartListening);
     m_stopListenAct = listenMenu->addAction("停止监听");
+    m_stopListenAct->setObjectName("stopListenAct");
     m_stopListenAct->setShortcut(QKeySequence("Shift+F5"));
     connect(m_stopListenAct, &QAction::triggered, this, &MainWindow::onStopListening);
 
     // ── 控制 ──
+    // 三个控制动作都设 objectName：单测靠 findChild 取到它们，验证「构造完成、
+    // 第一次 onRefresh 之前」它们就是禁用的。按标题取会随文案改动而失效，
+    // 而 m_enableAct 的标题本身就会在跟踪时变成「已使能跟踪」。
     QMenu *ctlMenu = menuBar()->addMenu("控制(&C)");
     m_enableAct = ctlMenu->addAction("使能跟踪");
+    m_enableAct->setObjectName("enableTrackAct");
     m_enableAct->setShortcut(QKeySequence("F9"));
     connect(m_enableAct, &QAction::triggered, this, &MainWindow::onPrepareTracking);
     m_stopTrackAct = ctlMenu->addAction("停止跟踪");
+    m_stopTrackAct->setObjectName("stopTrackAct");
     m_stopTrackAct->setShortcut(QKeySequence("Esc"));
     // 提示文案挂在动作本身：软停止与急停的区别是关于「按下这个会发生什么」
     // 的说明，属于这个动作，而不属于界面上某个固定位置。
@@ -343,6 +350,7 @@ void MainWindow::buildMenus()
     connect(m_stopTrackAct, &QAction::triggered, this, &MainWindow::onStopTracking);
     ctlMenu->addSeparator();
     m_resetFaultAct = ctlMenu->addAction("复位故障");
+    m_resetFaultAct->setObjectName("resetFaultAct");
     connect(m_resetFaultAct, &QAction::triggered, this, &MainWindow::onResetFault);
     ctlMenu->addSeparator();
     QAction *paramsAct = ctlMenu->addAction("编辑控制参数…");
@@ -544,11 +552,14 @@ QWidget *MainWindow::buildListenPanel()
     auto *lay = new QHBoxLayout(w);
     lay->setContentsMargins(6, 4, 6, 4);
     lay->addWidget(new QLabel("IP", w));
+    // objectName 供单测用 findChild 取控件，验证初始启用态确实被施加过。
     m_ipEdit = new QLineEdit(m_cfg.listenIp, w);
+    m_ipEdit->setObjectName("listenIpEdit");
     m_ipEdit->setMaximumWidth(120);
     lay->addWidget(m_ipEdit);
     lay->addWidget(new QLabel(":", w));
     m_portSpin = new QSpinBox(w);
+    m_portSpin->setObjectName("listenPortSpin");
     m_portSpin->setRange(1, 65535);
     m_portSpin->setValue(int(m_cfg.listenPort));
     m_portSpin->setMaximumWidth(80);
@@ -685,6 +696,7 @@ QWidget *MainWindow::buildTargetPanel()
     // 未收到有效帧时 actual 是全零，读进去再点「应用目标」就把目标设成了原点
     // ——机器人会朝 BASE 原点走。启用条件由 uilogic::buttonStates 统一给出。
     m_readActualBtn = new QPushButton("读取当前值", w);
+    m_readActualBtn->setObjectName("readActualBtn");
     m_readActualBtn->setEnabled(false);
     connect(m_readActualBtn, &QPushButton::clicked, this, &MainWindow::onReadActualTarget);
     actRow->addWidget(m_readActualBtn);
@@ -896,17 +908,38 @@ QWidget *MainWindow::buildCommPanel()
 // 连接控制
 // ═══════════════════════════════════════════════
 
-void MainWindow::updateConnControls()
+void MainWindow::applyButtonStates(const ButtonStates &b)
 {
-    // 与 onRefresh 用同一个 buttonStates，避免两处各写一套判定后逐渐分叉。
-    // 这个函数仍然需要：构造期还没有第一帧快照、bindFailed 回调也要在
-    // 下一次刷新到来之前立刻把按钮改回去。
-    const ButtonStates b = uilogic::buttonStates(m_state.snapshot(), m_listening);
-    if (m_ipEdit)         m_ipEdit->setEnabled(b.connEditable);
-    if (m_portSpin)       m_portSpin->setEnabled(b.connEditable);
+    // ButtonStates 全部字段的唯一施加点。
+    //
+    // 为什么必须只有一处：原先构造期的 updateConnControls 与每帧的 onRefresh
+    // 各自手写一份 setEnabled 清单，而前者漏了 resetFault / enableTrack /
+    // stopTrack 三项。这三个动作从按钮改成 QAction 之后再没有初始禁用语句，
+    // 而 QAction 默认是启用的——于是从构造到第一次 onRefresh 之间（一个
+    // refresh_ms），「未监听/未连接」状态下「复位故障 / 使能跟踪 / 停止跟踪」
+    // 连同 F9 / Esc 快捷键全都可点。手写清单少一行时编译器不会报错，所以
+    // 靠「记得两边都改」是不成立的，两份清单必须收敛成一份。
+    if (m_resetFaultAct)  m_resetFaultAct->setEnabled(b.resetFault);
+    if (m_enableAct)      m_enableAct->setEnabled(b.enableTrack);
+    if (m_stopTrackAct)   m_stopTrackAct->setEnabled(b.stopTrack);
     if (m_startListenAct) m_startListenAct->setEnabled(b.startListen);
     if (m_stopListenAct)  m_stopListenAct->setEnabled(b.stopListen);
+    if (m_ipEdit)         m_ipEdit->setEnabled(b.connEditable);
+    if (m_portSpin)       m_portSpin->setEnabled(b.connEditable);
     if (m_readActualBtn)  m_readActualBtn->setEnabled(b.readActual);
+
+    // 让编译器参与「新增字段必须接线」这件事：ButtonStates 全是 bool，
+    // sizeof 就是字段数。加一个字段而忘了在上面接线，这行就编译不过——
+    // 否则新字段会重演同一个缺陷（判定算出来了，但没人施加）。
+    static_assert(sizeof(ButtonStates) == 7 * sizeof(bool),
+                  "ButtonStates 字段有增减，请同步上面的接线清单");
+}
+
+void MainWindow::updateConnControls()
+{
+    // 这个入口不能省：构造期还没有第一帧快照，bindFailed / 停止监听也要在
+    // 下一次刷新到来之前立刻把控件改回去。判定与施加都与 onRefresh 共用。
+    applyButtonStates(uilogic::buttonStates(m_state.snapshot(), m_listening));
 }
 
 void MainWindow::onStartListening()
@@ -1239,17 +1272,10 @@ void MainWindow::onRefresh()
     // 那条 `m_stopBtn->setEnabled(s.state == Tracking)` 已整段删除：留着它
     // 会在 StaleFrame / Syncing 下继续把停止按钮置灰，而那正是最需要能停的
     // 时刻（反馈已异常、PoseController 仍在发增量）。
-    const ButtonStates btn = uilogic::buttonStates(s, m_listening);
-    m_resetFaultAct->setEnabled(btn.resetFault);
-    m_enableAct->setEnabled(btn.enableTrack);
+    applyButtonStates(uilogic::buttonStates(s, m_listening));
+    // 文案不属于启用状态，留在这里：applyButtonStates 只做 ButtonStates 的施加。
     m_enableAct->setText(s.state == ControlState::Tracking ? "已使能跟踪"
                                                           : "使能跟踪");
-    m_stopTrackAct->setEnabled(btn.stopTrack);
-    m_startListenAct->setEnabled(btn.startListen);
-    m_stopListenAct->setEnabled(btn.stopListen);
-    m_ipEdit->setEnabled(btn.connEditable);
-    m_portSpin->setEnabled(btn.connEditable);
-    m_readActualBtn->setEnabled(btn.readActual);
 
     // ── 事件日志 ──
     // 边沿触发：只在告警「发生」时记一条，而不是在它「持续」的每一帧。

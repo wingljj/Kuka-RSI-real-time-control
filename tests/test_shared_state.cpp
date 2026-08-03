@@ -102,6 +102,10 @@ private slots:
         in.faultReason = "boom";
         in.missedCount = 7;
         in.measuredCycleMs = 12.5;
+        // 瞬时与最大是两个独立字段，刻意给不同的值：它们曾经共用 maxReplyUs
+        // 一个字段，界面上「当前」与「最大」两行因此永远相同，一次尖峰会
+        // 永久污染「当前」读数并把卡片永远锁在告警色。
+        in.replyUs    = 180.0;
         in.maxReplyUs = 250.0;
         in.frameCount = 999;
         in.connected = true;
@@ -116,6 +120,7 @@ private slots:
         QCOMPARE(out.faultReason, QString("boom"));
         QCOMPARE(out.missedCount, 7);
         QCOMPARE(out.measuredCycleMs, 12.5);
+        QCOMPARE(out.replyUs, 180.0);
         QCOMPARE(out.maxReplyUs, 250.0);
         QCOMPARE(out.frameCount, quint64(999));
         QVERIFY(out.connected);

@@ -69,7 +69,8 @@ private:
 
     int     m_missed         = 0;
     quint64 m_frameCount     = 0;
-    double  m_maxReplyUs     = 0.0;
+    double  m_replyUs        = 0.0;   // 最近一帧回包耗时
+    double  m_maxReplyUs     = 0.0;   // 会话内最大
 
     // 反馈异常剔除：上一有效帧位姿 + 连续 stale 帧计数
     Pose m_prevValidPose;

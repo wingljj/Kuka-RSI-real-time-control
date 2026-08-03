@@ -50,6 +50,7 @@ void RsiWorker::start()
     m_ipocTracker.reset();
     m_frameCount      = 0;
     m_missed          = 0;
+    m_replyUs         = 0.0;
     m_maxReplyUs      = 0.0;
     m_cycleTimerValid = false;
     m_measuredCycleMs = 0.0;
@@ -360,8 +361,10 @@ void RsiWorker::onDatagram()
             m_sendFails = 0;
         }
 
-        const double replyUs = replyTimer.nsecsElapsed() / 1000.0;
-        m_maxReplyUs = std::max(m_maxReplyUs, replyUs);
+        // 瞬时值与最大值都记：赋一个 double 不进堆，实时路径的代价是一次
+        // 寄存器写。少了瞬时值，界面就只能拿单调最大值冒充「当前」。
+        m_replyUs    = replyTimer.nsecsElapsed() / 1000.0;
+        m_maxReplyUs = std::max(m_maxReplyUs, m_replyUs);
 
         if (m_missed >= m_cfg.watchdogMissLimit &&
             m_ctl.state() == TrackState::Tracking) {
@@ -434,6 +437,7 @@ void RsiWorker::publishSnapshot(const Pose &actual, const Pose &err,
     s.faultReason     = m_ctl.faultReason();
     s.missedCount     = m_missed;
     s.measuredCycleMs = m_measuredCycleMs;
+    s.replyUs         = m_replyUs;
     s.maxReplyUs      = m_maxReplyUs;
     s.krcDelay        = m_lastDelay;
     s.peerRejected    = m_peerRejected;

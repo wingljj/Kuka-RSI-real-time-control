@@ -75,6 +75,8 @@ private:
     void saveTargetSnapshot();
     void restoreTargetSnapshot();
     void updateConnControls();
+    // ButtonStates 的唯一施加点，构造期与每帧刷新共用。理由见 .cpp。
+    void applyButtonStates(const ButtonStates &b);
 
     // 预览与「应用」按钮各自的唯一刷新入口。撤销 / 读取当前值都在抑制信号的
     // 情况下改 spinbox，onTargetEdited 不会被调用——原先只能在每个调用点手写
