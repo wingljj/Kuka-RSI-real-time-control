@@ -21,7 +21,8 @@ public class Win {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
-    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 
     // PW_RENDERFULLCONTENT (2) is required for composited / GPU-backed content.
@@ -41,11 +42,18 @@ public class Win {
 }
 "@ -ReferencedAssemblies System.Drawing
 
-# 必须在任何窗口测量之前声明 DPI 感知。否则在 >100% 缩放的机器上，
-# GetWindowRect 返回被虚拟化过的逻辑尺寸，而 PrintWindow 按设备像素绘制——
-# 位图开得比实际内容小，截出来的是窗口左上角一部分。150% 缩放下只有 2/3，
-# 而缺的恰好是右下角，看起来又很像"布局正常、内容不够"，极难察觉。
-[void][Win]::SetProcessDPIAware()
+# Declare DPI awareness before measuring any window. Without it, on a machine
+# scaled above 100% GetWindowRect returns virtualised logical size while
+# PrintWindow draws device pixels: the bitmap is opened too small and captures
+# only the top-left corner. At 150% that is 2/3 of the window, and what goes
+# missing is the bottom-right -- which reads as "layout is sparse" rather than
+# "capture is truncated", so it is very easy to miss.
+#
+# Use SetThreadDpiAwarenessContext, NOT SetProcessDPIAware: the latter is
+# SILENTLY INEFFECTIVE when the host process already carries a DPI manifest
+# (it does not even fail), and was measured still capturing only 2/3.
+# -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
+[void][Win]::SetThreadDpiAwarenessContext([IntPtr](-4))
 
 $proc = Get-Process | Where-Object {
     $_.MainWindowHandle -ne 0 -and
@@ -54,8 +62,14 @@ $proc = Get-Process | Where-Object {
 if (-not $proc) { Write-Error "no window matching '$Title'"; exit 1 }
 
 $h = $proc.MainWindowHandle
-[void][Win]::ShowWindow($h, 9)
-Start-Sleep -Milliseconds 500
+# Restore only if minimised. The old unconditional ShowWindow(h, 9) is
+# SW_RESTORE, which demotes a MAXIMISED window back to normal size -- so a
+# maximised layout could never be captured, and "is the right column wide
+# enough when maximised" is one of the things worth looking at.
+if ([Win]::IsIconic($h)) {
+    [void][Win]::ShowWindow($h, 9)
+    Start-Sleep -Milliseconds 500
+}
 
 $bmp = [Win]::Grab($h)
 if (-not $bmp) { Write-Error "grab failed"; exit 1 }
