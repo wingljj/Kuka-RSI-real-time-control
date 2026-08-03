@@ -58,15 +58,29 @@ rl::math::Transform toRlTransform(const Pose &target)
     return t;
 }
 
-// 单个种子的求解预算。定得这么小不是为了省 CPU，而是因为模拟器是单线程的
-// 「收帧 → 逆解 → 正解 → 发下一帧」：逆解花掉的时间会一比一变成发帧延迟。
-// 上位机看门狗是 240ms（max(200, cycleMs×20)），断流超过它 connected 就被置
-// false、下一帧又置回 true —— 用户看到的「已连接/监听中」抖动就是这么来的。
-// 因此约束不是「平均够快」而是「最坏情况也撑不爆一个发帧周期」：
-//   最坏总耗时 = 种子数 × 本预算 = 9 × 1ms = 9ms < 12ms 周期。
-// 即便所有种子都不收敛（目标真的不可达），节拍也不会被拖乱，逆解失败由调用方
-// 的「保持旧 q」兜住。放大到 4ms 就是 36ms（3 个周期），仍会连累几帧，不可取。
-constexpr std::chrono::microseconds kSeedBudget{1000};
+// 热路径种子（调用方的当前关节角）分到的预算份额：总预算的 1/kHotSeedShare。
+// 为什么单独给它一份而不是所有种子均分：它是唯一被指望能成功的种子（增量目标
+// 从当前位形出发一两次迭代就收敛），后面 8 个固定种子在增量工况下本来就是长尾。
+// 均分会让它在小周期下被挤到几百微秒——--cycle-ms 4 时是 2ms/9 ≈ 0.22ms，只有
+// 实测收敛耗时的 2 倍余量；给它一半则有 10 倍余量，剩下的固定种子再平分余额。
+//
+// 把预算从原来的「每种子 120ms」压到这个量级**是有代价的**，代价不在增量路径上：
+//   · 增量目标（当前 q 作种子，0.6mm/帧）：p50 43µs、p99 82µs，250 个随机位形里
+//     249 个收敛——即使 --cycle-ms 4（热路径份额 1ms）也有 12 倍余量，可达范围
+//     与压预算之前一致。
+//   · 绝对目标（无种子，只能靠固定种子兜底）：可达率随总预算掉得很明显。用 FK 从
+//     250 个随机合法 q 生成的、可达性有证明的位姿实测：总预算 50ms → 250/250
+//     (100%)、9ms → 213/250 (85%)、6ms（--cycle-ms 12）→ 184/250 (74%)、
+//     2ms（--cycle-ms 4）→ 171/250 (68%)。
+// 之所以能接受：模拟器两处调用都传当前 q（走增量路径），绝对目标只有单测在用，
+// 而单测走的是 kDefaultSolveBudget（50ms，100% 可达）。发帧回路里兜底种子解不出
+// 的后果是这一帧保持旧 q（RIst 停一帧），而不是发帧延迟——这个取舍是刻意的：
+// 节拍崩掉会被上位机看门狗误判成断流，少动一帧不会。
+//
+// 注：fb435d9 的报告称压预算「没有损失可达范围」，证据是修复前后机器人都停在
+// X=326.600。那个实验测的是增量路径，当前 q 作种子几十微秒就收敛、预算根本不
+// 生效，所以它在原理上就检测不到上面这项损失，不能当作无代价的证据。
+constexpr std::size_t kHotSeedShare = 2;
 
 // 种子限制到关节限位内：solve 的成功判定要求 isValid(q)（越限解会被拒绝）。
 rl::math::Vector clampToLimits(const rl::math::Vector &q)
@@ -134,10 +148,24 @@ Pose forward(const double qRad[6])
     return toPoseMm(g_kinematic->getOperationalPosition(0));
 }
 
-bool inverse(const Pose &target, double qRad[6], const double *seedRad)
+std::chrono::nanoseconds solveBudgetForCycle(double cycleMs)
+{
+    const double halfCycleUs = cycleMs * 1000.0 / 2.0;
+    return std::chrono::microseconds(
+        static_cast<long long>(std::max(200.0, halfCycleUs)));
+}
+
+bool inverse(const Pose &target, double qRad[6], const double *seedRad,
+             std::chrono::nanoseconds budget)
 {
     if (!g_loaded || !g_kinematic)
         return false;
+
+    // 总截止时间在进入种子循环前就定死。约束的真实形态是「一次逆解不许超过多久」
+    // ——它与种子数量无关，所以这里表达成一个截止时刻，而不是「每种子 N 毫秒 ×
+    // 种子数」那种要靠注释里做算术才成立的界。种子数以后怎么增删都不会破界。
+    const std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::now() + budget;
 
     const rl::math::Transform goal = toRlTransform(target);
 
@@ -149,9 +177,18 @@ bool inverse(const Pose &target, double qRad[6], const double *seedRad)
     std::vector<rl::math::Vector> seeds;
     seeds.reserve(9);
     // 当前关节角必须排第一：它是唯一与目标距离不随运动增长的种子，因此几乎总在
-    // 首个种子上就收敛——固定种子那 8 次昂贵的重试根本不会被执行到（详见头文件）。
-    if (seedRad)
+    // 首个种子上就收敛——固定种子那 8 次昂贵的重试根本不会被执行到；顺序同时决定
+    // 选中哪个 IK 分支，排第一就等于锁在当前分支上不翻（详见头文件）。
+    //
+    // 非有限种子（NaN/Inf）直接丢掉：clampToLimits 用 std::max/min，NaN 会原样穿过
+    // （max(NaN, lo) 返回 NaN），带进 solve 就是一次纯浪费预算的迭代，更坏的情况是
+    // 解出 NaN 的 q 再正解成 NaN 的 RIst 发给上位机。生产里 ctx.q 恒被夹在关节限位
+    // 内，这里只是不让一个坏种子有机会污染输出。
+    if (seedRad && std::isfinite(seedRad[0]) && std::isfinite(seedRad[1])
+        && std::isfinite(seedRad[2]) && std::isfinite(seedRad[3])
+        && std::isfinite(seedRad[4]) && std::isfinite(seedRad[5]))
         seeds.push_back(clampToLimits(toRlQ(seedRad)));
+    const bool hotSeed = !seeds.empty();
     seeds.push_back(home);
     seeds.push_back(zero);
     for (std::size_t i = 0; i < 6 && i < g_kinematic->getDofPosition(); ++i) {
@@ -161,17 +198,28 @@ bool inverse(const Pose &target, double qRad[6], const double *seedRad)
     }
 
     rl::mdl::JacobianInverseKinematics ik(g_kinematic.get());
-    ik.setDuration(kSeedBudget);
     ik.setEpsilon(1e-9);
     ik.addGoal(goal, 0);
 
-    for (const rl::math::Vector &seed : seeds) {
-        g_kinematic->setPosition(seed);
+    for (std::size_t i = 0; i < seeds.size(); ++i) {
+        // 每个种子的 duration 从「到截止时刻还剩多少」现算：前一个种子超支多少，
+        // 后面的份额自动少多少，总耗时因此被 deadline 钉住（RL 的 solve 在每次
+        // 雅可比迭代末尾才查 duration，所以最后一个种子可能多跑一次迭代——数十
+        // 微秒的固定尾巴，与种子数无关）。
+        const std::chrono::nanoseconds remain = deadline - std::chrono::steady_clock::now();
+        if (remain <= std::chrono::nanoseconds::zero())
+            break;
+        const std::size_t share = (i == 0 && hotSeed)
+                                      ? kHotSeedShare
+                                      : (seeds.size() - i);
+        ik.setDuration(remain / static_cast<std::chrono::nanoseconds::rep>(share));
+
+        g_kinematic->setPosition(seeds[i]);
         if (ik.solve()) {
             // solve 成功时已 normalize 并 isValid 检查（解在限位内）。
             const rl::math::Vector q = g_kinematic->getPosition();
-            for (std::size_t i = 0; i < 6; ++i)
-                qRad[i] = q(i);
+            for (std::size_t k = 0; k < 6; ++k)
+                qRad[k] = q(k);
             return true;
         }
     }

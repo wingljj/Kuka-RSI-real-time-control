@@ -16,6 +16,7 @@
 #include <QUdpSocket>
 #include <QtGlobal>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -129,6 +130,11 @@ struct SimContext {
 
     double maxVelPos = 0, maxVelRot = 0;
     double maxAccelPos = 0, maxAccelRot = 0;
+
+    // 单次逆解的总时间上限，由 --cycle-ms 推导（rlk::solveBudgetForCycle）。
+    // 存在 ctx 里而不是各调用点各算一遍：两个驱动（headless / viz）必须用同一个
+    // 数，否则「逆解撑不爆一个发帧周期」这条性质会在其中一条路径上悄悄失效。
+    std::chrono::nanoseconds ikBudget = rlk::kDefaultSolveBudget;
 
     int dupN = 0, gapN = 0, backN = 0, dropN = 0, reorderN = 0, lateN = 0;
     bool ignore = false;
@@ -315,7 +321,9 @@ static int runHeadless(SimContext &ctx, double cycleMs, int cycles,
                         // 以当前关节角为迭代起点：目标只比当前位姿远不到 1mm，
                         // 从这里出发一两次迭代就收敛，逆解耗时不再随机器人走远
                         // 而膨胀（否则发帧节拍被逆解拖崩，主机看门狗误判断流）。
-                        if (rlk::inverse(target, qNew, ctx.q)) {
+                        // ikBudget 是硬上限：工作空间边界处每个种子都会失败，那时
+                        // 逆解稳态地烧满预算，必须小于一个周期节拍才不崩。
+                        if (rlk::inverse(target, qNew, ctx.q, ctx.ikBudget)) {
                             for (int i = 0; i < 6; ++i) {
                                 // 关节限位 clamp（与 RL 内部限位双重保险；
                                 // --joint-limits 覆盖本地副本后在此生效）
@@ -425,6 +433,8 @@ int main(int argc, char **argv)
     const int cycles     = p.value(oCount).toInt();
 
     SimContext ctx;
+    // 逆解预算跟着 --cycle-ms 走：只在这里算一次，两个驱动共用。
+    ctx.ikBudget = rlk::solveBudgetForCycle(cycleMs);
     ctx.dupN     = p.value(oDup).toInt();
     ctx.gapN     = p.value(oGap).toInt();
     ctx.backN    = p.value(oBack).toInt();
@@ -734,8 +744,9 @@ int main(int argc, char **argv)
                     target.c = std::clamp(target.c, ctx.cartLim[10], ctx.cartLim[11]);
                 }
                 double qNew[6];
-                // 同 headless 路径：当前关节角作种子，避免逆解拖垮 QTimer 节拍。
-                if (rlk::inverse(target, qNew, ctx.q)) {
+                // 同 headless 路径：当前关节角作种子 + 周期推导的总预算，
+                // 避免逆解拖垮 QTimer 节拍（这条路径还要再挤出渲染时间）。
+                if (rlk::inverse(target, qNew, ctx.q, ctx.ikBudget)) {
                     for (int i = 0; i < 6; ++i)
                         ctx.q[i] = std::clamp(qNew[i], ctx.lim.min[i], ctx.lim.max[i]);
                 }
