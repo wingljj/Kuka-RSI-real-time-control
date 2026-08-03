@@ -25,6 +25,10 @@ struct ButtonStates
     bool startListen  = false;
     bool stopListen   = false;
     bool connEditable = false;   // IP / 端口是否可编辑
+    // 「读取当前值」：把 actual 抄进目标输入框是否有意义。
+    // 这一项原先没有守卫，未连接时点它会把全零的 actual 写进目标框，
+    // 操作员再点「应用目标」就把目标设成了 BASE 原点——机器人朝原点走。
+    bool readActual   = false;
 };
 
 // 丢包告警的迟滞状态。

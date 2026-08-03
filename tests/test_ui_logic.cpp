@@ -279,6 +279,33 @@ private slots:
         QVERIFY(!b.enableTrack);
     }
 
+    // 「读取当前值」把 actual 抄进目标输入框。未收到任何有效帧时 actual 是
+    // 全零，抄进去再点「应用目标」就把目标设成了 BASE 原点——机器人会朝
+    // 原点走。所以它必须有守卫，而且判据是 frameCount 不是 connected：
+    // 「已绑定但首帧未到」这个窗口里 connected 已为真而 actual 仍是全零，
+    // 正是缺陷现场。
+    void readActualNeedsAFrame()
+    {
+        StatusSnapshot s;                     // frameCount = 0
+        QVERIFY(!uilogic::buttonStates(s, false).readActual);
+        s.connected = true;                   // 已绑定，首帧仍未到
+        QVERIFY(!uilogic::buttonStates(s, true).readActual);
+        s.frameCount = 1;
+        QVERIFY(uilogic::buttonStates(s, true).readActual);
+    }
+
+    // frameCount 只增不减，所以链路断开后按钮仍可用：最后一帧 actual 是
+    // 真实位姿，把目标拉回当前位置恰恰是断开后最想做的操作。若判据换成
+    // connected，这个按钮会随丢包一闪一闪。
+    void readActualSurvivesDisconnect()
+    {
+        StatusSnapshot s;
+        s.frameCount = 42;
+        s.connected  = false;
+        s.state      = ControlState::Disconnected;
+        QVERIFY(uilogic::buttonStates(s, false).readActual);
+    }
+
     void listeningLocksConnConfig()
     {
         StatusSnapshot s;

@@ -6,6 +6,7 @@
 #include "net/SharedState.h"
 
 // 累积修正进度条：6 轴各一行，标签 + 进度条 + 数值 + 状态指示。
+// 不自带标题：它装在标题为「累积修正」的 QDockWidget 里。
 // 档位由状态文字给出：正常(<50%) / 注意(50–80%) / 警告(80–100%) / 超限(>100%)，
 // 文字色跟着 uilogic::severityColor。进度条本身保持原生外观（理由见 .cpp）。
 class CumulativeBar : public QWidget
@@ -25,5 +26,4 @@ private:
         QLabel *status     = nullptr;   // "超限" / "正常"
     };
     std::array<AxisRow, 6> m_rows;
-    QLabel *m_title = nullptr;
 };

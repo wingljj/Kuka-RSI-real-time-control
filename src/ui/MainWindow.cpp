@@ -1,30 +1,35 @@
 #include "ui/MainWindow.h"
 
+#include <QApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QFontMetrics>
 #include <QFrame>
 #include <QGridLayout>
-#include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QHostAddress>
+#include <QKeySequence>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
+#include <QPalette>
 #include <QScreen>
-#include <QScrollArea>
-#include <QSplitter>
+#include <QSettings>
+#include <QStatusBar>
 #include <QTableWidget>
+#include <QToolBar>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <vector>
 #include "core/SessionGuard.h"
 #include "ui/AlarmLog.h"
 #include "ui/CommCards.h"
 #include "ui/CumulativeBar.h"
 #include "ui/ErrorChart.h"
-#include "ui/StatusBar.h"
 #include "ui/UiLogic.h"
 
 namespace {
@@ -33,6 +38,11 @@ const char *kAxisName[6] = {"X", "Y", "Z", "A", "B", "C"};
 const char *kAxisUnit(int i) { return i < 3 ? " mm" : " deg"; }
 double axisMin(int i) { return i < 3 ? -4000.0 : -180.0; }
 double axisMax(int i) { return i < 3 ?  4000.0 :  180.0; }
+
+// QSettings 的组织名/应用名。两处（构造与析构）必须一致，写成常量而不是
+// 各写一遍字面量——拼错一个字符的表现是「布局每次都不被恢复」，无任何报错。
+const char *kSettingsOrg = "kuka_rsi_win";
+const char *kSettingsApp = "rsi_host";
 
 // 控制参数只读行的唯一真源。标签、字段、单位、小数位写在同一行，
 // 建面板与刷新数值都从这里取——原缺陷是标签坐标和数值坐标各写一套，
@@ -54,18 +64,67 @@ const ParamRow kParams[6] = {
     {"累积上限姿态",  &AppConfig::accumLimitRotDeg, " deg",   1},
 };
 
-// 把表格宽度钉死在「列宽之和 + 边框」上，使 viewport 正好等于列宽之和。
-// 和必须读回实际列宽，不能拿打算设的那几个数相加：QHeaderView 会把过窄的列
-// 抬到 minimumSectionSize，实测左表因此比算出来的多 1px。横向滚动条是关掉的
-//（见 fitTableToRows），多出来的这 1px 不会以滚动条示警，只会静默裁掉末列
-// 右对齐数值的尾巴——而尾巴上正是单位。
-void pinTableWidth(QTableWidget *tbl)
+// 表格列宽的唯一设置入口。
+//
+// 为什么不再是「按列宽之和 setFixedWidth，面板宽度再由它反推」：那套做法
+// 成立的前提是面板宽度由程序决定。改成 QDockWidget 之后宽度由操作员拖动，
+// 前提消失——拖宽会在表格右侧留一条死白，拖窄则把列挤到 viewport 之外，
+// 而横向滚动条是关掉的（见 fitTableToRows），挤出去的部分不会以滚动条示警，
+// 只会静默裁掉右对齐数值尾巴上的单位。
+//
+// 改成两条约束一起给：
+//   1) 整表一个 minimumWidth = 各列所需宽度之和 + 边框。面板拖不到比这更窄，
+//      于是「六行全见、单位不裁」在任何宽度下都成立，不必再靠调数字维持。
+//   2) 指定一列为 Stretch，多余宽度全归它。拖宽时空白落在这一列内部，
+//      而不是落在表格外面。
+//
+// 求和必须读回实际列宽，不能拿打算设的那几个数相加：QHeaderView 会把过窄的
+// 列抬到 minimumSectionSize（实测左表因此比算出来的多 1px），少算的那一像素
+// 正是被裁掉的单位后缀。所以先设完全部列宽、读回求和，最后才切 Stretch——
+// 切了之后 columnWidth(stretchCol) 返回的是拉伸后的值，求和就白算了。
+void setTableColumns(QTableWidget *tbl, const std::vector<int> &want, int stretchCol)
 {
+    QHeaderView *h = tbl->horizontalHeader();
+    // stretchLastSection 必须关掉：开着时最后一列的 setColumnWidth 不生效，
+    // 而这里要按度量给每一列宽度、再自己选哪一列吃多余宽度。
+    h->setStretchLastSection(false);
+    for (int c = 0; c < int(want.size()); ++c)
+        tbl->setColumnWidth(c, want[c]);
+
     int sum = 0;
     for (int c = 0; c < tbl->columnCount(); ++c)
         sum += tbl->columnWidth(c);
-    tbl->setFixedWidth(sum + 2 * tbl->frameWidth());
+    tbl->setMinimumWidth(sum + 2 * tbl->frameWidth());
+
+    h->setSectionResizeMode(stretchCol, QHeaderView::Stretch);
 }
+
+// 状态栏标签：文字 + 语义色。只在真的变了才写回，因为它每 refreshMs 调用一次，
+// 无条件 setPalette 会让状态栏每 20ms 重绘一次。
+void setSeverityText(QLabel *l, const QString &text, uilogic::Severity sev)
+{
+    if (l->text() != text)
+        l->setText(text);
+    const QColor fg = uilogic::severityColor(sev);
+    if (l->palette().color(QPalette::WindowText) != fg) {
+        QPalette p = l->palette();
+        p.setColor(QPalette::WindowText, fg);
+        l->setPalette(p);
+    }
+}
+
+// 状态栏常驻标签的最小宽度按「最长可能文案」钉住。不钉的话读数每变一位
+// 宽度就跟着变，四个标签在运行中左右跳动，而它们恰恰是要被瞥一眼的东西。
+void pinLabelWidth(QLabel *l, const QString &widest)
+{
+    l->setMinimumWidth(QFontMetrics(l->font()).horizontalAdvance(widest) + 8);
+}
+
+// 软停止不是急停——这句必须常驻可见，不能只在故障时弹出来。
+const char *kNoticeNormal =
+    "软停止：RKorr=0，RSI 回包保持。不是急停。紧急情况请按示教器物理急停。";
+const char *kNoticeFault =
+    "故障：跟踪已停止！检查累计修正或通信状态。紧急情况请按示教器物理急停。";
 
 } // namespace
 
@@ -77,8 +136,10 @@ void MainWindow::fitTableToRows(QTableWidget *tbl, int rows)
         h += tbl->rowHeight(r);
     tbl->setFixedHeight(h);
     // 高度已按内容算准，两条滚动条都不该出现，而且必须都关掉。只关纵向的
-    // 那条不够：列宽之和一旦超出 viewport（左栏实测 348 对 316），横向滚动条
-    // 会从下方吃掉 17px——正好半行——末行 C 又被裁掉，缺陷 D 换个面目复现。
+    // 那条不够：列宽之和一旦超出 viewport，横向滚动条会从下方吃掉 17px——
+    // 正好半行——末行 C 又被裁掉，缺陷 D 换个面目复现。
+    // 关掉横向滚动条之后，「不超出 viewport」就没有任何示警了，只能靠
+    // setTableColumns 给出的 minimumWidth 从结构上保证。
     tbl->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     tbl->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 }
@@ -92,98 +153,44 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 {
     setWindowTitle("KUKA RSI POSCORR 位姿跟踪");
 
-    auto *central = new QWidget(this);
-    auto *outer = new QVBoxLayout(central);
-    outer->setContentsMargins(12, 8, 12, 8);
-    outer->setSpacing(8);
+    // ── 中央部件：误差图表 ──
+    // 图表是唯一需要大面积且持续观察的东西——趋势要看一段时间才有意义。
+    // 其余面板都是「看一眼确认数值」的性质，适合停靠、按需调出。
+    // 原先的三栏定宽布局把图表挤在最右侧一条，1400px 以下还会把控件推出屏幕。
+    auto *charts = new QWidget(this);
+    auto *cv = new QVBoxLayout(charts);
+    cv->setContentsMargins(0, 0, 0, 0);
+    m_chartPos = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Position, charts);
+    m_chartRot = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Rotation, charts);
+    cv->addWidget(m_chartPos, 1);
+    cv->addWidget(m_chartRot, 1);
+    setCentralWidget(charts);
 
-    // ── 顶部：StatusBar（4 卡片 + 警告） ──
-    m_statusBar = new StatusBar(this);
-    m_statusBar->setWarning(
-        "软停止：RKorr=0，RSI 回包保持。不是急停。紧急情况请按示教器物理急停。", false);
-    outer->addWidget(m_statusBar);
-
-    // ── 按钮栏 ──
-    auto *btnBar = new QHBoxLayout;
-    btnBar->setSpacing(6);
-
-    // 按钮一律原生外观。原先靠动态属性 + QSS 属性选择器染成蓝/橙/红，
-    // 那些属性只为选择器存在，样式表一删就是死代码。危险动作的区分改由
-    // 文字（「停止跟踪」）和启用状态承担——底色在高对比度主题下本就不可信。
-    m_listenBtn = new QPushButton("开始监听", this);
-    connect(m_listenBtn, &QPushButton::clicked, this, &MainWindow::onStartListening);
-    btnBar->addWidget(m_listenBtn);
-
-    m_unlistenBtn = new QPushButton("停止监听", this);
-    connect(m_unlistenBtn, &QPushButton::clicked, this, &MainWindow::onStopListening);
-    btnBar->addWidget(m_unlistenBtn);
-
-    btnBar->addWidget(new QLabel("→", this));
-
-    m_resetFaultBtn = new QPushButton("复位故障", this);
-    m_resetFaultBtn->setEnabled(false);
-    connect(m_resetFaultBtn, &QPushButton::clicked, this, &MainWindow::onResetFault);
-    btnBar->addWidget(m_resetFaultBtn);
-
-    m_enableBtn = new QPushButton("使能跟踪", this);
-    m_enableBtn->setEnabled(false);
-    connect(m_enableBtn, &QPushButton::clicked, this, &MainWindow::onPrepareTracking);
-    btnBar->addWidget(m_enableBtn);
-
-    m_stopBtn = new QPushButton("停止跟踪", this);
-    connect(m_stopBtn, &QPushButton::clicked, this, &MainWindow::onStopTracking);
-    btnBar->addWidget(m_stopBtn);
-
-    btnBar->addStretch();
-
-    outer->addLayout(btnBar);
-
-    // 联锁拦截。红字 + 加粗 + 原生边框：文字色用 severityColor(Fault)，
-    // 背景不动——写死的浅红底会盖掉操作员设的高对比度主题，而这条恰恰是
-    // 最不该看不清的一行。
-    m_interlockLabel = new QLabel(this);
-    {
-        QPalette p = m_interlockLabel->palette();
-        p.setColor(QPalette::WindowText,
-                   uilogic::severityColor(uilogic::Severity::Fault));
-        m_interlockLabel->setPalette(p);
-        QFont f = m_interlockLabel->font();
-        f.setBold(true);
-        m_interlockLabel->setFont(f);
-    }
-    m_interlockLabel->setFrameShape(QFrame::StyledPanel);
-    m_interlockLabel->setWordWrap(true);
-    m_interlockLabel->hide();
-    outer->addWidget(m_interlockLabel);
-
-    // ── 三栏主体 ──
-    auto *body = new QHBoxLayout;
-    body->setSpacing(12);
-
-    // 两栏宽度都由各自表格的列宽反推，而不是先定 360/420 再硬塞列进去：
-    // 后者只能靠缩字号或裁尾巴收场，而这两张表存在的理由就是把数字看全。
-    // 两张表在 build* 里已按列宽之和 setFixedWidth，所以这里取 sizeHint 即可，
-    // 不再写「+34」那种实测常数：那 34 是 QSS 给 QGroupBox 的 padding 加边框，
-    // 样式表一删就不再成立，而算少一像素就是末列被裁（横向滚动条已关掉，
-    // 超宽不会以滚动条示警，直接吃掉尾巴上的单位）。
-    auto *leftPanel  = buildLeftPanel();
-    leftPanel->setFixedWidth(leftPanel->sizeHint().width());
-    body->addWidget(leftPanel);
-
-    auto *midPanel   = buildMidPanel();
-    midPanel->setFixedWidth(midPanel->sizeHint().width());
-    body->addWidget(midPanel);
-
-    auto *rightPanel = buildRightPanel();
-    body->addWidget(rightPanel, 1);
-
-    outer->addLayout(body, 1);
-
-    // ── 底部：AlarmLog（默认折叠） ──
     m_alarmLog = new AlarmLog(this);
-    outer->addWidget(m_alarmLog);
 
-    setCentralWidget(central);
+    // objectName 用 ASCII 而不是直接拿标题当名字：它是 saveState 二进制块里的
+    // 键，改一次面板标题（比如给「目标位姿」加上 BASE 字样）就会让已保存的
+    // 布局对不上号、静默丢掉该面板的位置。标题给人看，objectName 给程序认。
+    auto addDock = [this](const QString &title, const char *objName, QWidget *w,
+                          Qt::DockWidgetArea area) -> QDockWidget * {
+        auto *d = new QDockWidget(title, this);
+        d->setObjectName(QString::fromLatin1(objName));
+        d->setWidget(w);
+        addDockWidget(area, d);
+        return d;
+    };
+
+    m_listenDock  = addDock("监听配置", "listenDock",  buildListenPanel(),  Qt::LeftDockWidgetArea);
+    m_targetDock  = addDock("目标位姿 (BASE)", "targetDock", buildTargetPanel(), Qt::LeftDockWidgetArea);
+    m_compareDock = addDock("位姿对比", "compareDock", buildComparePanel(), Qt::LeftDockWidgetArea);
+    m_cumulDock   = addDock("累积修正", "cumulDock",   buildCumulPanel(),   Qt::RightDockWidgetArea);
+    m_paramDock   = addDock("控制参数", "paramDock",   buildParamPanel(),   Qt::RightDockWidgetArea);
+    m_commDock    = addDock("通信指标", "commDock",    buildCommPanel(),    Qt::RightDockWidgetArea);
+    m_alarmDock   = addDock("事件日志", "alarmDock",   m_alarmLog,          Qt::BottomDockWidgetArea);
+    m_alarmDock->hide();   // 默认隐藏，从「视图」菜单调出
+
+    buildMenus();
+    buildStatusBar();
 
     // ── 通信线程 ──
     m_commThread = new QThread(this);
@@ -215,6 +222,17 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 
     const QRect wa = QGuiApplication::primaryScreen()->availableGeometry();
     resize(qMin(1400, wa.width() - 80), qMin(860, wa.height() - 80));
+
+    // 默认布局要在 restoreState 之前存：一份被拖坏的布局（面板拖到屏幕外、
+    // 全部关掉）会被 QSettings 忠实保存，下次启动照样是坏的。有了这份快照，
+    // 「视图 → 恢复默认布局」就能把它救回来。
+    m_defaultLayout = saveState();
+
+    // 窗口几何在构造期恢复：这一步必须早于显示，否则窗口会先按默认尺寸画一帧
+    // 再跳到上次的尺寸。面板布局（restoreState）不在这里，见 showEvent。
+    QSettings st(kSettingsOrg, kSettingsApp);
+    restoreGeometry(st.value("geometry").toByteArray());
+
     updateConnControls();
     saveTargetSnapshot();
     // 初始 m_targetApplied 为真，「应用目标」应当一开始就是灰的：还没改过
@@ -222,8 +240,74 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     updateApplyButton();
 }
 
+std::array<QDockWidget *, 7> MainWindow::docks() const
+{
+    return {m_listenDock, m_targetDock, m_compareDock,
+            m_cumulDock, m_paramDock, m_commDock, m_alarmDock};
+}
+
+void MainWindow::showEvent(QShowEvent *e)
+{
+    QMainWindow::showEvent(e);
+    if (m_layoutRestored)
+        return;
+    m_layoutRestored = true;
+
+    // 面板布局在首次显示时恢复，而不是在构造函数里。showEvent 早于第一次绘制，
+    // 所以看不到「先按默认布局画一帧再跳」的闪动，但窗口此时已经存在——
+    // 浮动面板是顶层窗口，在主窗口还不存在时摆放它并不可靠。
+    // restoreState 依赖每个 dock 与 toolbar 的 objectName，都已在构造期设好。
+    QSettings st(kSettingsOrg, kSettingsApp);
+    restoreState(st.value("windowState").toByteArray());
+
+    // 面板的显示/隐藏另存一份，不使用 restoreState 里的那一位。实测
+    // restoreState 能把浮动面板的区域与几何恢复得分毫不差，却一律把它恢复成
+    // 隐藏（float=1 而 vis=0）：操作员上次把某个面板拖出窗口，下次启动它就
+    // 不见了，得自己想到去「视图」菜单里再勾一次。停靠着的面板不受影响，
+    // 所以这个缺陷只在拖出过浮动窗口的机器上出现，更不容易被发现。
+    //
+    // 这一步必须排到事件循环的下一轮，不能就地做：浮动面板是主窗口的子顶层
+    // 窗口，而 showEvent 期间主窗口本身还没真正映射出来，此时对子窗口
+    // setVisible(true) 会被 Qt 压住不生效（实测 vis 仍为 0）。
+    QTimer::singleShot(0, this, [this] {
+        QSettings s(kSettingsOrg, kSettingsApp);
+        for (QDockWidget *d : docks()) {
+            // 键不存在（首次运行、或新增的面板）时不动，让默认值说话。
+            const QVariant v = s.value("dockVisible/" + d->objectName());
+            if (v.isValid())
+                d->setVisible(v.toBool());
+        }
+    });
+}
+
+void MainWindow::saveLayout()
+{
+    m_layoutSaved = true;
+    QSettings st(kSettingsOrg, kSettingsApp);
+    st.setValue("geometry", saveGeometry());
+    st.setValue("windowState", saveState());
+    for (QDockWidget *d : docks())
+        st.setValue("dockVisible/" + d->objectName(), !d->isHidden());
+}
+
+void MainWindow::closeEvent(QCloseEvent *e)
+{
+    // 布局必须在这里存，不能只在析构里存。关窗口的顺序是
+    // closeEvent → 隐藏主窗口 → 析构，而浮动面板是主窗口的子顶层窗口，
+    // 主窗口一隐藏它们就跟着被显式隐藏。到析构时再 saveState，存下来的就是
+    // 「这个面板是关着的」——操作员上次把面板拖出窗口，下次启动它不见了，
+    // 而且是被如实记录的，怎么调 restoreState 都救不回来。
+    saveLayout();
+    QMainWindow::closeEvent(e);
+}
+
 MainWindow::~MainWindow()
 {
+    // 兜底：程序也可能不经关窗口就退出（QApplication::quit、会话注销）。
+    // closeEvent 走过就不再存，否则会用「已隐藏」的状态盖掉正确的那一份。
+    if (!m_layoutSaved)
+        saveLayout();
+
     if (m_commThread && m_commThread->isRunning()) {
         QMetaObject::invokeMethod(m_worker, "stop", Qt::BlockingQueuedConnection);
         m_commThread->quit();
@@ -232,52 +316,267 @@ MainWindow::~MainWindow()
 }
 
 // ═══════════════════════════════════════════════
-// 左栏：连接配置 + 目标位姿表格
+// 菜单 / 工具栏 / 状态栏
 // ═══════════════════════════════════════════════
 
-QWidget *MainWindow::buildLeftPanel()
+void MainWindow::buildMenus()
+{
+    // ── 监听 ──
+    QMenu *listenMenu = menuBar()->addMenu("监听(&L)");
+    m_startListenAct = listenMenu->addAction("开始监听");
+    m_startListenAct->setShortcut(QKeySequence("F5"));
+    connect(m_startListenAct, &QAction::triggered, this, &MainWindow::onStartListening);
+    m_stopListenAct = listenMenu->addAction("停止监听");
+    m_stopListenAct->setShortcut(QKeySequence("Shift+F5"));
+    connect(m_stopListenAct, &QAction::triggered, this, &MainWindow::onStopListening);
+
+    // ── 控制 ──
+    QMenu *ctlMenu = menuBar()->addMenu("控制(&C)");
+    m_enableAct = ctlMenu->addAction("使能跟踪");
+    m_enableAct->setShortcut(QKeySequence("F9"));
+    connect(m_enableAct, &QAction::triggered, this, &MainWindow::onPrepareTracking);
+    m_stopTrackAct = ctlMenu->addAction("停止跟踪");
+    m_stopTrackAct->setShortcut(QKeySequence("Esc"));
+    // 提示文案挂在动作本身：软停止与急停的区别是关于「按下这个会发生什么」
+    // 的说明，属于这个动作，而不属于界面上某个固定位置。
+    m_stopTrackAct->setToolTip(kNoticeNormal);
+    connect(m_stopTrackAct, &QAction::triggered, this, &MainWindow::onStopTracking);
+    ctlMenu->addSeparator();
+    m_resetFaultAct = ctlMenu->addAction("复位故障");
+    connect(m_resetFaultAct, &QAction::triggered, this, &MainWindow::onResetFault);
+    ctlMenu->addSeparator();
+    QAction *paramsAct = ctlMenu->addAction("编辑控制参数…");
+    connect(paramsAct, &QAction::triggered, this, &MainWindow::onEditParams);
+
+    // 刻意不像 rlPlanDemo 那样对每个动作再调一次 this->addAction()：那一步是
+    // 为「不在菜单栏里的菜单」准备的。挂在菜单栏下的 QAction 的快捷键已经是
+    // 窗口作用域（菜单未展开时同样生效），再把同一个动作加到窗口上会让
+    // 同一组按键在 QShortcutMap 里注册两次，运行时打 "Ambiguous shortcut
+    // overload" 并且什么都不触发——比没有快捷键更糟。
+
+    // ── 视图：各面板的显示开关 ──
+    // toggleViewAction() 直接给出带勾选状态的 QAction，显示状态与菜单勾选
+    // 自动同步，不必自己维护。
+    QMenu *viewMenu = menuBar()->addMenu("视图(&V)");
+    for (QDockWidget *d : docks())
+        viewMenu->addAction(d->toggleViewAction());
+
+    // ── 工具栏：安全关键动作 ──
+    // 使能与停止同时留在工具栏。菜单里的动作要两次点击才触发（先展开菜单、
+    // 再点条目），停止跟踪不该有这个延迟。
+    QToolBar *tb = addToolBar("控制");
+    tb->setObjectName("controlToolBar");
+    // 动作没有图标。默认的 ToolButtonIconOnly 下无图标动作只剩一个空按钮，
+    // 必须显式要求显示文字。
+    tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    tb->addAction(m_startListenAct);
+    tb->addAction(m_stopListenAct);
+    tb->addSeparator();
+    tb->addAction(m_resetFaultAct);
+    tb->addAction(m_enableAct);
+    tb->addAction(m_stopTrackAct);
+
+    viewMenu->addSeparator();
+    viewMenu->addAction(tb->toggleViewAction());
+    viewMenu->addSeparator();
+    QAction *resetLayoutAct = viewMenu->addAction("恢复默认布局");
+    connect(resetLayoutAct, &QAction::triggered, this, &MainWindow::onResetLayout);
+
+    // ── 帮助 ──
+    QMenu *helpMenu = menuBar()->addMenu("帮助(&H)");
+    QAction *aboutAct = helpMenu->addAction("关于");
+    connect(aboutAct, &QAction::triggered, this, &MainWindow::onAbout);
+    QAction *aboutQtAct = helpMenu->addAction("关于 Qt");
+    connect(aboutQtAct, &QAction::triggered, qApp, &QApplication::aboutQt);
+}
+
+void MainWindow::buildStatusBar()
+{
+    // 常驻标签用 addPermanentWidget（右侧），瞬时消息用 showMessage（左侧）。
+    // 连接/控制状态是「随时想瞥一眼」的信息，占一整块面板不值得——原先四张
+    // 状态卡片吃掉窗口顶部一整条，而它们合起来只有八个汉字的信息量。
+
+    // 安全提示用 addWidget 而不是 addPermanentWidget：addWidget 放在左侧的
+    // 消息区，showMessage 期间被暂时盖住、消息过期后自动露出来。这正是要的
+    // 语义——联锁拦截原因这类瞬时消息应当优先，但它一过去，「软停止不是急停」
+    // 必须自己回来。
+    m_noticeLabel = new QLabel(kNoticeNormal, this);
+    QFont noticeF = m_noticeLabel->font();
+    noticeF.setBold(true);
+    m_noticeLabel->setFont(noticeF);
+    statusBar()->addWidget(m_noticeLabel);
+
+    m_connLabel  = new QLabel(this);
+    m_stateLabel = new QLabel(this);
+    m_ipocLabel  = new QLabel(this);
+    m_cycleLabel = new QLabel(this);
+    for (QLabel *l : {m_connLabel, m_stateLabel, m_ipocLabel, m_cycleLabel}) {
+        QFont f = l->font();
+        f.setBold(true);
+        l->setFont(f);
+        statusBar()->addPermanentWidget(l);
+    }
+    // 读数用等宽字体，理由与表格各列相同：数字每帧都在变，等宽让位数不跳。
+    m_ipocLabel->setFont(uilogic::monospaceFont());
+    m_cycleLabel->setFont(uilogic::monospaceFont());
+
+    pinLabelWidth(m_connLabel,  "已连接 丢包 9999");
+    pinLabelWidth(m_stateLabel, "跟踪中 接近限值 100%");
+    pinLabelWidth(m_ipocLabel,  "IPOC 9999999999");
+    pinLabelWidth(m_cycleLabel, "周期 99.99 ms");
+
+    // 首帧到来前先摆成「未监听 / 无」，否则四个标签是空的，看起来像界面没起来。
+    updateStatusBar(m_state.snapshot());
+}
+
+void MainWindow::updateStatusBar(const StatusSnapshot &s)
+{
+    using uilogic::Severity;
+
+    // 「监听中」「就绪」「同步中」「等待首帧」这些过渡态不涂蓝：Severity 里
+    // 没有蓝这一档（理由见 UiLogic.h），它们与「未监听」同属「没出问题、
+    // 还没开始跑」，一律 Idle，区分靠状态文字本身。
+
+    // ── 连接 ──
+    // 丢包并进这一格而不是另开一格：丢包只在已连接时有意义，而状态栏每多一格
+    // 常驻标签就少一截 showMessage 可用的宽度。详细计数在「通信指标」面板里。
+    if (!s.connected)
+        setSeverityText(m_connLabel, m_listening ? "监听中" : "未监听", Severity::Idle);
+    else if (s.missedCount > 0 || s.peerRejected > 0)
+        setSeverityText(m_connLabel,
+                        QStringLiteral("已连接 丢包 %1").arg(s.missedCount),
+                        Severity::Warn);
+    else
+        setSeverityText(m_connLabel, "已连接", Severity::Ok);
+
+    // ── 控制状态 ──
+    switch (s.state) {
+    case ControlState::Fault:
+        setSeverityText(m_stateLabel, "故障锁存", Severity::Fault);
+        break;
+    case ControlState::Tracking: {
+        // 跟踪质量并进控制状态这一格：它只在 Tracking 下有意义，单独占一格的话
+        // 其余状态下永远显示「无数据」——一格常驻宽度换一句废话。
+        QString  txt = "跟踪中";
+        Severity sev = Severity::Ok;
+        if (s.accumOverLimit || s.trackingQuality == TrackingQuality::OverLimit) {
+            txt = "跟踪(超限)";
+            sev = Severity::Fault;
+        } else if (s.trackingQuality == TrackingQuality::NearLimit) {
+            txt = QStringLiteral("跟踪中 接近限值 %1%")
+                      .arg(int(std::max(s.accumPosPct, s.errorPosPct) * 100));
+            sev = Severity::Warn;
+        } else if (s.trackingQuality == TrackingQuality::LargeError) {
+            txt = QStringLiteral("跟踪中 偏差 %1%").arg(int(s.errorPosPct * 100));
+            sev = Severity::Warn;
+        }
+        setSeverityText(m_stateLabel, txt, sev);
+        break;
+    }
+    case ControlState::Ready:
+        setSeverityText(m_stateLabel, "就绪", Severity::Idle); break;
+    case ControlState::Syncing:
+        setSeverityText(m_stateLabel, "同步中", Severity::Idle); break;
+    case ControlState::WaitingFirstFrame:
+        setSeverityText(m_stateLabel, "等待首帧", Severity::Idle); break;
+    case ControlState::StaleFrame:
+        setSeverityText(m_stateLabel, "帧异常", Severity::Warn); break;
+    default:
+        setSeverityText(m_stateLabel, "未连接", Severity::Idle); break;
+    }
+
+    // ── IPOC ──
+    // 丢包即 IPOC 不连续，与「通信指标」面板同一个判据。
+    setSeverityText(m_ipocLabel, QStringLiteral("IPOC %1").arg(s.ipoc),
+                    !s.connected      ? Severity::Idle
+                    : s.missedCount > 0 ? Severity::Fault
+                                        : Severity::Ok);
+
+    // ── 周期 ──
+    // 显示均值而非单帧值：单帧值每 20ms 抖一位，读不出趋势。判坏的门限与
+    // 「通信指标」面板一致（偏离配置值 10%）——同一个量两处两个门限，
+    // 操作员会看到一格红一格绿。
+    const bool cycleBad = (s.measuredCycleMs > 0.0 && m_cfg.cycleMs > 0.0
+                           && std::fabs(s.measuredCycleMs - m_cfg.cycleMs)
+                                  > 0.10 * m_cfg.cycleMs);
+    setSeverityText(m_cycleLabel,
+                    QStringLiteral("周期 %1 ms").arg(s.cycleMeanMs, 0, 'f', 2),
+                    !s.connected ? Severity::Idle
+                    : cycleBad   ? Severity::Warn
+                                 : Severity::Ok);
+
+    // ── 安全提示 ──
+    const bool isFault = (s.state == ControlState::Fault) || s.accumOverLimit;
+    setSeverityText(m_noticeLabel, isFault ? kNoticeFault : kNoticeNormal,
+                    isFault ? Severity::Fault : Severity::Idle);
+}
+
+void MainWindow::onResetLayout()
+{
+    restoreState(m_defaultLayout);
+    // 显示状态与 restoreState 分开维护（见 showEvent），所以这里也要分开复位。
+    // 少了这一步，「恢复默认布局」救不回被全部关掉的面板——而那正是最需要
+    // 这个菜单项的处境。
+    for (QDockWidget *d : docks())
+        d->setVisible(d != m_alarmDock);   // 事件日志默认隐藏
+}
+
+void MainWindow::onAbout()
+{
+    QMessageBox::about(this, "关于",
+        QStringLiteral(
+            "<b>KUKA RSI POSCORR 位姿跟踪</b><br><br>"
+            "以 RSI 的 POSCORR 通道对机器人做位姿闭环修正。<br><br>"
+            "<b>%1</b><br><br>"
+            "快捷键：<br>"
+            "F5 开始监听　Shift+F5 停止监听<br>"
+            "F9 使能跟踪　Esc 停止跟踪")
+            .arg(QString::fromUtf8(kNoticeNormal)));
+}
+
+// ═══════════════════════════════════════════════
+// 面板：监听配置
+// ═══════════════════════════════════════════════
+
+QWidget *MainWindow::buildListenPanel()
 {
     auto *w = new QWidget(this);
-    auto *v = new QVBoxLayout(w);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(12);
-
-    // ── 连接配置 ──
-    auto *connBox = new QGroupBox("监听配置", w);
-    auto *connLay = new QHBoxLayout(connBox);
-    connLay->addWidget(new QLabel("IP", connBox));
-    m_ipEdit = new QLineEdit(m_cfg.listenIp, connBox);
+    auto *lay = new QHBoxLayout(w);
+    lay->setContentsMargins(6, 4, 6, 4);
+    lay->addWidget(new QLabel("IP", w));
+    m_ipEdit = new QLineEdit(m_cfg.listenIp, w);
     m_ipEdit->setMaximumWidth(120);
-    connLay->addWidget(m_ipEdit);
-    connLay->addWidget(new QLabel(":", connBox));
-    m_portSpin = new QSpinBox(connBox);
+    lay->addWidget(m_ipEdit);
+    lay->addWidget(new QLabel(":", w));
+    m_portSpin = new QSpinBox(w);
     m_portSpin->setRange(1, 65535);
     m_portSpin->setValue(int(m_cfg.listenPort));
     m_portSpin->setMaximumWidth(80);
-    connLay->addWidget(m_portSpin);
-    connLay->addStretch();
-    v->addWidget(connBox);
+    lay->addWidget(m_portSpin);
+    lay->addStretch();
+    return w;
+}
 
-    // ── 目标位姿表格 ──
-    auto *tgtBox = new QGroupBox("目标位姿 (BASE)", w);
-    auto *tgtV = new QVBoxLayout(tgtBox);
-    // 与中栏 poseBox 用同一组边距，两栏的「面板宽 − 表宽」之差才是同一个
-    // 常数（kPanelChrome）。默认的 9px 边距会让左栏比中栏多吃 10px，
-    // 表就比 viewport 宽 10px，横向滚动条随之出现。
-    tgtV->setContentsMargins(4, 4, 4, 4);
-    tgtV->setSpacing(4);
+// ═══════════════════════════════════════════════
+// 面板：目标位姿
+// ═══════════════════════════════════════════════
 
-    auto *tbl = new QTableWidget(6, 4, tgtBox);
+QWidget *MainWindow::buildTargetPanel()
+{
+    auto *w = new QWidget(this);
+    auto *v = new QVBoxLayout(w);
+    v->setContentsMargins(4, 4, 4, 4);
+    v->setSpacing(4);
+
+    auto *tbl = new QTableWidget(6, 4, w);
     tbl->setHorizontalHeaderLabels({"轴", "目标值", "当前值（只读）", "调整"});
     tbl->verticalHeader()->setVisible(false);
     tbl->setShowGrid(false);
     tbl->setSelectionMode(QAbstractItemView::NoSelection);
     tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    // 列宽全部显式给出，不靠 stretchLastSection：实测它并没有把末列收到
-    // 剩余宽度（末列停在 defaultSectionSize=100，四列合计 338 > viewport 316），
-    // 于是横向滚动条常驻并从下方吃掉半行，把第六行 C 压出可视区。
-    // 「调整」列只装两个 22px 按钮加 2px 间距，60px 够用且留出余量。
-    // 字号不再点名 10：删掉 QSS 后系统字号说了算，写死 10 会让读数比周围的
+    // 列宽全部按字体度量显式给出（见 setTableColumns 的注释）。
+    // 「调整」列只装两个方形小按钮加 2px 间距。
+    // 字号不点名 10：删掉 QSS 后系统字号说了算，写死 10 会让读数比周围的
     // 标签小一号，而这几列正是要最先被看清的。
     const QFont tgtNumF = uilogic::monospaceFont();
     const QFontMetrics tgtFm(tgtNumF);
@@ -290,14 +589,9 @@ QWidget *MainWindow::buildLeftPanel()
     // 回到系统字号后 "+" 会顶到边框上。
     const int kStepBtn = std::max(22, tgtFm.height() + 6);
     const int wStep = 2 * kStepBtn + 10;
-    tbl->horizontalHeader()->setStretchLastSection(false);
-    tbl->setColumnWidth(0, wAxis);
-    tbl->setColumnWidth(1, wSpin);
-    tbl->setColumnWidth(2, wLive);
-    tbl->setColumnWidth(3, wStep);
-    // 表格自己钉住宽度，面板宽度再由它反推（见构造函数）。宽度不再存成成员：
-    // 面板已经能从 sizeHint 拿到，存一份只会多一个「写了没人读」的字段。
-    pinTableWidth(tbl);
+    // 多余宽度交给「调整」列：那一列里两个按钮是靠左的定尺寸部件，
+    // 空白落在它们右边不影响任何读数。数值列拉宽反而会让小数点离开视线焦点。
+    setTableColumns(tbl, {wAxis, wSpin, wLive, wStep}, 3);
 
     for (int i = 0; i < 6; ++i) {
         // 轴名
@@ -364,35 +658,39 @@ QWidget *MainWindow::buildLeftPanel()
         });
     }
     fitTableToRows(tbl, 6);
-    tgtV->addWidget(tbl);
+    v->addWidget(tbl);
 
     // 步长选择
     auto *stepRow = new QHBoxLayout;
-    stepRow->addWidget(new QLabel("步长", tgtBox));
-    m_stepSel = new QComboBox(tgtBox);
+    stepRow->addWidget(new QLabel("步长", w));
+    m_stepSel = new QComboBox(w);
     m_stepSel->addItems({"0.01", "0.1", "0.5", "1", "5", "10"});
     m_stepSel->setCurrentText("0.5");
     stepRow->addWidget(m_stepSel);
     stepRow->addStretch();
-    tgtV->addLayout(stepRow);
+    v->addLayout(stepRow);
 
     // 差值预览。原生边框代替浅黄底：它列的是「目标 − 当前」的逐轴数字，
     // 等宽字体让这些数字成列比底色更要紧；而黄底暗示「警告」，实际上
     // 有偏差是编辑目标后的常态，不是异常。
-    m_deltaPreview = new QLabel("差值预览：编辑目标值后此处显示当前偏差", tgtBox);
+    m_deltaPreview = new QLabel("差值预览：编辑目标值后此处显示当前偏差", w);
     m_deltaPreview->setFont(uilogic::monospaceFont());
     m_deltaPreview->setFrameShape(QFrame::StyledPanel);
     m_deltaPreview->setWordWrap(true);
-    tgtV->addWidget(m_deltaPreview);
+    v->addWidget(m_deltaPreview);
 
     // 操作按钮
     auto *actRow = new QHBoxLayout;
-    auto *setCur = new QPushButton("读取当前值", tgtBox);
-    connect(setCur, &QPushButton::clicked, this, &MainWindow::onReadActualTarget);
-    actRow->addWidget(setCur);
+    // 「读取当前值」把 actual 抄进目标输入框，所以它必须和其它动作一样有守卫：
+    // 未收到有效帧时 actual 是全零，读进去再点「应用目标」就把目标设成了原点
+    // ——机器人会朝 BASE 原点走。启用条件由 uilogic::buttonStates 统一给出。
+    m_readActualBtn = new QPushButton("读取当前值", w);
+    m_readActualBtn->setEnabled(false);
+    connect(m_readActualBtn, &QPushButton::clicked, this, &MainWindow::onReadActualTarget);
+    actRow->addWidget(m_readActualBtn);
     // 「应用目标」不再涂成蓝底白字：强调交给下面的 setDefault，那是平台自带的
     // 默认按钮外观，操作员在别的 Windows 程序里已经认得它。
-    auto *apply = new QPushButton("应用目标", tgtBox);
+    auto *apply = new QPushButton("应用目标", w);
     // setDefault 只在按钮的 autoDefault 打开时生效（QPushButton 在非对话框
     // 父窗口里默认关闭）。updateApplyButton 靠 setDefault 表达「改了没发」，
     // 少了这行它就是一次静默的空操作。
@@ -400,34 +698,29 @@ QWidget *MainWindow::buildLeftPanel()
     connect(apply, &QPushButton::clicked, this, &MainWindow::onApplyTarget);
     actRow->addWidget(apply);
     m_applyBtn = apply;
-    auto *undo = new QPushButton("撤销修改", tgtBox);
+    auto *undo = new QPushButton("撤销修改", w);
     connect(undo, &QPushButton::clicked, this, &MainWindow::onUndoTarget);
     actRow->addWidget(undo);
     actRow->addStretch();
-    tgtV->addLayout(actRow);
+    v->addLayout(actRow);
 
-    v->addWidget(tgtBox);
     v->addStretch();
     return w;
 }
 
 // ═══════════════════════════════════════════════
-// 中栏：位姿对比 + 安全限制
+// 面板：位姿对比
 // ═══════════════════════════════════════════════
 
-QWidget *MainWindow::buildMidPanel()
+QWidget *MainWindow::buildComparePanel()
 {
     auto *w = new QWidget(this);
     auto *v = new QVBoxLayout(w);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(12);
+    v->setContentsMargins(4, 4, 4, 4);
 
-    // ── 位姿对比 ──
-    auto *poseBox = new QGroupBox("位姿对比", w);
     // 轴名占第 0 列而不是垂直表头：表头下一行就被 setVisible(false) 隐藏，
     // 写进去的 X/Y/Z/A/B/C 永远显示不出来，六行数字谁也不知道是哪个轴。
-    // 第 4 列 RKorr 输出留空，Task 5 填充。
-    auto *tbl = new QTableWidget(6, 5, poseBox);
+    auto *tbl = new QTableWidget(6, 5, w);
     // 误差列的表头不叫「实时误差」：那三个字暗示它与左右两列同构，而后三行
     // 装的是 SO(3) 最短旋转在世界坐标轴上的分量，不是 A/B/C 三个欧拉角之差。
     // 现场已经因此报过一次假 bug（详见 uilogic::errorColumnTooltip）。
@@ -441,9 +734,6 @@ QWidget *MainWindow::buildMidPanel()
     // 列宽从字体度量算出来，不写死像素：数值列必须放得下最宽的合法读数
     // "-4000.000 mm"（轴行程上限，实测 94px），写死 86 时 1804.000 这种
     // 四位坐标会换行成两行，把整表撑高又顶出滚动条。
-    // 同时 stretchLastSection 必须关掉——开着时最后一列的 setColumnWidth
-    // 不生效。约束只有一条：五列之和等于 viewport，多一像素就出横向滚动条，
-    // 而右对齐数值的尾巴（单位）正好落在被截掉的那一段里。
     // 注：col4 原先的 100 不是被表头文字「RKorr 输出」顶出来的（实测
     // minimumSectionSize=28，表头文字只需 47px），它只是 Qt 的
     // defaultSectionSize，改小完全生效——别去找那个不存在的约束。
@@ -467,16 +757,9 @@ QWidget *MainWindow::buildMidPanel()
         numFm.horizontalAdvance("-4000.000 mm") + kCellPad,
         numFm.horizontalAdvance("Rz -180.000 deg") + kCellPad,
         hdrFm.horizontalAdvance("误差（旋转向量）") + kCellPad});
-    tbl->horizontalHeader()->setStretchLastSection(false);
-    tbl->setColumnWidth(0, kAxisCol);
-    tbl->setColumnWidth(1, wData);
-    tbl->setColumnWidth(2, wError);
-    tbl->setColumnWidth(3, wData);
-    tbl->setColumnWidth(4, wRkorr);
-    // 面板宽度反过来由列宽决定，而不是先定 420 再硬塞五列进去：
-    // 后者只能靠缩字号或裁尾巴收场，而这张表存在的理由就是把数字看全。
-    // 表格自己钉住宽度，面板宽度再由它反推（见构造函数）。
-    pinTableWidth(tbl);
+    // 多余宽度交给误差列：它是这张表里最需要被读全的一列（带前缀、最长），
+    // 而且拉宽它不会把任何一列的单位后缀推出可视区。
+    setTableColumns(tbl, {kAxisCol, wData, wError, wData, wRkorr}, 2);
     // 六行必须一屏放下：默认行高下只露出 X/Y/Z/A，B 与 C 被挤到滚动条以外，
     // 轴名从「看不见」变成「要滚动才看得见」，对操作员是同一个问题。
     // 高度交给 fitTableToRows 按实测行高算（见其声明处的理由）。
@@ -519,7 +802,7 @@ QWidget *MainWindow::buildMidPanel()
         tbl->setItem(i, 2, err);
         m_errorItem[i] = err;
 
-        // 目标（只显示，不编辑——编辑在左栏）
+        // 目标（只显示，不编辑——编辑在「目标位姿」面板）
         auto *tgt = new QTableWidgetItem("--");
         tgt->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         tgt->setFlags(Qt::NoItemFlags);
@@ -537,18 +820,33 @@ QWidget *MainWindow::buildMidPanel()
         m_rkorrItem[i] = rk;
     }
     fitTableToRows(tbl, 6);
-    auto *poseLay = new QVBoxLayout(poseBox);
-    poseLay->setContentsMargins(4, 4, 4, 4);
-    poseLay->addWidget(tbl);
-    v->addWidget(poseBox);
+    v->addWidget(tbl);
+    v->addStretch();
+    return w;
+}
 
-    // ── 安全限制 ──
-    auto *safeBox = new QGroupBox("安全限制", w);
-    auto *safeV = new QVBoxLayout(safeBox);
-    safeV->setSpacing(6);
+// ═══════════════════════════════════════════════
+// 面板：累积修正 / 控制参数 / 通信指标
+// ═══════════════════════════════════════════════
 
-    m_cumulBar = new CumulativeBar(safeBox);
-    safeV->addWidget(m_cumulBar);
+QWidget *MainWindow::buildCumulPanel()
+{
+    // 同 buildCommPanel：六行进度条不该被多余高度拉开，行距变了就不像一组了。
+    auto *w = new QWidget(this);
+    auto *v = new QVBoxLayout(w);
+    v->setContentsMargins(0, 0, 0, 0);
+    m_cumulBar = new CumulativeBar(w);
+    v->addWidget(m_cumulBar);
+    v->addStretch();
+    return w;
+}
+
+QWidget *MainWindow::buildParamPanel()
+{
+    auto *w = new QWidget(this);
+    auto *v = new QVBoxLayout(w);
+    v->setContentsMargins(6, 4, 6, 4);
+    v->setSpacing(6);
 
     // 控制参数只读行：标签与数值在同一次循环里成对创建，
     // 行列由同一个下标算出，错位在结构上不可能发生（表见文件顶部 kParams）。
@@ -558,12 +856,12 @@ QWidget *MainWindow::buildMidPanel()
     for (int i = 0; i < 6; ++i) {
         const int row = i / 2;
         const int col = (i % 2) * 2;
-        auto *name = new QLabel(kParams[i].label, safeBox);
+        auto *name = new QLabel(kParams[i].label, w);
         paramForm->addWidget(name, row, col);
 
         // 只读数值：等宽 + 右对齐，六个参数的小数点成列才能一眼看出量级差异。
         // 原先靠动态属性让 QSS 的 readout 规则挑中它，属性一删就得自己带字体。
-        auto *val = new QLabel("--", safeBox);
+        auto *val = new QLabel("--", w);
         val->setFont(uilogic::monospaceFont());
         val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         paramForm->addWidget(val, row, col + 1);
@@ -571,36 +869,26 @@ QWidget *MainWindow::buildMidPanel()
     }
     paramForm->setColumnStretch(1, 1);
     paramForm->setColumnStretch(3, 1);
-    safeV->addLayout(paramForm);
+    v->addLayout(paramForm);
 
-    m_paramsBtn = new QPushButton("编辑控制参数…", safeBox);
+    m_paramsBtn = new QPushButton("编辑控制参数…", w);
     connect(m_paramsBtn, &QPushButton::clicked, this, &MainWindow::onEditParams);
-    safeV->addWidget(m_paramsBtn);
-
-    v->addWidget(safeBox);
+    v->addWidget(m_paramsBtn);
     v->addStretch();
     return w;
 }
 
-// ═══════════════════════════════════════════════
-// 右栏：图表 + 通信卡片
-// ═══════════════════════════════════════════════
-
-QWidget *MainWindow::buildRightPanel()
+QWidget *MainWindow::buildCommPanel()
 {
+    // 卡片外面要一层带 addStretch 的容器。直接把 CommCards 交给 QDockWidget 的
+    // 话，面板分到的多余高度会全部灌进那一行卡片，四张卡片被拉成一人多高、
+    // 上下两行读数隔开半屏——同一张卡片上的「均值」与「P99」本该并读。
     auto *w = new QWidget(this);
     auto *v = new QVBoxLayout(w);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(8);
-
-    m_chartPos = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Position, w);
-    m_chartRot = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Rotation, w);
-    v->addWidget(m_chartPos, 2);
-    v->addWidget(m_chartRot, 2);
-
+    v->setContentsMargins(4, 4, 4, 4);
     m_commCards = new CommCards(w);
     v->addWidget(m_commCards);
-
+    v->addStretch();
     return w;
 }
 
@@ -614,10 +902,11 @@ void MainWindow::updateConnControls()
     // 这个函数仍然需要：构造期还没有第一帧快照、bindFailed 回调也要在
     // 下一次刷新到来之前立刻把按钮改回去。
     const ButtonStates b = uilogic::buttonStates(m_state.snapshot(), m_listening);
-    if (m_ipEdit)      m_ipEdit->setEnabled(b.connEditable);
-    if (m_portSpin)    m_portSpin->setEnabled(b.connEditable);
-    if (m_listenBtn)   m_listenBtn->setEnabled(b.startListen);
-    if (m_unlistenBtn) m_unlistenBtn->setEnabled(b.stopListen);
+    if (m_ipEdit)         m_ipEdit->setEnabled(b.connEditable);
+    if (m_portSpin)       m_portSpin->setEnabled(b.connEditable);
+    if (m_startListenAct) m_startListenAct->setEnabled(b.startListen);
+    if (m_stopListenAct)  m_stopListenAct->setEnabled(b.stopListen);
+    if (m_readActualBtn)  m_readActualBtn->setEnabled(b.readActual);
 }
 
 void MainWindow::onStartListening()
@@ -625,7 +914,8 @@ void MainWindow::onStartListening()
     if (!m_worker || m_listening) return;
     m_cfg.listenIp   = m_ipEdit->text().trimmed();
     m_cfg.listenPort = quint16(m_portSpin->value());
-    if (m_interlockLabel) m_interlockLabel->hide();
+    // 上一次的联锁拦截原因已经过时，别让它留在状态栏里误导下一次尝试。
+    statusBar()->clearMessage();
     QMetaObject::invokeMethod(m_worker, "applyConfig", Qt::QueuedConnection,
                               Q_ARG(AppConfig, m_cfg));
     QMetaObject::invokeMethod(m_worker, "start", Qt::QueuedConnection);
@@ -636,7 +926,7 @@ void MainWindow::onStopListening()
     if (!m_worker) return;
     QMetaObject::invokeMethod(m_worker, "stop", Qt::QueuedConnection);
     // socket 一关就不可能再收发帧，跟踪也就无从谈起。不取消的话控制器
-    // 状态会停在 Tracking，状态卡片持续显示「跟踪中」——覆盖一台已经
+    // 状态会停在 Tracking，状态栏持续显示「跟踪中」——覆盖一台已经
     // 断开的机器，这是最坏的一类显示错误。
     QMetaObject::invokeMethod(m_worker, "setTracking", Qt::QueuedConnection,
                               Q_ARG(bool, false));
@@ -806,6 +1096,10 @@ void MainWindow::onZeroToActual()
 
 void MainWindow::onReadActualTarget()
 {
+    // 按钮的禁用状态不是唯一入口：回车、辅助工具、以后可能加的快捷键都能
+    // 走到这里。守卫复用同一个 buttonStates，不在这里另写一套判定。
+    if (!uilogic::buttonStates(m_state.snapshot(), m_listening).readActual)
+        return;
     const Pose a = m_state.snapshot().actual;
     m_suppressTargetSignal = true;
     const double *v = &a.x;
@@ -829,11 +1123,13 @@ void MainWindow::onPrepareTracking()
     const double cycleMs    = (s.frameCount >= kMinSamples) ? s.cycleMeanMs : 0.0;
     const QStringList blocked = SessionGuard::enableChecks(m_cfg, cycleMs);
     if (!blocked.isEmpty()) {
-        m_interlockLabel->setText("使能被拦截：" + blocked.join("; "));
-        m_interlockLabel->show();
+        // 拦截原因走状态栏的瞬时消息，不再占一条常驻的红字横幅：它只在
+        // 「刚点了使能却没反应」那一刻需要被读到。10 秒足够读完，之后
+        // 让位给常驻的安全提示，而不是一直留在界面上冒充当前故障。
+        statusBar()->showMessage("使能被拦截：" + blocked.join("; "), 10000);
         return;
     }
-    m_interlockLabel->hide();
+    statusBar()->clearMessage();
 
     const Pose t = s.target;
     const QMessageBox::StandardButton r = QMessageBox::question(
@@ -882,14 +1178,9 @@ void MainWindow::onRefresh()
     const StatusSnapshot s = m_state.snapshot();
 
     // ── 状态栏 ──
-    m_statusBar->updateFrom(s, m_listening);
-    const bool isFault = (s.state == ControlState::Fault) || s.accumOverLimit;
-    m_statusBar->setWarning(
-        isFault ? "故障：跟踪已停止！检查累计修正或通信状态。紧急情况请按示教器物理急停。"
-                : "软停止：RKorr=0，RSI 回包保持。不是急停。紧急情况请按示教器物理急停。",
-        isFault);
+    updateStatusBar(s);
 
-    // ── 中栏位姿对比 ──
+    // ── 位姿对比 ──
     const double act[6] = {s.actual.x, s.actual.y, s.actual.z,
                            s.actual.a, s.actual.b, s.actual.c};
     const double err[6] = {s.error.x, s.error.y, s.error.z,
@@ -926,14 +1217,14 @@ void MainWindow::onRefresh()
                 uilogic::severityColor(uilogic::Severity::Idle));
         else
             m_rkorrItem[i]->setData(Qt::ForegroundRole, QVariant());
-        // 左栏当前值
+        // 目标位姿面板的当前值列
         m_liveLabel[i]->setText(uilogic::formatValue(act[i], i));
     }
 
-    // ── 安全限制 ──
+    // ── 累积修正 ──
     m_cumulBar->updateFrom(s.accum, m_cfg.accumLimitPosMm, m_cfg.accumLimitRotDeg);
 
-    // ── 通信卡片 ──
+    // ── 通信指标 ──
     m_commCards->updateFrom(s, m_cfg.cycleMs);
 
     // ── 控制参数只读 ──
@@ -943,21 +1234,22 @@ void MainWindow::onRefresh()
                                    .arg(m_cfg.*(kParams[i].field), 0, 'f', kParams[i].decimals)
                                    .arg(kParams[i].unit));
 
-    // ── 使能按钮状态机 ──
+    // ── 动作启用状态机 ──
     // 全部交给 uilogic::buttonStates，界面这边不再自己判状态。原先手写的
     // 那条 `m_stopBtn->setEnabled(s.state == Tracking)` 已整段删除：留着它
     // 会在 StaleFrame / Syncing 下继续把停止按钮置灰，而那正是最需要能停的
     // 时刻（反馈已异常、PoseController 仍在发增量）。
     const ButtonStates btn = uilogic::buttonStates(s, m_listening);
-    m_resetFaultBtn->setEnabled(btn.resetFault);
-    m_enableBtn->setEnabled(btn.enableTrack);
-    m_enableBtn->setText(s.state == ControlState::Tracking ? "已使能跟踪"
-                                                           : "使能跟踪");
-    m_stopBtn->setEnabled(btn.stopTrack);
-    m_listenBtn->setEnabled(btn.startListen);
-    m_unlistenBtn->setEnabled(btn.stopListen);
+    m_resetFaultAct->setEnabled(btn.resetFault);
+    m_enableAct->setEnabled(btn.enableTrack);
+    m_enableAct->setText(s.state == ControlState::Tracking ? "已使能跟踪"
+                                                          : "使能跟踪");
+    m_stopTrackAct->setEnabled(btn.stopTrack);
+    m_startListenAct->setEnabled(btn.startListen);
+    m_stopListenAct->setEnabled(btn.stopListen);
     m_ipEdit->setEnabled(btn.connEditable);
     m_portSpin->setEnabled(btn.connEditable);
+    m_readActualBtn->setEnabled(btn.readActual);
 
     // ── 事件日志 ──
     // 边沿触发：只在告警「发生」时记一条，而不是在它「持续」的每一帧。

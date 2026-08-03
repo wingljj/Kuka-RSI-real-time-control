@@ -88,6 +88,17 @@ ButtonStates buttonStates(const StatusSnapshot &s, bool listening)
                      || s.state == ControlState::StaleFrame
                      || s.state == ControlState::Syncing);
 
+    // 「读取当前值」的判据是 frameCount，不是 connected。两个理由：
+    // 1) frameCount > 0 恰好等价于「actual 里装的是真实收到过的位姿」。
+    //    connected 为真而 frameCount 为 0 的窗口是存在的（绑定成功、
+    //    首帧未到），而那正是缺陷现场：actual 全零被抄进目标框，
+    //    再点「应用目标」就把目标设成了 BASE 原点。
+    // 2) frameCount 只增不减，connected 会随链路瞬断反复翻转。用 connected
+    //    会让按钮在丢包时一闪一闪；而链路断开时最后一帧 actual 仍是真实
+    //    位姿，读它去对齐目标是合理操作——恰恰是断开后想把目标拉回当前
+    //    位置的时候最需要它。
+    b.readActual  = (s.frameCount > 0);
+
     return b;
 }
 

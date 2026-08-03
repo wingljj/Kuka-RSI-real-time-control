@@ -53,7 +53,6 @@ add_executable(rsi_host
     src/main.cpp
     src/ui/MainWindow.cpp
     src/ui/ErrorChart.cpp
-    src/ui/StatusBar.cpp
     src/ui/CommCards.cpp
     src/ui/CumulativeBar.cpp
     src/ui/AlarmLog.cpp

@@ -3,7 +3,12 @@
 #include <QTableWidget>
 #include <QWidget>
 
-// 可折叠事件日志，原生表格外观，默认折叠。最大 200 条。
+// 事件日志，原生表格外观。最大 200 条。
+//
+// 自带的折叠机制已删除：这个部件现在装在 QDockWidget 里，显示与隐藏由
+// 面板标题栏的关闭按钮和「视图」菜单负责。两套开关并存的后果不只是重复——
+// 折叠态会 setMaximumHeight(28)，于是从「视图」菜单调出面板时，面板是开的
+// 而内容仍是折的，操作员看到一条空白横条，无从知道该点哪里。
 class AlarmLog : public QWidget
 {
     Q_OBJECT
@@ -15,19 +20,10 @@ public:
     void clear();
     bool exportCsv(const QString &path);
 
-private slots:
-    void toggleCollapse();
-
 private:
-    QPushButton  *m_toggle = nullptr;
     QPushButton  *m_export = nullptr;
     QPushButton  *m_clear  = nullptr;
     QTableWidget *m_table  = nullptr;
-    QWidget      *m_content = nullptr;
-    bool m_collapsed = true;   // 默认折叠
-    // 折叠后只留标题栏。高度按标题栏实测算而不是写死 28：那个常数是配合
-    // 样式表里 9-10px 字号定的，回到系统字号后按钮会被压掉一截。
-    int  m_collapsedHeight = 28;
     int  m_count     = 0;
     static constexpr int kMaxRows = 200;
 };

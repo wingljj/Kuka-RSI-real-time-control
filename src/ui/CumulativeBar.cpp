@@ -12,12 +12,8 @@ CumulativeBar::CumulativeBar(QWidget *parent) : QWidget(parent)
     v->setContentsMargins(4, 4, 4, 4);
     v->setSpacing(2);
 
-    m_title = new QLabel("累积修正", this);
-    QFont titleF = m_title->font();
-    titleF.setBold(true);
-    m_title->setFont(titleF);
-    v->addWidget(m_title);
-
+    // 标题不再自己画：这个部件装在标题为「累积修正」的 QDockWidget 里，
+    // 再写一遍就是紧挨着的两行同样的字。
     auto *grid = new QGridLayout;
     grid->setSpacing(2);
     const char *names[6] = {"X", "Y", "Z", "A", "B", "C"};

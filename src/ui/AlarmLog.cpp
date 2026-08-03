@@ -12,19 +12,13 @@
 AlarmLog::AlarmLog(QWidget *parent) : QWidget(parent)
 {
     auto *top = new QVBoxLayout(this);
-    top->setContentsMargins(0, 0, 0, 0);
-    top->setSpacing(0);
+    top->setContentsMargins(4, 4, 4, 4);
+    top->setSpacing(4);
 
-    // 标题栏
+    // 工具行。标题不再自己画：QDockWidget 的标题栏已经写着「事件日志」，
+    // 再加一遍就是两行同样的字。
     auto *bar = new QHBoxLayout;
-    bar->setContentsMargins(8, 4, 8, 4);
-    m_toggle = new QPushButton("▶ 事件日志", this);
-    m_toggle->setFlat(true);
-    QFont toggleF = m_toggle->font();
-    toggleF.setBold(true);
-    m_toggle->setFont(toggleF);
-    connect(m_toggle, &QPushButton::clicked, this, &AlarmLog::toggleCollapse);
-    bar->addWidget(m_toggle);
+    bar->setContentsMargins(0, 0, 0, 0);
     bar->addStretch();
     m_export = new QPushButton("导出 CSV", this);
     connect(m_export, &QPushButton::clicked, this, [this] { exportCsv("alarm_log.csv"); });
@@ -34,12 +28,7 @@ AlarmLog::AlarmLog(QWidget *parent) : QWidget(parent)
     bar->addWidget(m_clear);
     top->addLayout(bar);
 
-    // 表格内容区
-    m_content = new QWidget(this);
-    auto *cv = new QVBoxLayout(m_content);
-    cv->setContentsMargins(0, 0, 0, 0);
-
-    m_table = new QTableWidget(0, 4, m_content);
+    m_table = new QTableWidget(0, 4, this);
     m_table->setHorizontalHeaderLabels({"时间", "级别", "事件", "建议动作"});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -56,16 +45,7 @@ AlarmLog::AlarmLog(QWidget *parent) : QWidget(parent)
     m_table->setColumnWidth(1, fm.horizontalAdvance("故障") + 16);
     m_table->setColumnWidth(2, fm.horizontalAdvance("累计修正超限 位置 100% 姿态 100%") + 16);
 
-    cv->addWidget(m_table);
-    top->addWidget(m_content);
-
-    // 默认折叠
-    m_content->setVisible(false);
-    m_export->setVisible(false);
-    m_clear->setVisible(false);
-    m_collapsedHeight = std::max(bar->sizeHint().height(),
-                                 m_toggle->sizeHint().height() + 8);
-    setMaximumHeight(m_collapsedHeight);
+    top->addWidget(m_table, 1);
 }
 
 void AlarmLog::addEvent(Level level, const QString &event, const QString &action)
@@ -119,16 +99,4 @@ bool AlarmLog::exportCsv(const QString &path)
            << m_table->item(r,3)->text() << "\n";
     }
     return true;
-}
-
-void AlarmLog::toggleCollapse()
-{
-    m_collapsed = !m_collapsed;
-    m_content->setVisible(!m_collapsed);
-    m_export->setVisible(!m_collapsed);
-    m_clear->setVisible(!m_collapsed);
-    m_toggle->setText(m_collapsed ? "▶ 事件日志" : "▼ 事件日志");
-    setMaximumHeight(m_collapsed ? m_collapsedHeight : 200);
-    if (!m_collapsed) setMinimumHeight(140);
-    else setMinimumHeight(0);
 }
