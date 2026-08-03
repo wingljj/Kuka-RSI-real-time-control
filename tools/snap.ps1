@@ -21,6 +21,7 @@ public class Win {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 
     // PW_RENDERFULLCONTENT (2) is required for composited / GPU-backed content.
@@ -39,6 +40,12 @@ public class Win {
     }
 }
 "@ -ReferencedAssemblies System.Drawing
+
+# 必须在任何窗口测量之前声明 DPI 感知。否则在 >100% 缩放的机器上，
+# GetWindowRect 返回被虚拟化过的逻辑尺寸，而 PrintWindow 按设备像素绘制——
+# 位图开得比实际内容小，截出来的是窗口左上角一部分。150% 缩放下只有 2/3，
+# 而缺的恰好是右下角，看起来又很像"布局正常、内容不够"，极难察觉。
+[void][Win]::SetProcessDPIAware()
 
 $proc = Get-Process | Where-Object {
     $_.MainWindowHandle -ne 0 -and
