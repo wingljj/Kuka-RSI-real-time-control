@@ -3,6 +3,7 @@
 
 #include <QXmlStreamReader>
 
+#include <cmath>
 #include <limits>
 
 
@@ -102,6 +103,89 @@ private slots:
         QVERIFY(!s.contains("nan"));
         QVERIFY(!s.contains("inf"));
         QVERIFY(s.contains("<IPOC>7</IPOC>"));
+    }
+
+    void parseRob_rejectsNonFiniteRist()
+    {
+        // 这条用例的前提：Qt 把 "nan"/"inf" 当合法浮点解析（ok 为真）。
+        // 先把前提断言出来，否则一旦某天 toDouble 自己开始拒绝它们，
+        // 下面的 QVERIFY(!valid) 会因为走了 !ok 分支而空洞通过，
+        // isfinite 守卫被删掉都发现不了。
+        for (const char *lit : {"nan", "inf", "-inf"}) {
+            const QString s = QString::fromLatin1(lit);
+            bool ok = false;
+            const double parsed = QStringView(s).toDouble(&ok);
+            QVERIFY2(!std::isfinite(parsed), lit);
+            QVERIFY2(ok, lit);
+        }
+
+        // 逐个分量放毒：任何一项非有限都必须拒绝整帧。若只挡 X，
+        // 后五项仍是活的缺口。
+        static const char *keys[6] = {"X", "Y", "Z", "A", "B", "C"};
+        for (const char *poison : {"nan", "inf", "-inf"}) {
+            for (int i = 0; i < 6; ++i) {
+                QByteArray d = "<Rob Type=\"KUKA\"><RIst";
+                for (int k = 0; k < 6; ++k) {
+                    d += ' ';
+                    d += keys[k];
+                    d += "=\"";
+                    d += (k == i) ? QByteArray(poison) : QByteArray("1.5");
+                    d += '"';
+                }
+                d += "/><IPOC>77</IPOC></Rob>";
+                const RobFrame f = RsiCodec::parseRob(d);
+                QVERIFY2(!f.valid, d.constData());
+            }
+        }
+
+        // 大小写变体也要挡住：Qt 的解析不区分大小写，KRC 侧真出问题时
+        // 打印成什么形状不由主机决定。
+        const QByteArray up =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"NaN\" Y=\"INF\" Z=\"3\" A=\"0\" B=\"0\" C=\"0\"/>"
+            "<IPOC>77</IPOC></Rob>";
+        QVERIFY(!RsiCodec::parseRob(up).valid);
+    }
+
+    void parseRob_acceptsFiniteExtremes()
+    {
+        // 守卫只针对非有限值，不得顺手把合法的极端值也拒掉——
+        // 否则真机上一个大坐标就变成"每帧都失败"的全盘故障。
+        const QByteArray d =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1e308\" Y=\"-1e308\" Z=\"1e-308\" "
+                  "A=\"0\" B=\"-180\" C=\"179.9999\"/>"
+            "<IPOC>78</IPOC></Rob>";
+        const RobFrame f = RsiCodec::parseRob(d);
+        QVERIFY(f.valid);
+        QCOMPARE(f.rist.x, 1e308);
+        QCOMPARE(f.rist.y, -1e308);
+        QCOMPARE(f.rist.c, 179.9999);
+    }
+
+    void parseRob_nonFiniteRsolDoesNotRejectFrame()
+    {
+        // RSol 只是诊断字段，解析失败刻意不拒绝整帧（调用点忽略返回值）。
+        // 守卫不能把这条语义改掉：RIst 完好时丢一帧只因为额定位姿里有个
+        // NaN，等于把一个只影响显示的问题升级成通信降级。
+        const QByteArray d =
+            "<Rob Type=\"KUKA\">"
+            "<RIst X=\"1250.5\" Y=\"-10.25\" Z=\"1000.0\" "
+                  "A=\"1.5\" B=\"90.0\" C=\"-45.5\"/>"
+            "<RSol X=\"1250.0\" Y=\"nan\" Z=\"-inf\" "
+                  "A=\"0.0\" B=\"90.0\" C=\"0.0\"/>"
+            "<IPOC>79</IPOC></Rob>";
+        const RobFrame f = RsiCodec::parseRob(d);
+        QVERIFY(f.valid);
+        QCOMPARE(f.rist.x, 1250.5);
+        QCOMPARE(f.ipoc, quint64(79));
+        // 且非有限值绝不能落进 rsol——解析失败时六项整体保持默认，
+        // 不留"前几项新、后几项旧"的拼接位姿。
+        const double *v = &f.rsol.x;
+        for (int i = 0; i < 6; ++i) {
+            QVERIFY(std::isfinite(v[i]));
+            QCOMPARE(v[i], 0.0);
+        }
     }
 
     void parseRob_toleratesTrailingPadding()

@@ -10,18 +10,40 @@ namespace {
 bool readPoseAttrs(const QXmlStreamAttributes &at, Pose *p)
 {
     static const char *keys[6] = {"X", "Y", "Z", "A", "B", "C"};
-    double *dst[6] = {&p->x, &p->y, &p->z, &p->a, &p->b, &p->c};
+    double v[6];
 
     for (int i = 0; i < 6; ++i) {
         if (!at.hasAttribute(QLatin1String(keys[i])))
             return false;
         bool ok = false;
-        const double v =
+        const double d =
             at.value(QLatin1String(keys[i])).toDouble(&ok);
         if (!ok)
             return false;
-        *dst[i] = v;
+        // 非有限值守卫。QStringView::toDouble 把 "nan"/"inf"/"-inf" 当作
+        // 合法输入并置 ok 为真（实测 Qt 6.5.3；只有 MSVC 的 "1.#QNAN" 写法
+        // 才落到 !ok），所以仅靠 ok 判不出非有限值。放过去的后果不是显示
+        // 难看：帧被判有效后 RIst 会经 RsiWorker::m_lastActual 进入
+        // PoseController::resetToActual，把 m_target 直接设成 NaN。step()
+        // 里的 poseIsFinite 守卫只覆盖跟踪路径，归零/复位故障/停止跟踪这
+        // 条路径没有守卫，NaN 目标就此驻留在控制器里。
+        //
+        // 这里必须拒绝整帧，而不能像 buildSen 那样把该分量降级为 0：发送侧
+        // 的 0 有明确语义（本周期无修正），接收侧的 0 却是一个具体位置——
+        // 一个分量算不出来说明 KRC 侧这一帧的位姿整体不可信，把它当原点用
+        // 会让机器人朝原点冲。整帧判 invalid 走的是既有的降级路径（丢包
+        // 计数 + 本周期回零增量 + 仍然按 IPOC 回包），KRC 不会因此停机。
+        if (!std::isfinite(d))
+            return false;
+        v[i] = d;
     }
+
+    // 六项全部通过后才落盘。RSol 走同一个函数但解析失败不拒绝整帧（它只是
+    // 诊断字段，调用点刻意忽略返回值），若边解析边写，一个中途失败的 RSol
+    // 会留下"前几项是本帧新值、后几项是上次的旧值"的拼接位姿——那比整体
+    // 保持默认更难判读，且看不出解析曾经失败过。
+    p->x = v[0]; p->y = v[1]; p->z = v[2];
+    p->a = v[3]; p->b = v[4]; p->c = v[5];
     return true;
 }
 
