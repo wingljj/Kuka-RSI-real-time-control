@@ -1,6 +1,7 @@
 #pragma once
 #include <QAction>
 #include <QByteArray>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDockWidget>
 #include <QDoubleSpinBox>
@@ -30,6 +31,10 @@ public:
     explicit MainWindow(const AppConfig &cfg, QWidget *parent = nullptr);
     ~MainWindow() override;
 
+protected:
+    void closeEvent(QCloseEvent *e) override;
+    void showEvent(QShowEvent *e) override;
+
 private slots:
     void onRefresh();
     void onTargetEdited();
@@ -45,10 +50,6 @@ private slots:
     void onEditParams();
     void onResetLayout();
     void onAbout();
-
-protected:
-    void showEvent(QShowEvent *e) override;
-    void closeEvent(QCloseEvent *e) override;
 
 private:
     void saveLayout();

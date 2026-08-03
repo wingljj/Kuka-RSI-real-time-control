@@ -298,6 +298,12 @@ void MainWindow::closeEvent(QCloseEvent *e)
     // 「这个面板是关着的」——操作员上次把面板拖出窗口，下次启动它不见了，
     // 而且是被如实记录的，怎么调 restoreState 都救不回来。
     saveLayout();
+    // 显式退进程。单靠 quitOnLastWindowClosed 是间接的：若析构函数里
+    // wait(2000) 超时，通信线程可能赶不上，QUdpSocket 来不及 close，
+    // 端口还被占着而新实例已经启动——两个 socket 共享同一端口不报错，
+    // UDP 包被 OS 随机分配，表现就是间歇性断连重连。真正的防线是
+    // main.cpp 里的单实例锁，这里是一层兜底。
+    QApplication::quit();
     QMainWindow::closeEvent(e);
 }
 

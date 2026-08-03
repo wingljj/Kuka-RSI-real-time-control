@@ -3,6 +3,7 @@
 #include <QFile>
 #include <QMessageBox>
 #include <QMetaType>
+#include <QSharedMemory>
 #include "core/AppConfig.h"
 #include "core/Pose.h"
 #include "ui/MainWindow.h"
@@ -10,6 +11,21 @@
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
+
+    // 单实例保护。Qt 的 QUdpSocket 默认带 ShareAddress，两个进程能同时
+    // 绑定同一个 UDP 端口而不报错——结果 UDP 包被 OS 随机分配给其中
+    // 一个，另一个因收不到帧而看门狗反复触发：connected 在已连接/未监听
+    // 之间抖动、ring 清空导致图表闪烁。这也正是用户报告的间歇性断连重连。
+    // QSharedMemory 在进程退出时由 OS 自动回收，崩溃也不会残留锁。
+    static QSharedMemory singleton("kuka_rsi_host_instance");
+    if (!singleton.create(1)) {
+        QMessageBox::critical(nullptr, "已在运行",
+            "rsi_host 已经有一个实例在运行。\n\n"
+            "请先关闭已打开的窗口，再重新启动。\n\n"
+            "如果确定没有别的实例，请打开任务管理器\n"
+            "结束所有 rsi_host.exe 进程后重试。");
+        return 1;
+    }
 
     // Pose / AppConfig 以字符串名 invokeMethod + Q_ARG 跨线程排队传递。
     // Q_DECLARE_METATYPE 只声明类型，显式注册是对"队列连接静默失败"的保险，
