@@ -15,7 +15,9 @@ private slots:
         QCOMPARE(c.vmaxRotDegS, 10.0);
         QCOMPARE(c.accumLimitPosMm, 30.0);
         QCOMPARE(c.accumLimitRotDeg, 15.0);
-        QCOMPARE(c.watchdogMissLimit, 3);
+        // 25 帧 ≈ 100ms（4ms 周期），与 KRC 侧 Timeout（100 周期）同量级。
+        // 旧值 3（12ms）对真实网络过紧：一次普通抖动就足以停掉跟踪。
+        QCOMPARE(c.watchdogMissLimit, 25);
         QCOMPARE(c.targetTrajectoryMs, 1000.0);
         QCOMPARE(c.physVmaxPosMmS, 500.0);
         QCOMPARE(c.physVmaxRotDegS, 60.0);
@@ -138,7 +140,7 @@ private slots:
         // 类型不符的字段必须保留默认值，而不是被静默写成 0 或空
         QCOMPARE(c.listenIp, QString("192.168.44.1"));
         QCOMPARE(c.listenPort, quint16(59152));
-        QCOMPARE(c.watchdogMissLimit, 3);
+        QCOMPARE(c.watchdogMissLimit, 25);
         QCOMPARE(c.sessionGapMs, 2000.0);
         QCOMPARE(c.kpPos, 0.30);
         QCOMPARE(c.refreshMs, 33);

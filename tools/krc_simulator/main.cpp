@@ -146,6 +146,10 @@ struct SimContext {
     bool injected = false;
 
     quint64 ipoc = 1000;
+    // 每帧 IPOC 增量。真机 KRC 的 IPOC 是毫秒计数，每帧 +cycle_ms（4ms 模式
+    // +4）。模拟器曾固定 +1，导致主机侧"IPOC 每帧 +1"的错误假设在真机联调
+    // 前从未暴露（2026-08-04 现场：健康流被逐帧判丢包，跟踪被静默停用）。
+    quint64 ipocStep = 1;
     quint64 lastSent = 0;
     quint64 delay = 0;
 
@@ -225,11 +229,13 @@ static int runHeadless(SimContext &ctx, double cycleMs, int cycles,
         const bool reorder = active(ctx.reorderN, i);
         const bool late    = active(ctx.lateN, i);
 
-        // 决定本帧 IPOC：dup 重发上一帧；back 回退；gap 前向跳号。
+        // 决定本帧 IPOC：dup 重发上一帧；back 回退一帧；gap 前向跳 gapN 帧。
+        // 一律以 ipocStep 为单位——注入语义是"帧"，wire 上的单位是毫秒。
         quint64 sendIpoc = ctx.ipoc;
         if (dup)         sendIpoc = ctx.lastSent;
-        else if (back)   sendIpoc = (ctx.lastSent > 0) ? ctx.lastSent - 1 : 0;
-        else if (gap)    sendIpoc = ctx.ipoc + ctx.gapN;
+        else if (back)   sendIpoc = (ctx.lastSent >= ctx.ipocStep)
+                                        ? ctx.lastSent - ctx.ipocStep : 0;
+        else if (gap)    sendIpoc = ctx.ipoc + quint64(ctx.gapN) * ctx.ipocStep;
 
         const QByteArray rob = buildRob(ctx.pose, sendIpoc, ctx.delay, ctx.q);
 
@@ -258,7 +264,7 @@ static int runHeadless(SimContext &ctx, double cycleMs, int cycles,
         // 推进序列：dup 不推进（下帧还发同一个）；其余推进。
         if (!dup) {
             ctx.lastSent = sendIpoc;
-            ctx.ipoc     = sendIpoc + 1;
+            ctx.ipoc     = sendIpoc + ctx.ipocStep;
         }
 
         // 32 位回绕模拟：IPOC 达到 wrapAt 后回到 0（模拟真实 KRC 的溢出回绕）。
@@ -435,6 +441,8 @@ int main(int argc, char **argv)
     SimContext ctx;
     // 逆解预算跟着 --cycle-ms 走：只在这里算一次，两个驱动共用。
     ctx.ikBudget = rlk::solveBudgetForCycle(cycleMs);
+    // 忠实于真机：IPOC 按毫秒推进，每帧 +cycle_ms（向最近整数取整，至少 1）
+    ctx.ipocStep = qMax<quint64>(1, quint64(qRound(cycleMs)));
     ctx.dupN     = p.value(oDup).toInt();
     ctx.gapN     = p.value(oGap).toInt();
     ctx.backN    = p.value(oBack).toInt();
@@ -692,8 +700,9 @@ int main(int argc, char **argv)
             const bool late    = active(ctx.lateN, vizCycle);
             quint64 sendIpoc = ctx.ipoc;
             if (dup)         sendIpoc = ctx.lastSent;
-            else if (back)   sendIpoc = (ctx.lastSent > 0) ? ctx.lastSent - 1 : 0;
-            else if (gap)    sendIpoc = ctx.ipoc + ctx.gapN;
+            else if (back)   sendIpoc = (ctx.lastSent >= ctx.ipocStep)
+                                            ? ctx.lastSent - ctx.ipocStep : 0;
+            else if (gap)    sendIpoc = ctx.ipoc + quint64(ctx.gapN) * ctx.ipocStep;
             const QByteArray rob = buildRob(ctx.pose, sendIpoc, ctx.delay, ctx.q);
             auto sendFrame = [&](const QByteArray &r, quint64 ip) {
                 if (late) QThread::msleep(ctx.lateN);
@@ -706,7 +715,7 @@ int main(int argc, char **argv)
                 if (!drop) sendFrame(rob, sendIpoc);
                 if (ctx.heldValid) { sendFrame(ctx.heldRob, ctx.heldIpoc); ctx.heldValid = false; }
             }
-            if (!dup) { ctx.lastSent = sendIpoc; ctx.ipoc = sendIpoc + 1; }
+            if (!dup) { ctx.lastSent = sendIpoc; ctx.ipoc = sendIpoc + ctx.ipocStep; }
             if (ctx.wrapAt > 0 && ctx.ipoc >= ctx.wrapAt) { ctx.ipoc = 0; ++ctx.wrapCount; }
             ++vizCycle;
         }

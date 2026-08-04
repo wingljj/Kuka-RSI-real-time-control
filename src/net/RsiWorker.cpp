@@ -368,7 +368,14 @@ void RsiWorker::onDatagram()
 
         if (m_missed >= m_cfg.watchdogMissLimit &&
             m_ctl.state() == TrackState::Tracking) {
-            m_ctl.setTracking(false);
+            // 必须是可见的 Fault，不是静默 setTracking(false)：后者让状态无声
+            // 退回 Ready，界面上没有任何征兆——2026-08-04 现场"机械臂纹丝不动、
+            // 无报错"排查半天即因此。设计文档（2026-07-30 spec）本来就规定
+            // "超过即转 Fault"。Fault 需操作员归零确认才能重新使能，这正是
+            // "链路曾经烂到停跟踪"这件事应有的重量。
+            m_ctl.forceFault(QStringLiteral(
+                "consecutive lost packets %1 reached limit %2")
+                .arg(m_missed).arg(m_cfg.watchdogMissLimit));
         }
 
         if (f.valid) {

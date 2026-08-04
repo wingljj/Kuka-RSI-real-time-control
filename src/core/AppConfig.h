@@ -9,7 +9,9 @@ struct AppConfig
 
     double  cycleMs           = 12.0;
     QString senType           = "ImFree";
-    int     watchdogMissLimit = 3;
+    // 连续丢包多少帧转 Fault。25 帧 ≈ 100ms（4ms 周期），与 KRC 侧 Timeout
+    // （100 周期）同量级；旧值 3（12ms）对真实网络过紧，一次普通抖动即停跟踪。
+    int     watchdogMissLimit = 25;
 
     // 联锁与运行时保护（见 SessionGuard）：
     int     krcTimeoutCycles      = 100;       // KRC ETHERNET Timeout（周期数）

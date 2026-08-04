@@ -375,6 +375,30 @@ private slots:
         QVERIFY(afterX <= 0.6 + 1e-9);
     }
 
+    // ── 连续丢包达到 watchdog_miss_limit：转可见 Fault，不许静默停跟踪 ──
+    // 设计文档（2026-07-30 spec）写的就是"超过即转 Fault"，实现走样成了
+    // setTracking(false)——状态无声退回 Ready，界面上没有任何征兆。
+    // 2026-08-04 现场排查难点正在于此：机械臂纹丝不动、无报错、位姿照常刷新。
+    void missLimitReached_faultsVisibly()
+    {
+        Rig r(59238);
+        r.feed(poseAt(kActualX), 1000, 2);           // 建立节拍（步长 1）
+        r.worker->applyTarget(poseAt(kActualX + kTargetOffsetX));
+        r.worker->setTracking(true);
+        r.feed(poseAt(kActualX), 1002, 1);
+        QCOMPARE(r.snap().state, ControlState::Tracking);
+
+        // 单帧前向跳号，缺口超过阈值
+        const quint64 jump = 1003 + quint64(r.cfg.watchdogMissLimit) + 2;
+        r.feed(poseAt(kActualX), jump, 1);
+
+        const StatusSnapshot s = r.snap();
+        QCOMPARE(s.state, ControlState::Fault);
+        QVERIFY2(s.faultReason.contains(QStringLiteral("lost")),
+                 qPrintable(QStringLiteral("faultReason 应说明丢包原因，实际: %1")
+                                .arg(s.faultReason)));
+    }
+
     // 正常配速下预算必须与"按配置周期算"一致：这是"单调安全"论证的另一半，
     // 否则一个把预算无脑调小的实现也能通过上面那个用例。
     void normalPacing_stillEmitsFullPerCycleBudget()

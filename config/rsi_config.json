@@ -25,7 +25,10 @@
     "速度/加速度连续，到点即达）；0 = 轨迹立即完成 = 直通。",
     "",
     "cycle_ms 必须与界面上显示的实测周期一致。若实测是 4.0 而这里写 12.0，",
-    "每个增量会是三倍大——这是首次联机最该先核对的一个数。"
+    "每个增量会是三倍大——这是首次联机最该先核对的一个数。",
+    "",
+    "watchdog_miss_limit：连续丢包达到该帧数即转可见 Fault（需归零确认后",
+    "重新使能）。25 帧 ≈ 100ms（4ms 周期），与 KRC 侧 Timeout 同量级。"
   ],
   "network": {
     "listen_ip":       "0.0.0.0",
@@ -37,7 +40,7 @@
     "session_gap_ms":           2000.0,
     "target_trajectory_ms":     1000.0,
     "sen_type":                 "ImFree",
-    "watchdog_miss_limit":      3,
+    "watchdog_miss_limit":      25,
     "krc_timeout_cycles":       100,
     "krc_poscorr_limit_pos_mm": 25.0,
     "krc_poscorr_limit_rot_deg": 25.0
