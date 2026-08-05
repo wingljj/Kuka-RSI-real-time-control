@@ -153,6 +153,13 @@ struct SimContext {
     quint64 lastSent = 0;
     quint64 delay = 0;
 
+    // 待执行修正缓冲：真机 POSCORR 把收到的修正全额积分进设定值（Limit
+    // ±35mm/帧远大于主机步长，不会丢），驱动按自身速度滞后跟随。旧实现对
+    // 每帧增量限速后把超出部分【直接丢弃】——不忠实，且掩盖了「主机以为
+    // 发到了、机器人没走到」这一类缺陷（2026-08-04 抖动修复时暴露）。
+    // 现在修正先进 pending，每帧按速度/加速度限额消费，余量保留。
+    Pose pending{};
+
     int replies = 0, ipocMismatch = 0, missed = 0;
     quint64 wrapCount = 0;
     double maxRttUs = 0.0, sumRttUs = 0.0;
@@ -215,6 +222,7 @@ static int runHeadless(SimContext &ctx, double cycleMs, int cycles,
             std::copy(ctx.initQ, ctx.initQ + 6, ctx.q);
             ctx.pose = rlk::forward(ctx.q);
             ctx.delay = ctx.delayBase;
+            ctx.pending = Pose{};   // KRL 重启：未消费的修正随之消失
             ctx.heldValid = false;
             ctx.heldRob.clear();
             ctx.sentIpocs.clear();
@@ -298,13 +306,19 @@ static int runHeadless(SimContext &ctx, double cycleMs, int cycles,
                                 ++ctx.ipocMismatch;
                             ctx.sentIpocs.pop_front();
                         }
-                        // 关节模型：笛卡尔 RKorr → 限制 → 目标位姿 → RL 一次逆解
-                        // → q → 正解回报（目标位姿法，替代逐周期雅可比伪逆）。
-                        Pose dx = korr;                     // 笛卡尔增量（mm, °）
+                        // 关节模型：笛卡尔 RKorr → 全额入待执行缓冲 → 按限速
+                        // 消费 → 目标位姿 → RL 一次逆解 → q → 正解回报。
+                        ctx.pending.x += korr.x; ctx.pending.y += korr.y;
+                        ctx.pending.z += korr.z; ctx.pending.a += korr.a;
+                        ctx.pending.b += korr.b; ctx.pending.c += korr.c;
+                        Pose dx = ctx.pending;              // 想走的全部余量
                         kr210::limitCartDelta(&dx, ctx.prevDx,
                                               ctx.maxVelPos, ctx.maxVelRot,
                                               ctx.maxAccelPos, ctx.maxAccelRot,
                                               cycleMs / 1000.0);
+                        ctx.pending.x -= dx.x; ctx.pending.y -= dx.y;
+                        ctx.pending.z -= dx.z; ctx.pending.a -= dx.a;
+                        ctx.pending.b -= dx.b; ctx.pending.c -= dx.c;
                         // 目标位姿 = 当前位姿（正解）+ 限制后的增量。
                         Pose target = ctx.pose;
                         target.x += dx.x;
@@ -685,6 +699,7 @@ int main(int argc, char **argv)
                 std::copy(ctx.initQ, ctx.initQ + 6, ctx.q);
                 ctx.pose = rlk::forward(ctx.q);
                 ctx.delay = ctx.delayBase;
+            ctx.pending = Pose{};   // KRL 重启：未消费的修正随之消失
                 ctx.heldValid = false;
                 ctx.heldRob.clear();
                 ctx.sentIpocs.clear();
@@ -736,11 +751,18 @@ int main(int argc, char **argv)
                 }
                 QElapsedTimer rtt;
                 rtt.start();
-                Pose dx = korr;
+                // 同 headless 路径：修正全额入 pending，按限速消费（见上）。
+                ctx.pending.x += korr.x; ctx.pending.y += korr.y;
+                ctx.pending.z += korr.z; ctx.pending.a += korr.a;
+                ctx.pending.b += korr.b; ctx.pending.c += korr.c;
+                Pose dx = ctx.pending;
                 kr210::limitCartDelta(&dx, ctx.prevDx,
                                       ctx.maxVelPos, ctx.maxVelRot,
                                       ctx.maxAccelPos, ctx.maxAccelRot,
                                       cycleMs / 1000.0);
+                ctx.pending.x -= dx.x; ctx.pending.y -= dx.y;
+                ctx.pending.z -= dx.z; ctx.pending.a -= dx.a;
+                ctx.pending.b -= dx.b; ctx.pending.c -= dx.c;
                 Pose target = ctx.pose;
                 target.x += dx.x; target.y += dx.y; target.z += dx.z;
                 target.a += dx.a; target.b += dx.b; target.c += dx.c;

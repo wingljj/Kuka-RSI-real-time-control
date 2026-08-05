@@ -54,6 +54,10 @@ void PoseController::resetToActual(const Pose &actual)
     // m_lastActual 同步为实际，保证下一次 setTarget 从当前实际出发。
     m_traj.setGoal(actual, actual, 0);
     m_lastActual = actual;
+    // 指令台账重对齐到实际：这同时是「台账与 KRC 侧实际施加量出现常差
+    //（如网络丢过一帧 SEN）」时操作员的修复动作。
+    m_cmd       = actual;
+    m_cmdSynced = true;
     // m_accum 刻意保留，理由见头文件注释
     // m_anchor / m_displacement / m_haveAnchor 同样刻意不动：会话内的归零
     // 不移动原点，否则第 2 层的预算又能被反复领取。只有 beginSession 才换锚点。
@@ -72,8 +76,13 @@ void PoseController::setTracking(bool on)
 {
     if (on) {
         // Fault 必须先经 resetToActual 清除，不能直接重新使能
-        if (m_state == TrackState::Idle && !m_configInvalid)
+        if (m_state == TrackState::Idle && !m_configInvalid) {
             m_state = TrackState::Tracking;
+            // Idle 期间机器人可能被手动移动过，台账已失效。这里只立标志、
+            // 由下一次 step() 用当帧实际重对齐——setTracking 拿不到实际位姿，
+            // 而缓存的 m_lastActual 在「使能早于首帧」时可能还是全零。
+            m_cmdSynced = false;
+        }
     } else if (m_state == TrackState::Tracking) {
         m_state = TrackState::Idle;
     }
@@ -192,10 +201,24 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
     if (!m_traj.isFinished())
         m_traj.advance(elapsedMs / 1000.0);
 
+    // ── 闭环对象是指令台账 m_cmd，不是实测 RIst（2026-08-04 真机抖动修复）──
+    // RKorr 是增量接口，KRC 侧 POSCORR 把它积分成总修正；若误差相对实测
+    // RIst 计算，环路就是「积分器 + 伺服/管线滞后」，4ms 周期 kp=0.1 的等效
+    // 积分增益 25/s 远超几十毫秒伺服滞后的稳定边界——真机表现为在 vmax
+    // 限幅内满幅来回打（疯狂抖动），且累计指令无界（见
+    // stalledPlant_totalCommandConvergesToOffset：旧架构 400 帧发出 240mm）。
+    // 相对台账闭环后极点 = 1−kp，与对象动力学无关，无条件稳定，总指令恰好
+    // 收敛到目标偏移；机器人以自身伺服动态开环跟随。RIst 继续负责安全监控
+    //（物理跳变剔除、锚点位移、界面误差显示 target − RIst）。
+    if (!m_cmdSynced) {
+        m_cmd       = actual;   // 使能瞬间重对齐：Idle 期间机器人可能被移动过
+        m_cmdSynced = true;
+    }
+
     // 位置误差：逐轴差（无奇异问题）。姿态误差：SO(3) 最短旋转（旋转向量，
     // 世界坐标 rad）——奇异/边界目标下不再逐轴 wrap 跳变。
-    const Pose errPos = poseSub(errSrc, actual);   // 仅用 x/y/z
-    const poseops::Quat qA = poseops::quatFromABC(actual.a, actual.b, actual.c);
+    const Pose errPos = poseSub(errSrc, m_cmd);   // 仅用 x/y/z
+    const poseops::Quat qA = poseops::quatFromABC(m_cmd.a, m_cmd.b, m_cmd.c);
     const poseops::Quat qT = poseops::quatFromABC(errSrc.a, errSrc.b, errSrc.c);
     const poseops::Quat qE = poseops::quatError(qT, qA);
     double rotErr[3];
@@ -232,9 +255,10 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
         dRot[0] *= s; dRot[1] *= s; dRot[2] *= s;
     }
 
-    // RKorr 姿态输出：Δ欧拉 = E⁻¹(actual A,B,C)·dRot。奇异时退化为一阶近似 + 限幅。
+    // RKorr 姿态输出：Δ欧拉 = E⁻¹(cmd A,B,C)·dRot。在台账姿态（= KRC 侧被
+    // 修正的设定值）处求 E⁻¹，与增量的施加点一致。奇异时退化为阻尼 E⁻¹。
     double invE[3][3];
-    if (poseops::invEulerRate(actual.a, actual.b, actual.c, invE)) {
+    if (poseops::invEulerRate(m_cmd.a, m_cmd.b, m_cmd.c, invE)) {
         d.a = (invE[0][0]*dRot[0] + invE[0][1]*dRot[1] + invE[0][2]*dRot[2]) * kRadToDeg;
         d.b = (invE[1][0]*dRot[0] + invE[1][1]*dRot[1] + invE[1][2]*dRot[2]) * kRadToDeg;
         d.c = (invE[2][0]*dRot[0] + invE[2][1]*dRot[1] + invE[2][2]*dRot[2]) * kRadToDeg;
@@ -243,7 +267,7 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
         // 保号）替代一阶近似——一阶近似忽略欧拉耦合、方向错误，会让 B 卡在阈值
         // 边界无法推进（实测卡在 -84.3°）。阻尼 E⁻¹ 方向始终正确、增益 ≤10×，
         // 已被范数限幅兜底。
-        const double aR = actual.a * kDegToRad, bR = actual.b * kDegToRad;
+        const double aR = m_cmd.a * kDegToRad, bR = m_cmd.b * kDegToRad;
         const double sa = std::sin(aR), ca = std::cos(aR), sb = std::sin(bR);
         const double cbS = std::cos(bR);
         const double cbD = std::copysign(std::max(std::fabs(cbS), 0.1), cbS);
@@ -301,5 +325,10 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
     // m_displacement / m_accum 仍计算并暴露（accumulated()/commandedSum()），
     // 仅供 UI「累积修正」显示。KRC 侧层 4/5（POSCORR ±25 / POSCORRMON 45）是唯一兜底。
     m_accum = next;
+    // 台账推进：只记真正发出去的量（d 已过 wire 量化）。KRC 把 RKorr.ABC
+    // 逐周期加到被修正设定值的欧拉角上，所以这里同样逐分量相加即是对
+    // KRC 侧设定值的精确镜像。
+    m_cmd.x += d.x; m_cmd.y += d.y; m_cmd.z += d.z;
+    m_cmd.a += d.a; m_cmd.b += d.b; m_cmd.c += d.c;
     return d;
 }

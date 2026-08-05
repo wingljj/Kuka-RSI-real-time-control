@@ -1,5 +1,6 @@
 #include <QtTest>
 #include <cmath>
+#include <deque>
 #include <limits>
 #include "core/PoseController.h"
 
@@ -737,6 +738,111 @@ private slots:
         for (int i = 0; i < 41; ++i)
             sumRot += rotNorm(3.0 / 41.0);
         QVERIFY2(sumRot < 0.05, qPrintable(QStringLiteral("排空吐出 %1 deg").arg(sumRot)));
+    }
+
+    // ── 闭环对象：误差必须相对「指令台账」而非实测 RIst 计算 ─────────────
+    // 真机事故（2026-08-04）：对滞后的实测位姿做比例反馈、经 POSCORR（增量
+    // 积分）施加，等效「积分器 + 被控对象滞后」闭环。4ms 周期 kp=0.1 的等效
+    // 积分增益 25/s 远超真实伺服滞后（几十 ms）下的稳定边界 → 机械臂持续
+    // 抖动，幅值被 vmax 限幅兜成 ±满预算来回打（现场：目标 Z+2mm 疯狂抖动）。
+    // 模拟器的被控对象把修正瞬时施加（滞后 ≈1 帧），所以从未暴露。
+    // 相对指令台账闭环后，环路极点 = 1−kp，与被控对象动力学无关，无条件稳定；
+    // 机器人以自身伺服动态开环跟随指令，不再与滞后的测量值打架。
+    void stalledPlant_totalCommandConvergesToOffset()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos = 0.5;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 2.0, 0, 0, 0});      // Z +2mm，现场同款
+        // 被控对象完全不动（极端滞后）：增量必须几何衰减并收敛到 2mm，
+        // 而不是每帧照发 kp×误差 直到天荒地老。
+        double sum = 0.0, last = 1e9;
+        for (int i = 0; i < 400; ++i) {
+            const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
+            sum += d.z;
+            last = d.z;
+        }
+        QVERIFY2(sum < 2.0 + 1e-6,
+                 qPrintable(QStringLiteral("累计发出 %1 mm，失控").arg(sum)));
+        QVERIFY2(sum > 1.99,
+                 qPrintable(QStringLiteral("累计只发出 %1 mm").arg(sum)));
+        QVERIFY2(qAbs(last) < 1e-6,
+                 qPrintable(QStringLiteral("400 帧后仍在发 %1 mm/帧").arg(last)));
+    }
+
+    void laggedPlant_doesNotOscillate()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos = 0.5;               // 旧架构在纯延迟 6 帧的对象下必振荡
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 2.0, 0, 0, 0});
+        // 被控对象 = 指令和经 6 帧纯延迟（近似伺服 + RSI 管线滞后）
+        std::deque<double> pipe(6, 0.0);
+        double plantZ = 0.0, cmdSum = 0.0, sumAbs = 0.0, prevD = 0.0;
+        int reversals = 0;
+        for (int i = 0; i < 600; ++i) {
+            const Pose d = pc.step(Pose{0, 0, plantZ, 0, 0, 0}, kCycleMs);
+            cmdSum += d.z;
+            sumAbs += qAbs(d.z);
+            if (d.z * prevD < 0.0) ++reversals;
+            if (d.z != 0.0) prevD = d.z;
+            pipe.push_back(cmdSum);
+            plantZ = pipe.front();
+            pipe.pop_front();
+        }
+        QVERIFY2(reversals == 0,
+                 qPrintable(QStringLiteral("增量方向反转 %1 次（振荡）").arg(reversals)));
+        QVERIFY2(sumAbs < 2.0 + 1e-6,
+                 qPrintable(QStringLiteral("总行程 %1 mm，应恰为 2mm").arg(sumAbs)));
+        QVERIFY(qAbs(plantZ - 2.0) < 1e-3);          // 机器人最终到位
+    }
+
+    void stalledPlant_attitudeConverges()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpRot = 0.5;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0, 2.0, 0, 0});      // A +2°
+        double sum = 0.0, last = 1e9;
+        for (int i = 0; i < 400; ++i) {
+            const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
+            sum += d.a;
+            last = d.a;
+        }
+        QVERIFY2(sum < 2.0 + 1e-3,
+                 qPrintable(QStringLiteral("姿态累计发出 %1 deg，失控").arg(sum)));
+        QVERIFY2(sum > 1.98,
+                 qPrintable(QStringLiteral("姿态累计只发出 %1 deg").arg(sum)));
+        QVERIFY(qAbs(last) < 1e-6);
+    }
+
+    // 重新使能跟踪时指令台账必须重新对齐当前实际：Idle 期间操作员可能手动
+    // 移动过机器人，旧台账已失效；不重对齐的话第一帧就会按陈旧台账发增量。
+    void reenableTracking_resyncsCommandToActual()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos = 0.5;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 2.0, 0, 0, 0});
+        const Pose first = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
+        pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);   // 台账继续推进
+        pc.setTracking(false);
+        pc.setTracking(true);                        // 重新使能 → 重对齐
+        const Pose again = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
+        // 重对齐后误差重新从「目标 − 当前实际」起算，与首帧一致
+        QVERIFY(qAbs(again.z - first.z) < 1e-9);
     }
 };
 
