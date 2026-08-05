@@ -5,7 +5,7 @@
 ; 安装范围：当前用户（PrivilegesRequired=lowest，无管理员弹窗）。
 
 #define MyAppName "KUKA RSI 实时位姿跟踪"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.1.2"
 #define MyAppExeName "rsi_host.exe"
 #define MyAppId "{{F3B1A6E8-2D4C-4E9A-9B7C-1A2B3C4D5E6F}}"
 
