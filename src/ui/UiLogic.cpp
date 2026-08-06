@@ -15,6 +15,8 @@ AlarmEdge currentAlarms(const StatusSnapshot &s)
     a.accumOverLimit = s.accumOverLimit && s.state == ControlState::Tracking;
     // 丢包计数在断开时是上一次会话的残值，同样不构成当前告警。
     a.packetLoss     = s.missedCount > 0 && s.connected;
+    // Fault 锁存不看 connected:看门狗静默 Fault 的快照本身就是断链的
+    a.faultLatched   = (s.state == ControlState::Fault);
     return a;
 }
 
@@ -23,6 +25,7 @@ AlarmEdge edgesBetween(const AlarmEdge &prev, const AlarmEdge &now)
     AlarmEdge e;
     e.accumOverLimit = now.accumOverLimit && !prev.accumOverLimit;
     e.packetLoss     = now.packetLoss     && !prev.packetLoss;
+    e.faultLatched   = now.faultLatched   && !prev.faultLatched;
     return e;
 }
 

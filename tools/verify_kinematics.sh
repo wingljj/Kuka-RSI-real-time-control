@@ -112,21 +112,29 @@ else
     echo "FAIL  关节限位下误差仍收敛为 0（限位未生效？err X=${JERR:-?}）"
     fail=$((fail + 1))
 fi
-check_lb "关节限位下主机保持 Tracking 不 Fault" joint "state=Tracking"
+# 2026-08-06(P0-2)后,主机(10s)比模拟器(400 周期 ≈4.8s)活得久:模拟器
+# 停发后看门狗把跟踪转为可见 Fault(link silent)。[final] 的 fault= 显示的是
+# 第一个锁存的原因(后续 forceFault 被 Tracking 守卫挡住),所以断言"结束时
+# 唯一的 Fault 是链路静默"比旧的 state=Tracking 更强:顺带证明关节限位/限速
+# 本身在运行中没有引发任何别的 Fault。
+check_lb "关节限位运行中不 Fault(结束仅链路静默)" joint "state=Fault.*link silent"
 
-# 4. 速度限制：主机给 X 目标 → 模拟器限速响应（慢而不破）→ 误差最终收敛为 0，
-#    主机保持 Tracking。
+# 4. 速度限制：主机给 X 目标 → 模拟器限速响应（慢而不破）→ 误差最终收敛，
+#    运行中不得因限速产生别的 Fault。
 run vel "--track 20" \
     --max-vel-pos 20 --max-accel-pos 2000 --max-vel-rot 5 --max-accel-rot 500
 VERR=$(err_final vel)
-if [ -n "$VERR" ] && awk -v v="$VERR" 'BEGIN{exit !(v<0.001 && v>-0.001)}'; then
+# 收敛阈值 5µm:wire 量化死区(1e-4/kp)可留下 ≈1µm 残差,打印按 3 位小数
+# 四舍五入,边缘值会显示 0.001;5µm 仍远低于机器人重复精度(0.06mm),
+# 与要抓的发散量级(毫米级)有三个数量级的区分度。
+if [ -n "$VERR" ] && awk -v v="$VERR" 'BEGIN{exit !(v<0.005 && v>-0.005)}'; then
     echo "PASS  速度限制下误差收敛（err X=$VERR，限速不影响收敛）"
     pass=$((pass + 1))
 else
     echo "FAIL  速度限制下误差未收敛（err X=${VERR:-?}）"
     fail=$((fail + 1))
 fi
-check_lb "速度限制下主机保持 Tracking" vel "state=Tracking"
+check_lb "速度限制运行中不 Fault(结束仅链路静默)" vel "state=Fault.*link silent"
 
 # 5. 会话重启：模拟器中断（KRL 重启，IPOC/q 复位）→ 主机重新建立会话，回显
 #    正确。注意：gap 期间模拟器直接跳过回复等待，所以日志表现是 replies<cycles

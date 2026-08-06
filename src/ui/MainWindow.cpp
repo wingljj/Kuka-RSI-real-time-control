@@ -466,7 +466,14 @@ void MainWindow::updateStatusBar(const StatusSnapshot &s)
     // ── 控制状态 ──
     switch (s.state) {
     case ControlState::Fault:
-        setSeverityText(m_stateLabel, "故障锁存", Severity::Fault);
+        // 带上 faultReason(2026-08-06 P1-5):它是排查的第一手信息,此前
+        // 精心构造却无人显示。tooltip 存全文,标签给正文,布局自行截断。
+        setSeverityText(m_stateLabel,
+                        s.faultReason.isEmpty()
+                            ? QStringLiteral("故障锁存")
+                            : QStringLiteral("故障锁存: %1").arg(s.faultReason),
+                        Severity::Fault);
+        m_stateLabel->setToolTip(s.faultReason);
         break;
     case ControlState::Tracking: {
         // 跟踪质量并进控制状态这一格：它只在 Tracking 下有意义，单独占一格的话
@@ -985,10 +992,12 @@ void MainWindow::onEditParams()
 
     auto *form = new QFormLayout(&dlg);
     form->setSpacing(8);
-    auto *kpP  = new QDoubleSpinBox; kpP->setRange(0.0, 100.0);  kpP->setDecimals(3);
-    auto *kpR  = new QDoubleSpinBox; kpR->setRange(0.0, 100.0);  kpR->setDecimals(3);
-    auto *vP   = new QDoubleSpinBox; vP->setRange(0.0, 10000.0); vP->setSuffix(" mm/s");
-    auto *vR   = new QDoubleSpinBox; vR->setRange(0.0, 10000.0); vR->setSuffix(" deg/s");
+    // 范围与 SessionGuard::staticChecks 的硬校验一致:kp∈(0,1](数学发散界 2,
+    // 工程上限 1);vmax 上限取 KRC Limit ±35mm/帧在 12ms 周期下的等效速度以内。
+    auto *kpP  = new QDoubleSpinBox; kpP->setRange(0.001, 1.0);  kpP->setDecimals(3);
+    auto *kpR  = new QDoubleSpinBox; kpR->setRange(0.001, 1.0);  kpR->setDecimals(3);
+    auto *vP   = new QDoubleSpinBox; vP->setRange(0.1, 2000.0); vP->setSuffix(" mm/s");
+    auto *vR   = new QDoubleSpinBox; vR->setRange(0.1, 200.0);  vR->setSuffix(" deg/s");
     auto *alP  = new QDoubleSpinBox; alP->setRange(0.0, 10000.0); alP->setSuffix(" mm");
     auto *alR  = new QDoubleSpinBox; alR->setRange(0.0, 10000.0); alR->setSuffix(" deg");
     kpP->setValue(m_cfg.kpPos);  kpR->setValue(m_cfg.kpRot);
@@ -1303,6 +1312,12 @@ void MainWindow::onRefresh()
         m_alarmLog->addEvent(AlarmLog::Warning,
             QStringLiteral("出现丢包，连续 %1 帧").arg(s.missedCount),
             "检查网络或 KRC 周期");
+    // Fault 边沿必须落日志(2026-08-06 P1-5):faultReason 在归零时会被清掉,
+    // 若不在发生当帧留档,操作员随手复位后就再也查不到原因。
+    if (edge.faultLatched)
+        m_alarmLog->addEvent(AlarmLog::Fault,
+            QStringLiteral("故障锁存: %1").arg(s.faultReason),
+            "排查原因后归零复位,再重新使能跟踪");
     // 存的必须是「本帧的告警电平」，不是 edgesBetween 的返回值——后者是
     // 「本帧是否为上升沿」，持续告警时它恒为 false，下一帧就又成了上升沿，
     // 刷屏原样复现。

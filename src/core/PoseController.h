@@ -13,13 +13,19 @@ class PoseController
 public:
     void configure(const AppConfig &cfg);
 
-    // 目标变化时从"当前实际位姿"启动固定时长轨迹（位置五次多项式 + 姿态
-    // Slerp），到点即达；目标未变化则轨迹继续/保持，不重启。
+    // 目标变化时启动固定时长轨迹（位置五次多项式 + 姿态 Slerp），到点即达；
+    // 目标未变化则轨迹继续/保持，不重启。
+    // 轨迹起点必须与闭环对象一致(2026-08-06 审查 P0-1):Tracking 下闭环对象
+    // 是指令台账,而运动中台账领先实测一个伺服滞后量——若从实测出发,新轨迹
+    // 首采样 < 台账,误差为负,机器人先被命令倒退。Idle 下台账未对齐(使能时
+    // 才重对齐),仍从实测出发,且使能瞬间会重规划(见 step 的 !m_cmdSynced 支)。
     void setTarget(const Pose &t)
     {
         if (t.x != m_target.x || t.y != m_target.y || t.z != m_target.z
             || t.a != m_target.a || t.b != m_target.b || t.c != m_target.c) {
-            m_traj.setGoal(m_lastActual, t, m_cfg.targetTrajectoryMs);
+            const Pose &start = (m_state == TrackState::Tracking && m_cmdSynced)
+                                    ? m_cmd : m_lastActual;
+            m_traj.setGoal(start, t, m_cfg.targetTrajectoryMs);
             m_target = t;
         }
     }

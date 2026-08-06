@@ -825,6 +825,59 @@ private slots:
         QVERIFY(qAbs(last) < 1e-6);
     }
 
+    // ── 轨迹锚点必须与闭环对象一致(2026-08-06 审查 P0-1)────────────────
+    // 台账闭环后,运动中台账领先实测一个伺服滞后量。若轨迹仍从实测出发,
+    // 运动中改目标的首采样 < 台账 → 误差为负 → 机器人先被命令倒退——
+    // 与操作员意图相反的反向运动。轨迹起点必须取台账。
+    void retargetWhileTracking_neverCommandsReversal()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos              = 0.5;
+        c.targetTrajectoryMs = 120.0;             // 10 帧轨迹
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 2.0, 0, 0, 0});
+        // 实测停滞(极端伺服滞后):台账前进、实测原地,领先量最大化
+        for (int i = 0; i < 5; ++i)
+            pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
+        // 运动中改目标:更远的 Z+4。任何一帧都不得发负增量(反向)。
+        pc.setTarget(Pose{0, 0, 4.0, 0, 0, 0});
+        for (int i = 0; i < 40; ++i) {
+            const Pose d = pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs);
+            QVERIFY2(d.z >= -1e-12,
+                     qPrintable(QStringLiteral("第 %1 帧反向增量 %2 mm")
+                                    .arg(i).arg(d.z)));
+        }
+    }
+
+    // Idle 期间 jog 过机器人后使能:陈旧轨迹(从旧位姿规划)必须重规划,
+    // 否则机器人先朝旧轨迹起点绕行(远离最终目标的方向)再折返。
+    void enableAfterJog_replansStaleTrajectory()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos              = 0.5;
+        c.targetTrajectoryMs = 240.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTarget(Pose{0, 0, 2.0, 0, 0, 0});   // Idle 下规划:0 → 2
+        pc.step(Pose{0, 0, 10.0, 0, 0, 0}, kCycleMs);   // jog 到 Z=10(Idle,不动)
+        pc.setTracking(true);
+        // 从 10 去 2:位置只应单调下降到 2,绝不该先冲向旧轨迹起点 0
+        double z = 10.0, zMin = 10.0;
+        for (int i = 0; i < 200; ++i) {
+            const Pose d = pc.step(Pose{0, 0, z, 0, 0, 0}, kCycleMs);
+            z += d.z;                              // 理想执行:机器人即时跟随
+            zMin = std::min(zMin, z);
+        }
+        QVERIFY2(zMin >= 2.0 - 1e-6,
+                 qPrintable(QStringLiteral("位置最低到 %1 mm,越过目标冲向旧轨迹")
+                                .arg(zMin)));
+        QVERIFY(qAbs(z - 2.0) < 1e-3);            // 最终仍到达目标
+    }
+
     // 重新使能跟踪时指令台账必须重新对齐当前实际：Idle 期间操作员可能手动
     // 移动过机器人，旧台账已失效；不重对齐的话第一帧就会按陈旧台账发增量。
     void reenableTracking_resyncsCommandToActual()

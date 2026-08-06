@@ -170,7 +170,13 @@ private slots:
     // ── 路径 2：看门狗间隙恢复（本次修复的缺陷）──
     // 静默 ≥ 看门狗间隔（240ms）但 < sessionGapMs（1200ms）。恢复首帧只该重建
     // IPOC 基准：操作员设定的目标必须原样保留，跟踪不得停。
-    void watchdogGapRecovery_keepsTargetAndTracking()
+    // ── 路径 2：Tracking 中链路静默超看门狗 → 可见 Fault(2026-08-06 P0-2)──
+    // 旧语义是"间隙恢复无声继续跟踪"。那使升级策略非单调:100–200ms 断流
+    // (恢复帧带大 gap)会 Fault,而更严重的 >200ms 断流反而无声恢复,机器人
+    // 在无人确认下继续运动。现在:静默超看门狗且在跟踪 → forceFault,由看门狗
+    // 立即发布(不等恢复帧);恢复帧不得悄悄回到 Tracking;操作员归零 + 重新
+    // 使能后恢复正常。
+    void watchdogSilence_whileTracking_faultsVisibly()
     {
         Rig r(59232);
         r.feed(poseAt(kActualX), 1000, 3);
@@ -180,28 +186,28 @@ private slots:
         r.worker->setTracking(true);
         r.feed(poseAt(kActualX), 1003, 3);
         QCOMPARE(r.snap().state, ControlState::Tracking);
-        QCOMPARE(r.snap().target.x, target.x);
 
-        // 静默 600ms：看门狗（240ms）必然触发并 reset 了 IpocTracker，
-        // 但远不到 1200ms 的会话间隔。
+        // 静默 600ms：看门狗（240ms）必然触发；远不到 1200ms 的会话间隔。
         QTest::qWait(600);
-        QVERIFY2(!r.snap().connected, "看门狗没触发，本用例没测到要测的路径");
-
-        // 恢复：KRC 没重启，IPOC 从中断处继续（这里刻意换一段号，因为
-        // IpocTracker 已被 reset，任何号都会被判为 First——这正是缺陷的入口）。
-        r.feed(poseAt(kActualX), 2000, 1);
-        // 恢复首帧本身是同步瞬间（Syncing），目标必须已经保住。
-        QCOMPARE(r.snap().target.x, target.x);
-
-        // 下一帧应立刻回到 Tracking——修复前这里是 Ready：resetToActual 把
-        // 控制器打回了 Idle，跟踪无声停止。
-        r.feed(poseAt(kActualX), 2001, 3);
         const StatusSnapshot s = r.snap();
+        QVERIFY2(!s.connected, "看门狗没触发，本用例没测到要测的路径");
+        // Fault 必须在静默期间就可见,而不是等下一个有效帧才浮现
+        QCOMPARE(s.state, ControlState::Fault);
+        QVERIFY2(s.faultReason.contains(QStringLiteral("silent")),
+                 qPrintable(s.faultReason));
+        // 目标不被 Fault 抹掉(归零才会),便于操作员确认后继续
         QCOMPARE(s.target.x, target.x);
-        QCOMPARE(s.state, ControlState::Tracking);
-        // 实时误差也必须还在：修复前 target 被改写成 actual，误差被清零，
-        // 现场看到的就是这一幕。
-        QVERIFY(std::fabs(s.error.x - kTargetOffsetX) < 1e-6);
+
+        // 恢复帧绝不悄悄恢复跟踪
+        r.feed(poseAt(kActualX), 2000, 2);
+        QCOMPARE(r.snap().state, ControlState::Fault);
+
+        // 操作员路径:归零 → 重设目标 → 重新使能 → 恢复正常
+        r.worker->resetToActual();
+        r.worker->applyTarget(target);
+        r.worker->setTracking(true);
+        r.feed(poseAt(kActualX), 2002, 2);
+        QCOMPARE(r.snap().state, ControlState::Tracking);
     }
 
     // ── 路径 3：真正的会话重启 ──
@@ -236,28 +242,60 @@ private slots:
         QVERIFY(std::fabs(r.snap().accum.x - 3.0) < 1e-6);
     }
 
-    // ── 保留跟踪状态的安全前提 ──
-    // 「间隙后继续跟踪」之所以可以接受，靠的是间隙期间机器人若真被挪动过，
-    // 恢复首帧会被物理跳变检测抓住。这条依赖 m_havePrevPose 在看门狗路径上
-    // 保持为真（与会话重启相反，那里刻意清掉）。若有人日后为了「省事」在
-    // 间隙恢复分支里也清掉它，跳变检测就会静默失效而所有其它断言照常通过
-    // ——本用例就是钉住这一点。
-    void watchdogGapRecovery_stillDetectsPhysicalJump()
+    // ── 物理跳变剔除(不依赖看门狗场景)──
+    // 跟踪中单帧位姿跳变超物理预算(physVmaxPosMmS 500 × 12ms = 6mm)必须被
+    // 判为 stale:本周期回零增量、状态显示 StaleFrame。看门狗静默场景下跟踪
+    // 已转 Fault(见上),本守卫的剩余价值在正常运行中的坏帧与 Ready 态。
+    void physicalJump_rejectsFrameAndZerosDelta()
     {
         Rig r(59234);
         r.feed(poseAt(kActualX), 1000, 3);
         r.worker->applyTarget(poseAt(kActualX + kTargetOffsetX));
         r.worker->setTracking(true);
         r.feed(poseAt(kActualX), 1003, 3);
+        QCOMPARE(r.snap().state, ControlState::Tracking);
 
-        QTest::qWait(600);   // 落进「> 看门狗 240ms，< 会话 1200ms」
-
-        // 恢复首帧位姿偏离 50mm，远超一个周期的物理预算
-        //（physVmaxPosMmS 500 × 12ms = 6mm）。
-        r.feed(poseAt(kActualX + 50.0), 2000, 1);
+        // 下一帧(IPOC 连续)位姿突跳 50mm ≫ 6mm 物理预算
+        r.feed(poseAt(kActualX + 50.0), 1006, 1);
         QCOMPARE(r.snap().state, ControlState::StaleFrame);
         // 且本周期一定回零增量：反馈可疑时不许发修正。
         QCOMPARE(r.snap().lastDelta.x, 0.0);
+    }
+
+    // ── 无效帧路径上的 Fault 必须立即发布(2026-08-06 审查 P1-5)──
+    // publishSnapshot 只在 f.valid 时调用;报文被网络设备持续截断成 parse-fail
+    // 时,丢包计数照涨、forceFault 照锁,但快照永远不更新——GUI 冻结显示
+    // "跟踪中"。持续洪流下内核缓冲总有积压,看门狗(hasPendingDatagrams 让路)
+    // 也永远不发布。Fault 转移瞬间必须补发一次快照。
+    void invalidFrameFlood_faultsVisiblyAtOnce()
+    {
+        Rig r(59239);
+        r.feed(poseAt(kActualX), 1000, 3);
+        r.worker->applyTarget(poseAt(kActualX + kTargetOffsetX));
+        r.worker->setTracking(true);
+        r.feed(poseAt(kActualX), 1003, 1);
+        QCOMPARE(r.snap().state, ControlState::Tracking);
+        r.drainReplies();          // 清掉此前 feed 的回包,只数洪流的
+
+        // 30 帧垃圾报文(> miss limit 25),全部 parse-fail
+        constexpr int kFlood = 30;
+        for (int i = 0; i < kFlood; ++i)
+            r.sender.writeDatagram(QByteArray("garbage-not-xml"),
+                                   QHostAddress::LocalHost, r.port);
+        // 等 worker 处理完(每帧必回包,以回包计数为同步信号),不给看门狗
+        // (240ms)兜底的机会——断言的是"Fault 转移瞬间就发布"。
+        int replies = 0;
+        QElapsedTimer t;
+        t.start();
+        while (replies < kFlood && t.elapsed() < 3000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents);
+            replies += r.drainReplies().first;
+        }
+        QCOMPARE(replies, kFlood);
+        const StatusSnapshot s = r.snap();
+        QCOMPARE(s.state, ControlState::Fault);
+        QVERIFY2(s.faultReason.contains(QStringLiteral("lost")),
+                 qPrintable(s.faultReason));
     }
 
     // ── 突发排空：主机侧停顿，KRC 继续发 ──
@@ -331,9 +369,10 @@ private slots:
     // 数据报与看门狗抢事件，看门狗必然先跑，这是那场竞争的确定性一侧。想在
     // 测试里制造真正的竞争（既有积压又让定时器抢先）是抛硬币，不该写进用例。
     //
-    // 钉住的性质：恢复后第一次 step 的预算从"恢复这一刻"起算。删掉那句
-    // start() 时，基准在看门狗里已被 invalidate()，恢复后第一个 Normal 帧只能
-    // 领到 0 预算——恢复后第一帧静默不动一次，而其它断言全部照常通过。
+    // 钉住的性质：恢复后第一次 step 的预算从"恢复这一刻"（First 帧）起算。
+    // 删掉那句 start() 时，基准在看门狗里已被 invalidate()，操作员确认恢复后
+    // 的第一个满预算帧只能领到 0——静默不动一次，而其它断言全部照常通过。
+    // 看门狗静默现已转 Fault(P0-2),故恢复流程含操作员归零/重使能一步。
     void watchdogGapRecovery_restartsStepBudgetBasis()
     {
         Rig r(59237);
@@ -346,22 +385,26 @@ private slots:
         r.feed(poseAt(kActualX), 1003, 3);
         QCOMPARE(r.snap().state, ControlState::Tracking);
 
-        // KRC 停发 600ms：> 看门狗 240ms（必触发 reset + invalidate），
-        // < sessionGapMs 1200ms（不算真会话重启，跟踪与目标都保住）。
+        // KRC 停发 600ms：> 看门狗 240ms（必触发 reset + invalidate + Fault），
+        // < sessionGapMs 1200ms（不算真会话重启）。
         QTest::qWait(600);
         QVERIFY2(!r.snap().connected, "看门狗没触发，本用例没测到要测的路径");
+        QCOMPARE(r.snap().state, ControlState::Fault);
         r.drainReplies();          // 只统计恢复事件本身发出的增量
 
-        // 恢复首帧：走 First 分支。它自己不 step（First 不在 Normal/Gap 之列），
-        // 所以必须回零增量——先钉住这一点，否则下面那帧的读数含义就不纯。
+        // 恢复首帧：走 First 分支(重开预算基准)。控制器在 Fault,必回零增量。
         r.feed(poseAt(kActualX), 2000, 1);
         const auto [n1, firstFrameX] = r.drainReplies();
         QCOMPARE(n1, 1);
         QCOMPARE(firstFrameX, 0.0);
 
-        // 恢复整一个周期之后再来一帧。基准若在 First 帧重开过，它领到的是
-        // 一个完整周期的预算（12ms → 0.6mm，被封顶）；若没重开，基准仍是
-        // invalid，step() 拿到 0 预算，这一帧发 0.0000。
+        // 操作员确认:归零 → 重设目标 → 重新使能。
+        r.worker->resetToActual();
+        r.worker->applyTarget(poseAt(kActualX + 100.0));
+        r.worker->setTracking(true);
+
+        // 距 First 帧一个整周期后来帧。基准若在 First 帧重开过，它领到一个
+        // 完整周期预算（12ms → 0.6mm 封顶）；若没重开，基准 invalid → 0 预算。
         QTest::qWait(12);
         r.feed(poseAt(kActualX), 2001, 1);
         const auto [n2, afterX] = r.drainReplies();

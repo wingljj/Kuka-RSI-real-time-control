@@ -14,6 +14,10 @@ struct AlarmEdge
 {
     bool accumOverLimit = false;
     bool packetLoss     = false;
+    // Fault 锁存(2026-08-06 P1-5):faultReason 是排查的第一手信息,而 Fault
+    // 常伴随断链(看门狗)或被随手归零抹掉——必须在发生的当帧进事件日志。
+    // 刻意不要求 s.connected:看门狗发布的 Fault 快照就是断链的。
+    bool faultLatched   = false;
 };
 
 // 按钮与输入框的启用状态。由控制状态和监听状态共同决定。

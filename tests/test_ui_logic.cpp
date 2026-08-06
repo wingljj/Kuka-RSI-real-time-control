@@ -37,6 +37,20 @@ private slots:
         QVERIFY(!second.accumOverLimit);      // 持续为真：不再记
     }
 
+    // ── Fault 锁存必须进事件日志(2026-08-06 审查 P1-5:faultReason 此前
+    // 无人显示,归零后即被抹掉,诊断信息在最后一米丢失)──
+    void faultLatched_firesOnceAndSurvivesDisconnect()
+    {
+        StatusSnapshot s;
+        s.state       = ControlState::Fault;
+        s.connected   = false;               // 看门狗发布的 Fault 快照就是断链的
+        s.faultReason = "link silent for 600 ms while tracking";
+        AlarmEdge prev;                      // 上一帧无告警
+        QVERIFY(uilogic::risingEdges(prev, s).faultLatched);
+        prev = uilogic::currentAlarms(s);    // 持续期间不再触发
+        QVERIFY(!uilogic::risingEdges(prev, s).faultLatched);
+    }
+
     void alarmRefiresAfterClearing()
     {
         AlarmEdge prev = uilogic::currentAlarms(tracking(true, 0));

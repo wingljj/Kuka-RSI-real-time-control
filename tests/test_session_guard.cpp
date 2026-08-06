@@ -86,6 +86,82 @@ private slots:
         AppConfig c = good();
         QVERIFY(SessionGuard::enableChecks(c, -1.0).isEmpty());   // 无实测不拦
     }
+
+    // ── 增益/限值防线(2026-08-06 审查发现:配置输入不设防)────────────
+    // kp<0:增量与误差反向,机器人以 vmax 满速背向目标,直到撞 KRC 硬限;
+    // kp>2:台账闭环极点 |1−kp|>1 发散,被单帧限幅截成 vmax 满幅极限环,
+    // 即用配置重现 2026-08-04 的真机抖动;kp=0:Tracking 显示正常却纹丝不动。
+    void kpZero_fails()
+    {
+        AppConfig c = good();
+        c.kpPos = 0.0;
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("kp_pos"));
+    }
+
+    void kpNegative_fails()
+    {
+        AppConfig c = good();
+        c.kpRot = -0.3;
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("kp_rot"));
+    }
+
+    void kpAboveOne_fails()
+    {
+        AppConfig c = good();
+        c.kpPos = 1.5;              // 工程上限 1.0(数学发散界 2.0,不留边)
+        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
+    }
+
+    void kpExactlyOne_passes()
+    {
+        AppConfig c = good();
+        c.kpPos = 1.0;
+        c.kpRot = 1.0;
+        QVERIFY(SessionGuard::staticChecks(c).isEmpty());
+    }
+
+    void missLimitZero_fails()
+    {
+        AppConfig c = good();
+        c.watchdogMissLimit = 0;    // m_missed >= 0 恒真,使能即 Fault
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("watchdog_miss_limit"));
+    }
+
+    void staleLimitZero_fails()
+    {
+        AppConfig c = good();
+        c.staleFrameLimit = 0;
+        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
+    }
+
+    void physVmaxZero_fails()
+    {
+        AppConfig c = good();
+        c.physVmaxPosMmS = 0.0;     // 任何运动都会被判 stale
+        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
+    }
+
+    void vmaxZeroOrNegative_fails()
+    {
+        AppConfig c = good();
+        c.vmaxPosMmS = 0.0;         // Tracking 显示正常却永远发 0 增量
+        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
+    }
+
+    void stepBeyondKrcFrameLimit_fails()
+    {
+        AppConfig c = good();
+        c.vmaxPosMmS = 4000.0;      // 4000×0.012 = 48mm/帧 > KRC Limit ±35mm
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("35"));
+    }
 };
 QTEST_MAIN(TestSessionGuard)
 #include "test_session_guard.moc"

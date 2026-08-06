@@ -197,10 +197,6 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
     // 在丢帧——它本身是个诚实的指示。而混合时间基下的行为根本无法推理：
     // 同一条指令的实际速度成了网络抖动的函数，既没法事前预演，也没法事后
     // 从日志复现。安全关键代码里"行为可推理"必须排在"标称时长准确"之前。
-    Pose errSrc = m_traj.isFinished() ? m_target : m_traj.sample();
-    if (!m_traj.isFinished())
-        m_traj.advance(elapsedMs / 1000.0);
-
     // ── 闭环对象是指令台账 m_cmd，不是实测 RIst（2026-08-04 真机抖动修复）──
     // RKorr 是增量接口，KRC 侧 POSCORR 把它积分成总修正；若误差相对实测
     // RIst 计算，环路就是「积分器 + 伺服/管线滞后」，4ms 周期 kp=0.1 的等效
@@ -210,10 +206,22 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
     // 相对台账闭环后极点 = 1−kp，与对象动力学无关，无条件稳定，总指令恰好
     // 收敛到目标偏移；机器人以自身伺服动态开环跟随。RIst 继续负责安全监控
     //（物理跳变剔除、锚点位移、界面误差显示 target − RIst）。
+    //
+    // 本块必须先于轨迹采样：使能瞬间的重规划若放在采样之后，本帧就会先按
+    // 陈旧轨迹采样推进、再被重规划清零进度——首个周期的推进被无声吞掉。
     if (!m_cmdSynced) {
         m_cmd       = actual;   // 使能瞬间重对齐：Idle 期间机器人可能被移动过
         m_cmdSynced = true;
+        // 陈旧轨迹一并重规划:Idle 下设定的目标以当时位姿为起点,jog 之后
+        // 那条轨迹的采样点可能远在身后——沿用它,机器人会先朝旧起点绕行
+        // (甚至越过最终目标)再折返。从当帧实际重新出发,方向即刻正确。
+        if (!m_traj.isFinished())
+            m_traj.setGoal(actual, m_target, m_cfg.targetTrajectoryMs);
     }
+
+    Pose errSrc = m_traj.isFinished() ? m_target : m_traj.sample();
+    if (!m_traj.isFinished())
+        m_traj.advance(elapsedMs / 1000.0);
 
     // 位置误差：逐轴差（无奇异问题）。姿态误差：SO(3) 最短旋转（旋转向量，
     // 世界坐标 rad）——奇异/边界目标下不再逐轴 wrap 跳变。

@@ -123,6 +123,24 @@ void RsiWorker::onWatchdog()
         && m_sinceLastFrame.elapsed() < m_watchdog->interval())
         return;
 
+    // 主机停顿后的积压排空:数据报已到达内核缓冲、只是尚未处理——这不是
+    // 链路静默,是本机忙。交还事件循环,readyRead 会按实测墙钟预算排空。
+    // 没有这一判,看门狗与 readyRead 的到达顺序就是一场竞态:同一次停顿,
+    // 抢到先手的一方决定"继续跟踪"还是"Fault",行为不可推理。
+    if (m_sock && m_sock->hasPendingDatagrams())
+        return;
+
+    // 链路静默超看门狗且仍在跟踪 → 可见 Fault(2026-08-06 审查 P0-2)。
+    // 旧语义"间隙恢复无声继续跟踪"使升级策略非单调:100–200ms 断流(恢复帧
+    // 带大 gap)会因丢包达限 Fault,而更严重的 >200ms 断流反而让看门狗清掉
+    // 计数、恢复后无人确认继续运动。KRC 停发意味着 KRL 停止/急停/暂停——
+    // 每一种都不该自动接续。
+    if (m_ctl.state() == TrackState::Tracking) {
+        m_ctl.forceFault(QStringLiteral("link silent for %1 ms while tracking")
+                             .arg(m_sinceLastFrame.isValid()
+                                      ? m_sinceLastFrame.elapsed() : -1));
+    }
+
     m_ipocTracker.reset();
     m_cycleTimerValid = false;   // 否则下个会话的首帧会把整段静默当作周期发布
     // 步长预算的时间基准同样作废。跨越静默的那个间隔不是"这一帧欠了多少
@@ -133,6 +151,11 @@ void RsiWorker::onWatchdog()
     m_ring->clear();
     StatusSnapshot s = m_state->snapshot();
     s.connected = false;
+    // 状态必须重算,不能让快照冻结在断流前的"跟踪中"(2026-08-06 审查 P1-5:
+    // 拔线后状态栏"监听中"与绿色"跟踪中"并存,正是本项目吃过大亏的显示失真)。
+    s.state       = (m_ctl.state() == TrackState::Fault)
+                        ? ControlState::Fault : ControlState::Disconnected;
+    s.faultReason = m_ctl.faultReason();
     m_state->publish(s);
 }
 
@@ -205,12 +228,10 @@ void RsiWorker::onDatagram()
                 // 已经做完了（它在 First 分支里锁存了新的 lastGood）。所以这
                 // 一支正确的实现就是空的。
                 //
-                // 为什么保留跟踪状态是安全的：step() 的第 1 层限值
-                // （vmax × cycle，默认 0.6mm/周期）是绝对的单周期上限，控制律
-                // 里没有积分项、不存在饱和积分，所以间隙期间误差涨到多大，
-                // 恢复后第一帧发出的增量仍然只有 0.6mm——与操作员在界面上
-                // 直接改一个远目标完全同量级，不是新引入的风险。现在这个上限
-                // 还要再乘以"实测帧间隔 / 配置周期"（∈[0,1]），只会更小。
+                // 【2026-08-06 P0-2 之后本分支的作用范围】跟踪中的静默已在
+                // onWatchdog 里转为可见 Fault,走到这里的恢复帧不可能还带着
+                // Tracking——本分支实际服务的是 Ready 态的断流重连,以及
+                // Fault 锁存期间的位姿显示恢复。控制器状态一律不动。
                 //
                 // 为什么这里刻意 *不* 清 m_havePrevPose（与上面的会话重启相反）：
                 // KRC 没有重启，间隙前后是同一段连续运动，两帧之间可比。留着
@@ -376,6 +397,15 @@ void RsiWorker::onDatagram()
             m_ctl.forceFault(QStringLiteral(
                 "consecutive lost packets %1 reached limit %2")
                 .arg(m_missed).arg(m_cfg.watchdogMissLimit));
+            // 无效帧路径没有下面的 publishSnapshot(f.valid 守卫):报文持续
+            // parse-fail 时 Fault 会滞留在快照之外,GUI 冻结显示"跟踪中";
+            // 且持续洪流下内核缓冲总有积压,看门狗(hasPendingDatagrams 让路)
+            // 也永远不发布。Fault 转移只发生一次(上面的 Tracking 守卫),
+            // 在此补发一次快照即可,不构成每帧开销。
+            if (!f.valid)
+                publishSnapshot(m_lastActual,
+                                poseops::errorPoseDeg(m_ctl.target(), m_lastActual),
+                                m_ipocTracker.lastGood(), true, false);
         }
 
         if (f.valid) {
