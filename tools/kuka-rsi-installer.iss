@@ -19,6 +19,11 @@ AppComments=KUKA RSI POSCORR 实时位姿跟踪上位机（离线版）
 DefaultDirName={autopf}\KukaRsiHost
 DefaultGroupName=KUKA RSI 实时位姿跟踪
 DisableProgramGroupPage=yes
+; 目录选择页必须始终显示(2026-08-06 用户要求):默认 auto 会在检测到旧版
+; (相同 AppId)时跳过该页直接升级安装,操作员没有选路径的机会。
+; UsePreviousAppDir 保持默认 yes:预填上次的路径,但允许改。
+DisableDirPage=no
+AlwaysShowDirOnReadyPage=yes
 OutputDir=..\release
 OutputBaseFilename=Kuka-RSI-实时位姿跟踪-{#MyAppVersion}-离线安装包
 Compression=lzma2
