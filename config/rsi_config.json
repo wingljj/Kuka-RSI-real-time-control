@@ -28,7 +28,15 @@
     "每个增量会是三倍大——这是首次联机最该先核对的一个数。",
     "",
     "watchdog_miss_limit：连续丢包达到该帧数即转可见 Fault（需归零确认后",
-    "重新使能）。25 帧 ≈ 100ms（4ms 周期），与 KRC 侧 Timeout 同量级。"
+    "重新使能）。25 帧 ≈ 100ms（4ms 周期），与 KRC 侧 Timeout 同量级。",
+    "",
+    "trim_*（到位精修，界面可勾选）：停稳（trim_settle_ms 增量静默）后，",
+    "残差（目标−实测）在 [trim_min, trim_max] 内 → 自动补发一次；同一目标",
+    "最多 trim_max_attempts 次，间隔 ≥ trim_cooldown_ms。修不动 = 被物理",
+    "挡住，留给误差显示，不硬追。",
+    "",
+    "target_cruise_*（>0 启用）：轨迹时长自动拉长，使峰值速度（1.875×平均）",
+    "不超过巡航速度——远目标不再退化成 vmax 饱和爬行，任意距离 S 形起停。"
   ],
   "network": {
     "listen_ip":       "0.0.0.0",
@@ -54,7 +62,17 @@
     "accum_limit_rot_deg": 20.0,
     "phys_vmax_pos_mm_s":  500.0,
     "phys_vmax_rot_deg_s": 60.0,
-    "stale_frame_limit":   10
+    "stale_frame_limit":   10,
+    "trim_enabled":        false,
+    "trim_min_mm":         0.02,
+    "trim_max_mm":         2.0,
+    "trim_min_deg":        0.02,
+    "trim_max_deg":        2.0,
+    "trim_settle_ms":      200.0,
+    "trim_cooldown_ms":    1000.0,
+    "trim_max_attempts":   3,
+    "target_cruise_mm_s":  5.0,
+    "target_cruise_deg_s": 1.0
   },
   "ui": {
     "refresh_ms":     20,

@@ -58,6 +58,8 @@ void PoseController::resetToActual(const Pose &actual)
     //（如网络丢过一帧 SEN）」时操作员的修复动作。
     m_cmd       = actual;
     m_cmdSynced = true;
+    m_trimAttempts = 0;      // 归零 = 操作员重新掌控,精修额度重开
+    m_trimQuietMs  = 0.0;
     // m_accum 刻意保留，理由见头文件注释
     // m_anchor / m_displacement / m_haveAnchor 同样刻意不动：会话内的归零
     // 不移动原点，否则第 2 层的预算又能被反复领取。只有 beginSession 才换锚点。
@@ -70,6 +72,32 @@ void PoseController::beginSession(const Pose &actual)
     m_anchor       = actual;      // 锁存 RIst₀：第 2 层从此以它为原点
     m_displacement = Pose{};
     m_haveAnchor   = true;
+}
+
+double PoseController::plannedDurationMs(const Pose &start, const Pose &goal) const
+{
+    double durMs = m_cfg.targetTrajectoryMs;
+    if (m_cfg.targetCruiseMmS <= 0.0 && m_cfg.targetCruiseDegS <= 0.0)
+        return durMs;                              // 0 = 固定时长(旧语义)
+
+    // 峰值速度 = 1.875 × 平均(五次多项式 s'(0.5) = 15/8)。
+    // duration[s] ≥ 1.875 × dist / cruise → ms 下系数 1875。
+    if (m_cfg.targetCruiseMmS > 0.0) {
+        const Pose diff = poseSub(goal, start);
+        const double dist = std::hypot(diff.x, diff.y, diff.z);
+        durMs = std::max(durMs, 1875.0 * dist / m_cfg.targetCruiseMmS);
+    }
+    if (m_cfg.targetCruiseDegS > 0.0) {
+        // 姿态距离 = SO(3) 最短弧角度(Slerp 走的就是这条弧,同受 s(u) 整形)
+        const poseops::Quat q0 = poseops::quatFromABC(start.a, start.b, start.c);
+        const poseops::Quat q1 = poseops::quatFromABC(goal.a, goal.b, goal.c);
+        double rv[3];
+        poseops::rotVecFromQuat(poseops::quatError(q1, q0), rv);
+        const double angDeg =
+            std::sqrt(rv[0]*rv[0] + rv[1]*rv[1] + rv[2]*rv[2]) * kRadToDeg;
+        durMs = std::max(durMs, 1875.0 * angDeg / m_cfg.targetCruiseDegS);
+    }
+    return durMs;
 }
 
 void PoseController::setTracking(bool on)
@@ -216,7 +244,7 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
         // 那条轨迹的采样点可能远在身后——沿用它,机器人会先朝旧起点绕行
         // (甚至越过最终目标)再折返。从当帧实际重新出发,方向即刻正确。
         if (!m_traj.isFinished())
-            m_traj.setGoal(actual, m_target, m_cfg.targetTrajectoryMs);
+            m_traj.setGoal(actual, m_target, plannedDurationMs(actual, m_target));
     }
 
     Pose errSrc = m_traj.isFinished() ? m_target : m_traj.sample();
@@ -338,5 +366,47 @@ Pose PoseController::step(const Pose &actual, double sinceLastStepMs)
     // KRC 侧设定值的精确镜像。
     m_cmd.x += d.x; m_cmd.y += d.y; m_cmd.z += d.z;
     m_cmd.a += d.a; m_cmd.b += d.b; m_cmd.c += d.c;
+
+    // ── 到位精修 settle-and-trim(可勾选;2026-08-07)───────────────────
+    // 台账闭环保证"发出的量精确等于目标偏移",但路上丢失的修正(SEN 丢帧、
+    // KRC 削波)会留下 target − 实测 的永久残差。这里用离散迭代补齐:
+    // 停稳(增量连续静默满 settle)→ 残差在 [min, max] 窗口内 → 台账重对齐
+    // 到实测,残差重新变为控制误差经正常管线(限幅/量化/记账)补发。
+    // 为什么不会振荡:修正只在静止时刻触发、两次之间隔完整沉降期(cooldown),
+    // 与 4ms 控制环相差三个数量级时间尺度,是采样级联而非连续反馈;限次
+    // (attempts)保证被物理顶死时不无限重试——修不动的残差留给显示误差
+    // 与操作员,那是"该报警"而非"该硬追"的场景。
+    if (m_cfg.trimEnabled && m_traj.isFinished()) {
+        const bool quiet = d.x == 0.0 && d.y == 0.0 && d.z == 0.0
+                        && d.a == 0.0 && d.b == 0.0 && d.c == 0.0;
+        m_trimQuietMs    = quiet ? m_trimQuietMs + elapsedMs : 0.0;
+        m_trimCooldownMs = std::max(0.0, m_trimCooldownMs - elapsedMs);
+        if (quiet && m_trimQuietMs >= m_cfg.trimSettleMs
+            && m_trimCooldownMs <= 0.0
+            && m_trimAttempts < m_cfg.trimMaxAttempts) {
+            const Pose res = poseSub(m_target, actual);
+            const double resPos = std::hypot(res.x, res.y, res.z);
+            const poseops::Quat qa =
+                poseops::quatFromABC(actual.a, actual.b, actual.c);
+            const poseops::Quat qt =
+                poseops::quatFromABC(m_target.a, m_target.b, m_target.c);
+            const poseops::Quat qe = poseops::quatError(qt, qa);
+            double rv[3];
+            poseops::rotVecFromQuat(qe, rv);
+            const double resRot =
+                std::sqrt(rv[0]*rv[0] + rv[1]*rv[1] + rv[2]*rv[2]) * kRadToDeg;
+            const bool worth    = resPos > m_cfg.trimMinMm
+                               || resRot > m_cfg.trimMinDeg;
+            const bool feasible = resPos <= m_cfg.trimMaxMm
+                               && resRot <= m_cfg.trimMaxDeg;
+            if (worth && feasible) {
+                m_cmd = actual;              // 残差重新变为控制误差
+                ++m_trimAttempts;
+                ++m_trimCount;
+                m_trimQuietMs    = 0.0;
+                m_trimCooldownMs = m_cfg.trimCooldownMs;
+            }
+        }
+    }
     return d;
 }

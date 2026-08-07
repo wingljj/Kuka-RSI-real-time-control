@@ -878,6 +878,146 @@ private slots:
         QVERIFY(qAbs(z - 2.0) < 1e-3);            // 最终仍到达目标
     }
 
+    // ── 距离自适应轨迹时长(2026-08-07)──────────────────────────────────
+    // 固定时长下远目标的轨迹速度远超 vmax,退化成"饱和爬行+衰减落地"。
+    // 配置 target_cruise 后时长自动拉长,使五次多项式峰值速度(1.875×平均)
+    // 不超过巡航速度——任意距离都保持 S 形起停,增量永不饱和。
+    void adaptiveDuration_capsTrajectoryPeakSpeed()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos              = 1.0;    // 增量=误差:逐帧增量直接反映轨迹步距
+        c.targetTrajectoryMs = 100.0;  // 固定时长下 100mm/0.1s,峰值 1875mm/s
+        c.targetCruiseMmS    = 10.0;   // 自适应:时长应拉到 ≥18.75s
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        double cmd = 0.0, maxD = 0.0, sum = 0.0;
+        for (int i = 0; i < 3000; ++i) {           // 36s,足够走完
+            const Pose d = pc.step(Pose{cmd, 0, 0, 0, 0, 0}, kCycleMs);
+            cmd += d.x;                             // 理想跟随
+            maxD = std::max(maxD, d.x);
+            sum += d.x;
+        }
+        // 峰值步距 ≤ cruise × T(留 5% 数值余量);未自适应时会是 vmax 限幅的 0.6
+        QVERIFY2(maxD <= 10.0 * 0.012 * 1.05,
+                 qPrintable(QStringLiteral("峰值步距 %1 mm/帧").arg(maxD)));
+        QVERIFY(qAbs(sum - 100.0) < 1e-3);          // 距离一分不少
+    }
+
+    void adaptiveDuration_zeroCruiseKeepsFixedDuration()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos              = 1.0;
+        c.targetTrajectoryMs = 100.0;
+        c.targetCruiseMmS    = 0.0;    // 关:保持固定时长语义
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{100, 0, 0, 0, 0, 0});
+        double cmd = 0.0, maxD = 0.0;
+        for (int i = 0; i < 100; ++i) {
+            const Pose d = pc.step(Pose{cmd, 0, 0, 0, 0, 0}, kCycleMs);
+            cmd += d.x;
+            maxD = std::max(maxD, d.x);
+        }
+        QVERIFY(maxD > 0.5);           // 被 vmax 限幅顶格(旧行为)
+    }
+
+    // ── 到位精修 settle-and-trim(2026-08-07,可勾选)────────────────────
+    // 停稳后残差在窗口内 → 台账重对齐到实测,残差经正常管线补发。
+    // 离散迭代:等停稳(settle)、限频(cooldown)、限次(attempts)。
+
+    // 丢失一帧增量(台账领先实测一个增量),精修恰好补回,最终物理到位。
+    void trim_healsOneLostIncrement()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos          = 0.5;
+        c.trimEnabled    = true;
+        c.trimSettleMs   = 48.0;    // 4 帧停稳(测试用短参数)
+        c.trimCooldownMs = 96.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0.5, 0, 0, 0});
+        // 被控对象:忠实跟随台账,但"丢掉"第一个非零增量(模拟丢一帧 SEN)
+        double p = 0.0;
+        bool dropped = false;
+        for (int i = 0; i < 200; ++i) {
+            const Pose d = pc.step(Pose{0, 0, p, 0, 0, 0}, kCycleMs);
+            if (!dropped && d.z != 0.0) { dropped = true; continue; }  // 丢弃
+            p += d.z;
+        }
+        QVERIFY(dropped);
+        QCOMPARE(pc.trimCount(), quint64(1));            // 恰好修了一次
+        QVERIFY2(qAbs(p - 0.5) <= 0.02 + 1e-9,           // 物理到位(≤trim_min)
+                 qPrintable(QStringLiteral("最终位置 %1 mm").arg(p)));
+    }
+
+    // 被物理顶死(实测不动):限次后停手,不无限重试。
+    void trim_stalledPlant_stopsAfterMaxAttempts()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos          = 0.5;
+        c.trimEnabled    = true;
+        c.trimSettleMs   = 48.0;
+        c.trimCooldownMs = 96.0;
+        c.trimMaxAttempts = 3;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0.5, 0, 0, 0});
+        double sum = 0.0;
+        for (int i = 0; i < 600; ++i)
+            sum += pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs).z;
+        QCOMPARE(pc.trimCount(), quint64(3));
+        // 首次收敛 0.5 + 三次精修各重发 0.5 = 2.0,之后不再发。
+        // 容差 2e-3:每轮留 ≤ 量化死区/kp = 2e-4 的尾差,四轮叠加。
+        QVERIFY2(qAbs(sum - 2.0) < 2e-3,
+                 qPrintable(QStringLiteral("累计发出 %1 mm").arg(sum)));
+    }
+
+    // 残差超出窗口上限(被大幅挡住,如限位):不精修——那是该报警的场景。
+    void trim_residualBeyondMax_neverTrims()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos          = 0.5;
+        c.trimEnabled    = true;
+        c.trimSettleMs   = 48.0;
+        c.trimCooldownMs = 96.0;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 5.0, 0, 0, 0});   // 残差 5mm > trim_max 2mm
+        double sum = 0.0;
+        for (int i = 0; i < 400; ++i)
+            sum += pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs).z;
+        QCOMPARE(pc.trimCount(), quint64(0));
+        QVERIFY(qAbs(sum - 5.0) < 1e-3);          // 只发首轮,不重试(容差=量化尾差)
+    }
+
+    // 未启用(默认):行为与旧版逐位一致,一分不多发。
+    void trim_disabledByDefault_noResend()
+    {
+        PoseController pc;
+        AppConfig c = testCfg();
+        c.kpPos = 0.5;
+        pc.configure(c);
+        pc.beginSession(Pose{0, 0, 0, 0, 0, 0});
+        pc.setTracking(true);
+        pc.setTarget(Pose{0, 0, 0.5, 0, 0, 0});
+        double sum = 0.0;
+        for (int i = 0; i < 400; ++i)
+            sum += pc.step(Pose{0, 0, 0, 0, 0, 0}, kCycleMs).z;
+        QCOMPARE(pc.trimCount(), quint64(0));
+        QVERIFY(qAbs(sum - 0.5) < 1e-3);          // 容差=量化尾差
+    }
+
     // 重新使能跟踪时指令台账必须重新对齐当前实际：Idle 期间操作员可能手动
     // 移动过机器人，旧台账已失效；不重对齐的话第一帧就会按陈旧台账发增量。
     void reenableTracking_resyncsCommandToActual()

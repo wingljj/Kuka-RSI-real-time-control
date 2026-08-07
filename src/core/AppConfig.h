@@ -43,6 +43,24 @@ struct AppConfig
     double  physVmaxRotDegS   = 60.0;
     int     staleFrameLimit   = 10;
 
+    // ── 到位精修 settle-and-trim(2026-08-07,界面可勾选)──
+    // 停稳后测残差(target − RIst),在窗口内则把台账重对齐到实测、让残差
+    // 重新流经正常管线补发。离散迭代(限次限频、只在静止时触发),与 4ms
+    // 控制环隔三个数量级时间尺度,不构成连续反馈、不引入振荡。
+    bool    trimEnabled       = false;
+    double  trimMinMm         = 0.02;   // 低于此值视为已到位
+    double  trimMaxMm         = 2.0;    // 高于此值视为被物理挡住,不修(需人查)
+    double  trimMinDeg        = 0.02;
+    double  trimMaxDeg        = 2.0;
+    double  trimSettleMs      = 200.0;  // 增量连续静默满此时长才算"停稳"
+    double  trimCooldownMs    = 1000.0; // 两次精修的最小间隔
+    int     trimMaxAttempts   = 3;      // 同一目标最多修几次(修不动=报警停手)
+
+    // 轨迹巡航速度上限(>0 启用):时长自动拉长使五次多项式峰值速度
+    //(1.875×平均)不超过它——远目标不再退化成"vmax 饱和爬行"。0 = 固定时长。
+    double  targetCruiseMmS   = 0.0;
+    double  targetCruiseDegS  = 0.0;
+
     int     refreshMs         = 33;
     int     chartWindowS      = 10;
     double  trackingQualityWarnPct     = 0.5;   // 跟踪质量警告阈值（误差/累积 占限值比例）

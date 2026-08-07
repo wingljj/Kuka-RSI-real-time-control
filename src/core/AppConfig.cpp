@@ -19,6 +19,12 @@ void readInt(const QJsonObject &o, const char *key, int *dst)
         *dst = o.value(key).toInt();
 }
 
+void readBool(const QJsonObject &o, const char *key, bool *dst)
+{
+    if (o.contains(key) && o.value(key).isBool())
+        *dst = o.value(key).toBool();
+}
+
 void readString(const QJsonObject &o, const char *key, QString *dst)
 {
     if (o.contains(key) && o.value(key).isString())
@@ -84,6 +90,16 @@ bool AppConfig::loadFromFile(const QString &path, AppConfig *out,
     readDouble(ctl, "phys_vmax_pos_mm_s", &out->physVmaxPosMmS);
     readDouble(ctl, "phys_vmax_rot_deg_s", &out->physVmaxRotDegS);
     readInt(ctl, "stale_frame_limit", &out->staleFrameLimit);
+    readBool(ctl, "trim_enabled", &out->trimEnabled);
+    readDouble(ctl, "trim_min_mm", &out->trimMinMm);
+    readDouble(ctl, "trim_max_mm", &out->trimMaxMm);
+    readDouble(ctl, "trim_min_deg", &out->trimMinDeg);
+    readDouble(ctl, "trim_max_deg", &out->trimMaxDeg);
+    readDouble(ctl, "trim_settle_ms", &out->trimSettleMs);
+    readDouble(ctl, "trim_cooldown_ms", &out->trimCooldownMs);
+    readInt(ctl, "trim_max_attempts", &out->trimMaxAttempts);
+    readDouble(ctl, "target_cruise_mm_s", &out->targetCruiseMmS);
+    readDouble(ctl, "target_cruise_deg_s", &out->targetCruiseDegS);
 
     const QJsonObject ui = root.value("ui").toObject();
     readInt(ui, "refresh_ms", &out->refreshMs);

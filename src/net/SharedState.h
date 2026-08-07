@@ -46,6 +46,7 @@ struct StatusSnapshot
     quint32    peerIp4      = 0;    // 对端 IPv4（0=未锁定）
     quint16    peerPort     = 0;    // 对端端口（0=未锁定）
     quint64    lifetimeLost = 0;    // 累计丢包（区别于连续 missedCount）
+    quint64    trimCount    = 0;    // 到位精修累计执行次数（事件日志按增量记条）
     Pose       lastDelta;           // 最近一帧 RKorr 增量
     double     cycleMeanMs  = 0.0;  // 周期均值（最近 256 样本窗口）
     double     cycleMaxMs   = 0.0;  // 周期最大

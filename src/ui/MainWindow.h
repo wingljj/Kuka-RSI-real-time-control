@@ -125,6 +125,7 @@ private:
     QAction *m_enableAct      = nullptr;
     QAction *m_stopTrackAct   = nullptr;
     QAction *m_resetFaultAct  = nullptr;
+    QAction *m_trimAct        = nullptr;   // 到位精修(可勾选)
 
     // 建完默认布局、restoreState 之前存一份，供「恢复默认布局」用。
     // 没有它，一个被拖到屏幕外或全部关掉的布局会被 QSettings 忠实地存下来，
@@ -157,6 +158,7 @@ private:
     // 上一帧的告警状态，用于边沿触发。持续为真的告警每帧记一条，
     // 4 秒就能把 200 条上限刷满、挤掉之前的真实事件。
     AlarmEdge m_prevAlarms;
+    quint64   m_prevTrimCount = 0;   // 到位精修日志的增量基准
     // 丢包告警的迟滞。missedCount 每个正常帧都被归零，间歇丢包在快照里是
     // 一列脉冲而不是一段电平，单靠边沿触发压不住（实测 --drop 5 记 142 条）。
     LossHold  m_lossHold;

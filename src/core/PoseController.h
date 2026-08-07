@@ -25,10 +25,17 @@ public:
             || t.a != m_target.a || t.b != m_target.b || t.c != m_target.c) {
             const Pose &start = (m_state == TrackState::Tracking && m_cmdSynced)
                                     ? m_cmd : m_lastActual;
-            m_traj.setGoal(start, t, m_cfg.targetTrajectoryMs);
+            m_traj.setGoal(start, t, plannedDurationMs(start, t));
             m_target = t;
+            m_trimAttempts = 0;      // 新目标 = 新的精修额度
+            m_trimQuietMs  = 0.0;
         }
     }
+
+    // 轨迹时长:配置时长与"巡航速度约束"取较大者(target_cruise > 0 时)。
+    // 五次多项式峰值速度 = 1.875 × 平均速度,故约束为
+    // duration ≥ 1.875 × 距离 / cruise——远目标不再退化成 vmax 饱和爬行。
+    double plannedDurationMs(const Pose &start, const Pose &goal) const;
     Pose target() const { return m_target; }
 
     // 误差归零：目标置为实际、状态回 Idle、清除故障原因。
@@ -78,6 +85,9 @@ public:
 
     QString faultReason() const { return m_faultReason; }
 
+    // 到位精修的生命周期累计次数(快照/事件日志用)
+    quint64 trimCount() const { return m_trimCount; }
+
     // 外部（网络层）注入的锁存故障：写失败、KRC Delay 增长等。与内部判定的
     // Fault 一样，必须经 resetToActual 才能清除，绝不能被 setTracking(true) 绕过。
     void forceFault(const QString &reason);
@@ -116,6 +126,15 @@ private:
 
     double m_stepLimitPos = 0.0;   // mm  / 周期（满预算上限；实发按实测间隔按比例发放）
     double m_stepLimitRot = 0.0;   // deg / 周期（同上）
+
+    // ── 到位精修 settle-and-trim 状态(2026-08-07,可勾选)──
+    // 停稳(增量连续静默 trimSettleMs)后,残差(target − 实测)落在
+    // [trimMin, trimMax] 窗口内 → 台账重对齐到实测,残差重新变为控制误差
+    // 经正常管线补发。离散迭代(限次限频),不构成对实测的连续反馈。
+    quint64 m_trimCount      = 0;   // 生命周期累计(只增)
+    int     m_trimAttempts   = 0;   // 当前目标已修次数(换目标/归零即复位)
+    double  m_trimQuietMs    = 0.0; // 增量连续静默时长
+    double  m_trimCooldownMs = 0.0; // 距下次允许精修的剩余时间
 
     // 配置非法（如 cycleMs <= 0）。粘滞：resetToActual/beginSession 都不清除它，
     // 因为生产调用顺序恰是 configure → beginSession(首帧)，若用 Fault 状态承载

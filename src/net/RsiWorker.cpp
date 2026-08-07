@@ -484,6 +484,7 @@ void RsiWorker::publishSnapshot(const Pose &actual, const Pose &err,
     s.peerIp4      = m_peerLocked ? m_peerAddr.toIPv4Address() : 0;
     s.peerPort     = m_peerLocked ? m_peerPort : 0;
     s.lifetimeLost = m_lifetimeLost;
+    s.trimCount    = m_ctl.trimCount();
     s.lastDelta    = m_lastDelta;
 
     // ── 跟踪质量：误差与累积修正相对限值的比例 ──

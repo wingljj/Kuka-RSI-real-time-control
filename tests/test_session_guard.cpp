@@ -162,6 +162,47 @@ private slots:
         QVERIFY(!r.isEmpty());
         QVERIFY(r.join('\n').contains("35"));
     }
+
+    // ── 到位精修参数(2026-08-07):仅启用时校验 ──
+    void trimWindowInverted_failsOnlyWhenEnabled()
+    {
+        AppConfig c = good();
+        c.trimMinMm = 3.0;          // min > max:窗口为空,永不精修却显示已启用
+        c.trimMaxMm = 1.0;
+        QVERIFY(SessionGuard::staticChecks(c).isEmpty());   // 未启用:不拦
+        c.trimEnabled = true;
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("trim"));
+    }
+
+    void trimNonPositiveThrottle_failsWhenEnabled()
+    {
+        AppConfig c = good();
+        c.trimEnabled = true;
+        c.trimSettleMs = 0.0;       // 不等停稳就修 = 连续反馈,重蹈抖动
+        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
+        c = good();
+        c.trimEnabled = true;
+        c.trimMaxAttempts = 0;
+        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
+    }
+
+    void cruiseAboveVmax_fails()
+    {
+        AppConfig c = good();
+        c.targetCruiseMmS = 100.0;  // > vmax(50):轨迹必然饱和,自适应失去意义
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("cruise"));
+    }
+
+    void cruiseZero_passes()
+    {
+        AppConfig c = good();
+        c.targetCruiseMmS = 0.0;    // 0 = 固定时长,旧行为
+        QVERIFY(SessionGuard::staticChecks(c).isEmpty());
+    }
 };
 QTEST_MAIN(TestSessionGuard)
 #include "test_session_guard.moc"

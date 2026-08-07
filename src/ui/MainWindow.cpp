@@ -359,6 +359,25 @@ void MainWindow::buildMenus()
     m_resetFaultAct->setObjectName("resetFaultAct");
     connect(m_resetFaultAct, &QAction::triggered, this, &MainWindow::onResetFault);
     ctlMenu->addSeparator();
+    // 到位精修(2026-08-07,可勾选):停稳后测残差(目标−实测),窗口内自动
+    // 重发补齐。离散迭代限次限频,不构成对实测的连续反馈,无振荡风险。
+    m_trimAct = ctlMenu->addAction("到位精修");
+    m_trimAct->setObjectName("trimAct");
+    m_trimAct->setCheckable(true);
+    m_trimAct->setChecked(m_cfg.trimEnabled);
+    m_trimAct->setToolTip(
+        "停稳后自动补发丢失的微小修正(残差 0.02~2mm),使实测精确到位。\n"
+        "被物理挡住的残差不会硬追(限 3 次),超窗口残差留给误差显示与告警。");
+    connect(m_trimAct, &QAction::toggled, this, [this](bool on) {
+        m_cfg.trimEnabled = on;
+        if (m_worker)
+            QMetaObject::invokeMethod(m_worker, "applyConfig", Qt::QueuedConnection,
+                                      Q_ARG(AppConfig, m_cfg));
+        m_alarmLog->addEvent(AlarmLog::Info,
+            on ? QStringLiteral("到位精修:已启用")
+               : QStringLiteral("到位精修:已关闭"), "");
+    });
+    ctlMenu->addSeparator();
     QAction *paramsAct = ctlMenu->addAction("编辑控制参数…");
     connect(paramsAct, &QAction::triggered, this, &MainWindow::onEditParams);
 
@@ -1318,6 +1337,16 @@ void MainWindow::onRefresh()
         m_alarmLog->addEvent(AlarmLog::Fault,
             QStringLiteral("故障锁存: %1").arg(s.faultReason),
             "排查原因后归零复位,再重新使能跟踪");
+    // 到位精修每执行一次记一条(计数增量驱动,天然防刷屏)
+    if (s.trimCount > m_prevTrimCount) {
+        m_alarmLog->addEvent(AlarmLog::Info,
+            QStringLiteral("到位精修 #%1:补发残差 %2 mm")
+                .arg(s.trimCount)
+                .arg(std::sqrt(s.error.x*s.error.x + s.error.y*s.error.y
+                               + s.error.z*s.error.z), 0, 'f', 3),
+            "");
+    }
+    m_prevTrimCount = s.trimCount;
     // 存的必须是「本帧的告警电平」，不是 edgesBetween 的返回值——后者是
     // 「本帧是否为上升沿」，持续告警时它恒为 false，下一帧就又成了上升沿，
     // 刷屏原样复现。

@@ -78,6 +78,34 @@ QStringList SessionGuard::staticChecks(const AppConfig &cfg)
                 .arg(cfg.cycleMs)
                 .arg(stepMm);
 
+    // ── 到位精修(2026-08-07):仅启用时校验,关着的错参数不拦人 ──
+    if (cfg.trimEnabled) {
+        // 窗口为空 = 永不精修却显示已启用,是静默失效
+        if (!(cfg.trimMinMm > 0.0 && cfg.trimMinMm < cfg.trimMaxMm))
+            out << QStringLiteral("trim_min_mm(%1) must be in (0, trim_max_mm=%2)")
+                    .arg(cfg.trimMinMm).arg(cfg.trimMaxMm);
+        if (!(cfg.trimMinDeg > 0.0 && cfg.trimMinDeg < cfg.trimMaxDeg))
+            out << QStringLiteral("trim_min_deg(%1) must be in (0, trim_max_deg=%2)")
+                    .arg(cfg.trimMinDeg).arg(cfg.trimMaxDeg);
+        // 不等停稳就修 = 连续反馈,重蹈滞后振荡;不限次 = 顶死时无限重试
+        if (!(cfg.trimSettleMs > 0.0))
+            out << QStringLiteral("trim_settle_ms(%1) must be > 0").arg(cfg.trimSettleMs);
+        if (!(cfg.trimCooldownMs > 0.0))
+            out << QStringLiteral("trim_cooldown_ms(%1) must be > 0").arg(cfg.trimCooldownMs);
+        if (!(cfg.trimMaxAttempts > 0))
+            out << QStringLiteral("trim_max_attempts(%1) must be > 0").arg(cfg.trimMaxAttempts);
+    }
+
+    // 巡航速度必须留在 vmax 以内,否则轨迹必然饱和,自适应时长失去意义
+    if (cfg.targetCruiseMmS < 0.0 || cfg.targetCruiseMmS > cfg.vmaxPosMmS)
+        out << QStringLiteral(
+            "target_cruise_mm_s(%1) must be in [0, vmax_pos_mm_s=%2]")
+                .arg(cfg.targetCruiseMmS).arg(cfg.vmaxPosMmS);
+    if (cfg.targetCruiseDegS < 0.0 || cfg.targetCruiseDegS > cfg.vmaxRotDegS)
+        out << QStringLiteral(
+            "target_cruise_deg_s(%1) must be in [0, vmax_rot_deg_s=%2]")
+                .arg(cfg.targetCruiseDegS).arg(cfg.vmaxRotDegS);
+
     return out;
 }
 
