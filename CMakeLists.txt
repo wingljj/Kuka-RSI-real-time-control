@@ -25,13 +25,17 @@ add_library(rsi_core STATIC
     src/core/RsiCodec.cpp
     src/core/PoseController.cpp
     src/core/SessionGuard.cpp
+    src/core/SriDriver.cpp
+    src/core/SriDriver.h
     src/core/SriProtocol.cpp
     src/core/SriProtocol.h
     src/core/TargetTrajectory.cpp
     tools/krc_simulator/kinematics.cpp
 )
 target_include_directories(rsi_core PUBLIC src tools/krc_simulator ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(rsi_core PUBLIC Qt6::Core)
+# Qt6::Network：SriDriver.h 公开头直接 include <QTcpSocket>，须 PUBLIC 传递。
+# 注意 Network 不引入 QT_GUI_LIB，纯算法单测仍是控制台程序。
+target_link_libraries(rsi_core PUBLIC Qt6::Core Qt6::Network)
 
 # UiLogic 单独成库而不是留在 rsi_core 里：它需要 QFontDatabase（QtGui），
 # 而 QTEST_MAIN 按 QT_GUI_LIB 是否定义在 QCoreApplication 与 QGuiApplication
