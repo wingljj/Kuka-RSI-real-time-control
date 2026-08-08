@@ -77,3 +77,8 @@ set_tests_properties(test_comm_cards PROPERTIES
 add_executable(test_rsi_worker test_rsi_worker.cpp)
 target_link_libraries(test_rsi_worker PRIVATE rsi_net Qt6::Test Qt6::Network)
 add_test(NAME test_rsi_worker COMMAND test_rsi_worker)
+
+# SRI 二进制帧解析器单测：纯 C++ 字节流解析，链接 rsi_core 与 Qt6::Test。
+add_executable(test_sri_protocol test_sri_protocol.cpp)
+target_link_libraries(test_sri_protocol PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_sri_protocol COMMAND test_sri_protocol)
