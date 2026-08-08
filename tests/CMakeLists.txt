@@ -96,3 +96,9 @@ add_test(NAME test_sri_protocol COMMAND test_sri_protocol)
 add_executable(test_sri_driver test_sri_driver.cpp)
 target_link_libraries(test_sri_driver PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_sri_driver COMMAND test_sri_driver)
+
+# 力控全管线端到端集成测试（无硬件）：SRI 二进制帧 → WrenchFrame →
+# ForceController → delta 输出。纯计算，链接 rsi_core 与 Qt6::Test。
+add_executable(test_force_pipeline integration/test_ForcePipeline.cpp)
+target_link_libraries(test_force_pipeline PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_force_pipeline COMMAND test_force_pipeline)
