@@ -1,6 +1,7 @@
 #include "core/AppConfig.h"
 
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -104,6 +105,75 @@ bool AppConfig::loadFromFile(const QString &path, AppConfig *out,
     const QJsonObject ui = root.value("ui").toObject();
     readInt(ui, "refresh_ms", &out->refreshMs);
     readInt(ui, "chart_window_s", &out->chartWindowS);
+
+    // ── force_control block ──
+    const QJsonObject fc = root.value("force_control").toObject();
+    if (!fc.isEmpty()) {
+        const QJsonObject sri = fc.value("sensor").toObject();
+        readString(sri, "host", &out->forceControl.sensor.host);
+        if (sri.value("port").isDouble()) {
+            const int p = sri.value("port").toInt(-1);
+            if (p > 0 && p <= 65535)
+                out->forceControl.sensor.port = quint16(p);
+        }
+        if (sri.value("channel_signs").isArray()) {
+            const auto arr = sri.value("channel_signs").toArray();
+            for (int i = 0; i < 6 && i < arr.size(); ++i)
+                if (arr[i].isDouble())
+                    out->forceControl.sensor.channelSigns[i] = arr[i].toInt();
+        }
+        readDouble(sri, "torque_scale", &out->forceControl.sensor.torqueScale);
+        if (sri.value("force_capacity_n").isArray()) {
+            const auto arr = sri.value("force_capacity_n").toArray();
+            for (int i = 0; i < 3 && i < arr.size(); ++i)
+                if (arr[i].isDouble())
+                    out->forceControl.sensor.forceCapacityN[i] = arr[i].toDouble();
+        }
+        if (sri.value("torque_capacity_nm").isArray()) {
+            const auto arr = sri.value("torque_capacity_nm").toArray();
+            for (int i = 0; i < 3 && i < arr.size(); ++i)
+                if (arr[i].isDouble())
+                    out->forceControl.sensor.torqueCapacityNm[i] = arr[i].toDouble();
+        }
+        readDouble(sri, "capacity_warning_ratio", &out->forceControl.sensor.capacityWarningRatio);
+        readDouble(sri, "stale_timeout_ms", &out->forceControl.sensor.staleTimeoutMs);
+
+        const QJsonObject mnt = fc.value("mounting").toObject();
+        auto readPose6 = [](const QJsonObject &o, const char *key, double dst[6]) {
+            if (o.value(key).isObject()) {
+                const QJsonObject p = o.value(key).toObject();
+                readDouble(p, "x_mm",  &dst[0]);
+                readDouble(p, "y_mm",  &dst[1]);
+                readDouble(p, "z_mm",  &dst[2]);
+                readDouble(p, "a_deg", &dst[3]);
+                readDouble(p, "b_deg", &dst[4]);
+                readDouble(p, "c_deg", &dst[5]);
+            }
+        };
+        readPose6(mnt, "flange_T_sensor", out->forceControl.mounting.flangeTSensor);
+        readPose6(mnt, "flange_T_tool",   out->forceControl.mounting.flangeTTool);
+
+        const QJsonObject flt = fc.value("filter").toObject();
+        readDouble(flt, "cutoff_hz", &out->forceControl.params.cutoffHz);
+
+        const QJsonObject dz = fc.value("deadzone").toObject();
+        readDouble(dz, "force_n",   &out->forceControl.params.deadzoneForceN);
+        readDouble(dz, "torque_nm", &out->forceControl.params.deadzoneTorqueNm);
+
+        const QJsonObject adm = fc.value("admittance").toObject();
+        readDouble(adm, "gain_force",     &out->forceControl.params.gainForce);
+        readDouble(adm, "gain_torque",    &out->forceControl.params.gainTorque);
+        readDouble(adm, "vmax_pos_mm_s",  &out->forceControl.params.vmaxPosMmS);
+        readDouble(adm, "vmax_rot_deg_s", &out->forceControl.params.vmaxRotDegS);
+
+        const QJsonObject ax = fc.value("axes").toObject();
+        readBool(ax, "en_x", &out->forceControl.axes.enX);
+        readBool(ax, "en_y", &out->forceControl.axes.enY);
+        readBool(ax, "en_z", &out->forceControl.axes.enZ);
+        readBool(ax, "en_a", &out->forceControl.axes.enA);
+        readBool(ax, "en_b", &out->forceControl.axes.enB);
+        readBool(ax, "en_c", &out->forceControl.axes.enC);
+    }
 
     if (error)
         error->clear();

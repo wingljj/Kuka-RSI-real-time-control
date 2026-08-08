@@ -1,6 +1,58 @@
 #pragma once
 #include <QMetaType>
 #include <QString>
+#include <array>
+
+// ── 力控（force control）配置块 ──
+// 传感器、安装、滤波器/死区/导纳参数、启用轴，分别对应 config.json
+// 中 force_control 块的各子对象；缺失字段一律保留默认值。
+
+struct ForceSensorConfig
+{
+    QString host                  = "192.168.0.108";
+    quint16 port                  = 4008;
+    std::array<int, 6> channelSigns = {1, 1, 1, 1, 1, 1};
+    double  torqueScale           = 1.0;
+    double  forceCapacityN[3]     = {7200.0, 7200.0, 18000.0};
+    double  torqueCapacityNm[3]   = {1400.0, 1400.0, 1400.0};
+    double  capacityWarningRatio  = 0.70;
+    double  staleTimeoutMs        = 100.0;
+};
+
+struct MountingConfig
+{
+    double flangeTSensor[6] = {0.0, 0.0, 85.0, 0.0, 0.0, 0.0};  // XYZ mm, ABC deg
+    double flangeTTool[6]   = {0.0, 0.0, 150.0, 0.0, 0.0, 0.0}; // XYZ mm, ABC deg
+};
+
+struct ForceControlAxes
+{
+    bool enX = false;
+    bool enY = false;
+    bool enZ = true;
+    bool enA = false;
+    bool enB = false;
+    bool enC = false;
+};
+
+struct ForceControlParams
+{
+    double cutoffHz         = 10.0;
+    double deadzoneForceN   = 5.0;
+    double deadzoneTorqueNm = 1.0;
+    double gainForce        = 0.05;
+    double gainTorque       = 0.5;
+    double vmaxPosMmS       = 5.0;
+    double vmaxRotDegS      = 1.0;
+};
+
+struct ForceControlConfig
+{
+    ForceSensorConfig sensor;
+    MountingConfig    mounting;
+    ForceControlParams params;
+    ForceControlAxes  axes;
+};
 
 struct AppConfig
 {
@@ -65,6 +117,8 @@ struct AppConfig
     int     chartWindowS      = 10;
     double  trackingQualityWarnPct     = 0.5;   // 跟踪质量警告阈值（误差/累积 占限值比例）
     double  trackingQualityCriticalPct = 0.8;   // 跟踪质量严重阈值
+
+    ForceControlConfig forceControl;  // 力控配置；默认值由 ForceControlConfig{} 提供
 
     static AppConfig defaults() { return AppConfig{}; }
 

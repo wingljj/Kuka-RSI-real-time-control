@@ -225,6 +225,158 @@ private slots:
         QVERIFY(AppConfig::loadFromFile(f.fileName(), &c, &err));
         QVERIFY(err.isEmpty());
     }
+
+    void loadsForceControlDefaults()
+    {
+        const AppConfig cfg = AppConfig::defaults();
+        QCOMPARE(cfg.forceControl.sensor.host, QString("192.168.0.108"));
+        QCOMPARE(cfg.forceControl.sensor.port, quint16(4008));
+        QCOMPARE(cfg.forceControl.sensor.channelSigns[0], 1);
+        QCOMPARE(cfg.forceControl.sensor.torqueScale, 1.0);
+        QCOMPARE(cfg.forceControl.sensor.forceCapacityN[2], 18000.0);
+        QCOMPARE(cfg.forceControl.sensor.torqueCapacityNm[1], 1400.0);
+        QCOMPARE(cfg.forceControl.sensor.capacityWarningRatio, 0.70);
+        QCOMPARE(cfg.forceControl.sensor.staleTimeoutMs, 100.0);
+        QCOMPARE(cfg.forceControl.mounting.flangeTSensor[2], 85.0);
+        QCOMPARE(cfg.forceControl.mounting.flangeTTool[2], 150.0);
+        QCOMPARE(cfg.forceControl.params.cutoffHz, 10.0);
+        QCOMPARE(cfg.forceControl.params.deadzoneForceN, 5.0);
+        QCOMPARE(cfg.forceControl.params.deadzoneTorqueNm, 1.0);
+        QCOMPARE(cfg.forceControl.params.gainForce, 0.05);
+        QCOMPARE(cfg.forceControl.params.gainTorque, 0.5);
+        QCOMPARE(cfg.forceControl.params.vmaxPosMmS, 5.0);
+        QCOMPARE(cfg.forceControl.params.vmaxRotDegS, 1.0);
+        QCOMPARE(cfg.forceControl.axes.enZ, true);
+        QCOMPARE(cfg.forceControl.axes.enX, false);
+        QCOMPARE(cfg.forceControl.axes.enA, false);
+    }
+
+    void loadsForceControlFromJson()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({
+          "force_control": {
+            "sensor": { "host": "10.0.0.1", "port": 5000 },
+            "deadzone": { "force_n": 3.0 },
+            "axes": { "en_y": true, "en_z": false }
+          }
+        })");
+        f.flush();
+        AppConfig c;
+        QString err;
+        QVERIFY2(AppConfig::loadFromFile(f.fileName(), &c, &err), qPrintable(err));
+        QCOMPARE(c.forceControl.sensor.host, QString("10.0.0.1"));
+        QCOMPARE(c.forceControl.sensor.port, quint16(5000));
+        QCOMPARE(c.forceControl.params.deadzoneForceN, 3.0);
+        // 未提到的字段保留默认
+        QCOMPARE(c.forceControl.params.cutoffHz, 10.0);
+        QCOMPARE(c.forceControl.axes.enY, true);
+        QCOMPARE(c.forceControl.axes.enZ, false);
+    }
+
+    void loadsForceControlFullBlock()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({
+          "force_control": {
+            "sensor": {
+              "host": "10.1.2.3", "port": 6000,
+              "channel_signs": [-1, 1, -1, 1, -1, 1],
+              "torque_scale": 0.98,
+              "force_capacity_n": [1000.0, 2000.0, 3000.0],
+              "torque_capacity_nm": [100.0, 200.0, 300.0],
+              "capacity_warning_ratio": 0.8,
+              "stale_timeout_ms": 50.0
+            },
+            "mounting": {
+              "flange_T_sensor": { "x_mm": 1, "y_mm": 2, "z_mm": 90,
+                                   "a_deg": 10, "b_deg": 20, "c_deg": 30 },
+              "flange_T_tool":   { "x_mm": 3, "y_mm": 4, "z_mm": 160,
+                                   "a_deg": 40, "b_deg": 50, "c_deg": 60 }
+            },
+            "filter": { "cutoff_hz": 8.0 },
+            "deadzone": { "force_n": 2.0, "torque_nm": 0.5 },
+            "admittance": { "gain_force": 0.1, "gain_torque": 1.0,
+                            "vmax_pos_mm_s": 10.0, "vmax_rot_deg_s": 2.0 },
+            "axes": { "en_x": true, "en_y": true, "en_z": false,
+                      "en_a": true, "en_b": true, "en_c": true }
+          }
+        })");
+        f.flush();
+        AppConfig c;
+        QString err;
+        QVERIFY2(AppConfig::loadFromFile(f.fileName(), &c, &err), qPrintable(err));
+        QCOMPARE(c.forceControl.sensor.host, QString("10.1.2.3"));
+        QCOMPARE(c.forceControl.sensor.port, quint16(6000));
+        QCOMPARE(c.forceControl.sensor.channelSigns[0], -1);
+        QCOMPARE(c.forceControl.sensor.channelSigns[2], -1);
+        QCOMPARE(c.forceControl.sensor.channelSigns[5], 1);
+        QCOMPARE(c.forceControl.sensor.torqueScale, 0.98);
+        QCOMPARE(c.forceControl.sensor.forceCapacityN[0], 1000.0);
+        QCOMPARE(c.forceControl.sensor.forceCapacityN[2], 3000.0);
+        QCOMPARE(c.forceControl.sensor.torqueCapacityNm[1], 200.0);
+        QCOMPARE(c.forceControl.sensor.capacityWarningRatio, 0.8);
+        QCOMPARE(c.forceControl.sensor.staleTimeoutMs, 50.0);
+        QCOMPARE(c.forceControl.mounting.flangeTSensor[0], 1.0);
+        QCOMPARE(c.forceControl.mounting.flangeTSensor[2], 90.0);
+        QCOMPARE(c.forceControl.mounting.flangeTSensor[3], 10.0);
+        QCOMPARE(c.forceControl.mounting.flangeTSensor[5], 30.0);
+        QCOMPARE(c.forceControl.mounting.flangeTTool[2], 160.0);
+        QCOMPARE(c.forceControl.mounting.flangeTTool[4], 50.0);
+        QCOMPARE(c.forceControl.params.cutoffHz, 8.0);
+        QCOMPARE(c.forceControl.params.deadzoneForceN, 2.0);
+        QCOMPARE(c.forceControl.params.deadzoneTorqueNm, 0.5);
+        QCOMPARE(c.forceControl.params.gainForce, 0.1);
+        QCOMPARE(c.forceControl.params.gainTorque, 1.0);
+        QCOMPARE(c.forceControl.params.vmaxPosMmS, 10.0);
+        QCOMPARE(c.forceControl.params.vmaxRotDegS, 2.0);
+        QCOMPARE(c.forceControl.axes.enX, true);
+        QCOMPARE(c.forceControl.axes.enZ, false);
+        QCOMPARE(c.forceControl.axes.enC, true);
+    }
+
+    void load_forceControlWrongTypesKeepDefaults()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({
+          "force_control": {
+            "sensor": { "host": 12345, "port": "6000",
+                        "channel_signs": [1, "x", 1, 1, 1, 1],
+                        "torque_scale": "1.5",
+                        "force_capacity_n": [1, 2, "x"] },
+            "deadzone": { "force_n": "3.0" },
+            "axes": { "en_z": 1, "en_x": "true" }
+          }
+        })");
+        f.flush();
+        AppConfig c;
+        QString err;
+        QVERIFY2(AppConfig::loadFromFile(f.fileName(), &c, &err), qPrintable(err));
+        // 类型不符的字段必须保留默认值
+        QCOMPARE(c.forceControl.sensor.host, QString("192.168.0.108"));
+        QCOMPARE(c.forceControl.sensor.port, quint16(4008));
+        QCOMPARE(c.forceControl.sensor.channelSigns[1], 1);
+        QCOMPARE(c.forceControl.sensor.torqueScale, 1.0);
+        QCOMPARE(c.forceControl.sensor.forceCapacityN[2], 18000.0);
+        QCOMPARE(c.forceControl.params.deadzoneForceN, 5.0);
+        QCOMPARE(c.forceControl.axes.enZ, true);
+        QCOMPARE(c.forceControl.axes.enX, false);
+    }
+
+    void load_forceControlOutOfRangePortKeepsDefault()
+    {
+        QTemporaryFile f;
+        QVERIFY(f.open());
+        f.write(R"({ "force_control": { "sensor": { "port": 70000 } } })");
+        f.flush();
+        AppConfig c;
+        QString err;
+        QVERIFY2(AppConfig::loadFromFile(f.fileName(), &c, &err), qPrintable(err));
+        QCOMPARE(c.forceControl.sensor.port, quint16(4008)); // 不得截断成 4464
+    }
 };
 
 QTEST_MAIN(TestAppConfig)

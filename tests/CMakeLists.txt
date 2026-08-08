@@ -6,6 +6,10 @@ add_executable(test_app_config test_app_config.cpp)
 target_link_libraries(test_app_config PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_app_config COMMAND test_app_config)
 
+add_executable(test_wrench test_wrench.cpp)
+target_link_libraries(test_wrench PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_wrench COMMAND test_wrench)
+
 add_executable(test_rsi_codec test_rsi_codec.cpp)
 target_link_libraries(test_rsi_codec PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_rsi_codec COMMAND test_rsi_codec)
