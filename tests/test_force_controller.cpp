@@ -151,6 +151,64 @@ private slots:
         QVERIFY(fc.commandedSum().z > 0.5);
         QVERIFY(std::abs(fc.commandedSum().z - sum) < 1e-9);
     }
+
+    void sensorToToolRotationMapsSensorXToToolY()
+    {
+        // Sensor mounted +90° about flange Z (flangeTSensor A=90); tool coincides
+        // with flange (flangeTTool identity). Sensor +X force must map to tool +Y
+        // under R_st = R_ft^T × R_fs — the transposed (buggy) formula gives -Y.
+        ForceController fc;
+        ForceControlConfig cfg = testCfg();
+        cfg.mounting.flangeTSensor[3] = 90.0;  // A = rotation about flange Z
+        cfg.mounting.flangeTSensor[4] = 0.0;
+        cfg.mounting.flangeTSensor[5] = 0.0;
+        cfg.mounting.flangeTTool[3] = 0.0;
+        cfg.mounting.flangeTTool[4] = 0.0;
+        cfg.mounting.flangeTTool[5] = 0.0;
+        fc.configure(cfg);
+
+        const float sv[6] = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        const WrenchFrame w = fc.transformToBase(sv, 0.0, 0.0, 0.0);
+        QVERIFY(std::abs(w.fx) < 1e-9);
+        QVERIFY(std::abs(w.fy - 1.0) < 1e-9);  // +Y, not -Y
+        QVERIFY(std::abs(w.fz) < 1e-9);
+    }
+
+    void rotationAxisMasksFollowEulerConvention()
+    {
+        // KUKA Euler: A=Z, B=Y, C=X. wAxis is world ω = [ωx,ωy,ωz], so enA must
+        // gate ωz (index 2), enC must gate ωx (index 0). The swapped mapping
+        // would zero out the A response to a pure Mz torque.
+        ForceController fc;
+        ForceControlConfig cfg = testCfg();
+        cfg.axes.enA = true;   // A = base Z
+        cfg.axes.enB = false;  // B = base Y
+        cfg.axes.enC = false;  // C = base X
+        cfg.params.deadzoneTorqueNm = 0.0;
+        fc.configure(cfg);
+        WrenchFrame bias;
+        fc.enable(Pose{}, bias);
+
+        // Pure Mz torque → world ωz → Euler A. B and C masked.
+        WrenchFrame w; w.fresh = true;
+        w.mz = 50.0;
+        for (int i = 0; i < 500; ++i)
+            fc.step(w, Pose{}, 0.004);
+        const Pose out = fc.step(w, Pose{}, 0.004);
+        QVERIFY(out.a > 0.001);
+        QVERIFY(std::abs(out.b) < 1e-9);
+        QVERIFY(std::abs(out.c) < 1e-9);
+
+        // Pure Mx torque → world ωx → Euler C, which is disabled → nothing moves.
+        WrenchFrame w2; w2.fresh = true;
+        w2.mx = 50.0;
+        for (int i = 0; i < 500; ++i)
+            fc.step(w2, Pose{}, 0.004);
+        const Pose out2 = fc.step(w2, Pose{}, 0.004);
+        QVERIFY(std::abs(out2.a) < 1e-9);
+        QVERIFY(std::abs(out2.b) < 1e-9);
+        QVERIFY(std::abs(out2.c) < 1e-9);
+    }
 };
 QTEST_MAIN(TestForceController)
 #include "test_force_controller.moc"

@@ -79,8 +79,9 @@ double ForceController::torqueVectorNorm() const
 void ForceController::computeSensorToToolRotation()
 {
     // Mounting gives flange_T_sensor and flange_T_tool as XYZ+ABC.
-    // sensor_T_tool = inv(flange_T_sensor).rotation * flange_T_tool.rotation
-    // For simplicity: build rotation from ABC angles, then compute R_st = R_fs^T × R_ft.
+    // R_fs maps sensor→flange, R_ft maps tool→flange:
+    //   v_flange = R_fs·v_sensor = R_ft·v_tool  ⇒  v_tool = R_ft^T·R_fs·v_sensor
+    // so sensor→tool is R_st = R_ft^T × R_fs.
 
     double R_fs[3][3], R_ft[3][3];
     const double *s = m_cfg.mounting.flangeTSensor;  // [X,Y,Z,A,B,C]
@@ -88,13 +89,13 @@ void ForceController::computeSensorToToolRotation()
     eulerToRotation(s[3], s[4], s[5], R_fs);
     eulerToRotation(t[3], t[4], t[5], R_ft);
 
-    // R_st = R_fs^T × R_ft
+    // R_st = R_ft^T × R_fs
     double tmp[3][3];
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 3; ++j) {
             tmp[i][j] = 0.0;
             for (int k = 0; k < 3; ++k)
-                tmp[i][j] += R_fs[k][i] * R_ft[k][j];  // R_fs^T × R_ft
+                tmp[i][j] += R_ft[k][i] * R_fs[k][j];  // R_ft^T × R_fs
         }
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 3; ++j)
@@ -184,13 +185,13 @@ Pose ForceController::step(const WrenchFrame &wrench, const Pose &actualPose, do
         wAxis[2] = vRot * netM[2] * invMag;
     }
 
-    // ── Axis mask ──
+    // ── Axis mask (KUKA Euler: A=Z, B=Y, C=X; wAxis is world ω = [ωx,ωy,ωz]) ──
     if (!m_cfg.axes.enX) vAxis[0] = 0.0;
     if (!m_cfg.axes.enY) vAxis[1] = 0.0;
     if (!m_cfg.axes.enZ) vAxis[2] = 0.0;
-    if (!m_cfg.axes.enA) wAxis[0] = 0.0;
-    if (!m_cfg.axes.enB) wAxis[1] = 0.0;
-    if (!m_cfg.axes.enC) wAxis[2] = 0.0;
+    if (!m_cfg.axes.enA) wAxis[2] = 0.0;  // A = base Z
+    if (!m_cfg.axes.enB) wAxis[1] = 0.0;  // B = base Y
+    if (!m_cfg.axes.enC) wAxis[0] = 0.0;  // C = base X
 
     // ── Position delta ──
     Pose delta;
