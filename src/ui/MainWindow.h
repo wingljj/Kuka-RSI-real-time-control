@@ -75,7 +75,7 @@ private:
 
     // 全部停靠面板。「视图」菜单、布局存取都遍历它，避免各处手写一份七元素
     // 列表——漏掉一个的表现是该面板没有显示开关、或它的显示状态不被保存。
-    std::array<QDockWidget *, 7> docks() const;
+    std::array<QDockWidget *, 8> docks() const;
 
     void saveTargetSnapshot();
     void restoreTargetSnapshot();
@@ -133,6 +133,7 @@ private:
     QDockWidget *m_paramDock   = nullptr;
     QDockWidget *m_commDock    = nullptr;
     QDockWidget *m_alarmDock   = nullptr;
+    QDockWidget *m_forcePanelDock = nullptr;  // 力控配置面板（左侧，监听配置下方）
 
     // ── 菜单 / 工具栏动作 ──
     // 控制动作全是 QAction 而不再是 QPushButton：菜单项、工具栏按钮与快捷键

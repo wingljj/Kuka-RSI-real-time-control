@@ -171,13 +171,13 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     cv->addWidget(m_chartRot, 1);
     m_pageStack->addWidget(m_positionPage);
 
-    m_forcePage = buildForcePage();   // 内部创建 m_forcePanel / 两张 ForceChart
+    m_forcePage = buildForcePage();   // 只含两张 ForceChart，不含 ForcePanel
     m_pageStack->addWidget(m_forcePage);
     setCentralWidget(m_pageStack);
 
-    // 面板初始值来自 config.json 的 force_control 块（setConfig 抑制
-    // configChanged，不触发「参数被修改」）。
-    m_forcePanel->setConfig(m_cfg.forceControl);
+    // ForcePanel 提前创建：后续信号连接与 setConfig 都需要它。
+    m_forcePanel = new ForcePanel(this);
+    m_forcePanel->setFixedWidth(380);
 
     m_alarmLog = new AlarmLog(this);
 
@@ -194,6 +194,15 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     };
 
     m_listenDock  = addDock("监听配置", "listenDock",  buildListenPanel(),  Qt::LeftDockWidgetArea);
+
+    // 力控配置面板放在监听配置正下方——与监听配置同属左侧，垂直拆分。
+    m_forcePanelDock = new QDockWidget("力控制", this);
+    m_forcePanelDock->setObjectName(QStringLiteral("forcePanelDock"));
+    m_forcePanelDock->setWidget(m_forcePanel);
+    addDockWidget(Qt::LeftDockWidgetArea, m_forcePanelDock);
+    splitDockWidget(m_listenDock, m_forcePanelDock, Qt::Vertical);
+    m_forcePanelDock->hide();   // 默认在位置页，力控面板先隐藏
+
     m_targetDock  = addDock("目标位姿 (BASE)", "targetDock", buildTargetPanel(), Qt::LeftDockWidgetArea);
     m_compareDock = addDock("位姿对比", "compareDock", buildComparePanel(), Qt::LeftDockWidgetArea);
     m_cumulDock   = addDock("累积修正", "cumulDock",   buildCumulPanel(),   Qt::RightDockWidgetArea);
@@ -201,6 +210,9 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     m_commDock    = addDock("通信指标", "commDock",    buildCommPanel(),    Qt::RightDockWidgetArea);
     m_alarmDock   = addDock("事件日志", "alarmDock",   m_alarmLog,          Qt::BottomDockWidgetArea);
     m_alarmDock->hide();   // 默认隐藏，从「视图」菜单调出
+
+    // 力控面板初始值来自 config.json 的 force_control 块。
+    m_forcePanel->setConfig(m_cfg.forceControl);
 
     buildMenus();
     buildStatusBar();
@@ -291,10 +303,10 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     updateApplyButton();
 }
 
-std::array<QDockWidget *, 7> MainWindow::docks() const
+std::array<QDockWidget *, 8> MainWindow::docks() const
 {
     return {m_listenDock, m_targetDock, m_compareDock,
-            m_cumulDock, m_paramDock, m_commDock, m_alarmDock};
+            m_cumulDock, m_paramDock, m_commDock, m_alarmDock, m_forcePanelDock};
 }
 
 void MainWindow::showEvent(QShowEvent *e)
@@ -493,7 +505,8 @@ void MainWindow::buildMenus()
                                       Qt::QueuedConnection, Q_ARG(bool, false));
         m_pageStack->setCurrentIndex(0);
         m_forcePageActive = false;
-        // 恢复位姿专项面板在上次切走前的显示状态
+        // 隐藏力控配置面板，恢复位姿专项面板
+        m_forcePanelDock->setVisible(false);
         for (QDockWidget *d : kPositionOnlyDocks)
             d->setVisible(d->property("posPageVis").toBool());
     });
@@ -507,11 +520,12 @@ void MainWindow::buildMenus()
                 m_worker, "applyForceConfig", Qt::QueuedConnection,
                 Q_ARG(ForceControlConfig, m_forcePanel->config()));
         }
-        // 切到力控页前先记住哪些面板当前可见，切回位姿页时还原
+        // 显示力控配置面板，隐藏位姿专项面板（先记后隐，切回时还原）
         for (QDockWidget *d : kPositionOnlyDocks)
             d->setProperty("posPageVis", d->isVisible());
         for (QDockWidget *d : kPositionOnlyDocks)
             d->setVisible(false);
+        m_forcePanelDock->setVisible(true);
         m_pageStack->setCurrentIndex(1);
         m_forcePageActive = true;
     });
@@ -666,7 +680,7 @@ void MainWindow::onResetLayout()
     // 少了这一步，「恢复默认布局」救不回被全部关掉的面板——而那正是最需要
     // 这个菜单项的处境。
     for (QDockWidget *d : docks())
-        d->setVisible(d != m_alarmDock);   // 事件日志默认隐藏
+        d->setVisible(d != m_alarmDock && d != m_forcePanelDock);
 }
 
 void MainWindow::onAbout()
@@ -1050,27 +1064,16 @@ QWidget *MainWindow::buildCommPanel()
 
 QWidget *MainWindow::buildForcePage()
 {
+    // ForcePanel 已移入左侧停靠面板（监听配置下方），这里只放两张曲线图表，
+    // 各占半高、30s 滚动窗，填满整个中心区域。
     auto *w = new QWidget(this);
-    auto *h = new QHBoxLayout(w);
-    h->setContentsMargins(0, 0, 0, 0);
-    h->setSpacing(0);
-
-    // 左侧：力控配置面板。宽度钉死：参数区是「看一眼确认数值」的性质，
-    // 随窗口拉宽只会把控件间隔拉得不成比例，参数本身并不需要更多空间。
-    m_forcePanel = new ForcePanel(w);
-    m_forcePanel->setFixedWidth(380);
-    h->addWidget(m_forcePanel);
-
-    // 右侧：力 / 力矩曲线垂直堆叠（各占半高，30s 滚动窗）。
-    auto *right = new QWidget(w);
-    auto *rv = new QVBoxLayout(right);
-    rv->setContentsMargins(4, 4, 4, 4);
-    rv->setSpacing(4);
-    m_forceChartForce  = new ForceChart(30, ForceChart::Mode::Force, right);
-    m_forceChartTorque = new ForceChart(30, ForceChart::Mode::Torque, right);
-    rv->addWidget(m_forceChartForce, 1);
-    rv->addWidget(m_forceChartTorque, 1);
-    h->addWidget(right, 1);
+    auto *v = new QVBoxLayout(w);
+    v->setContentsMargins(4, 4, 4, 4);
+    v->setSpacing(4);
+    m_forceChartForce  = new ForceChart(30, ForceChart::Mode::Force, w);
+    m_forceChartTorque = new ForceChart(30, ForceChart::Mode::Torque, w);
+    v->addWidget(m_forceChartForce, 1);
+    v->addWidget(m_forceChartTorque, 1);
     return w;
 }
 
