@@ -479,7 +479,13 @@ void MainWindow::buildMenus()
     auto *pageGroup = new QActionGroup(this);
     pageGroup->addAction(m_positionPageAct);
     pageGroup->addAction(m_forcePageAct);
-    connect(m_positionPageAct, &QAction::triggered, this, [this] {
+    // 位姿专项停靠面板：只在位姿跟踪页有用，切到力控页时隐藏、切回时恢复。
+    // 这些面板的内容（目标编辑/位姿对比/累积修正/控制参数）在力控模式下全无意义，
+    // 留着只会挤占中心区域——力控页已经有自己的参数面板（ForcePanel）和图表。
+    const QList<QDockWidget *> kPositionOnlyDocks = {
+        m_targetDock, m_compareDock, m_cumulDock, m_paramDock};
+
+    connect(m_positionPageAct, &QAction::triggered, this, [this, kPositionOnlyDocks] {
         // 离开力控页先停力控模式：与位姿跟踪互斥（全局约束）。SRI 数据流
         // 不在这里断——回到力控页时数据立即可见；停数据流由面板「断开」负责。
         if (m_worker)
@@ -487,8 +493,11 @@ void MainWindow::buildMenus()
                                       Qt::QueuedConnection, Q_ARG(bool, false));
         m_pageStack->setCurrentIndex(0);
         m_forcePageActive = false;
+        // 恢复位姿专项面板在上次切走前的显示状态
+        for (QDockWidget *d : kPositionOnlyDocks)
+            d->setVisible(d->property("posPageVis").toBool());
     });
-    connect(m_forcePageAct, &QAction::triggered, this, [this] {
+    connect(m_forcePageAct, &QAction::triggered, this, [this, kPositionOnlyDocks] {
         // 切入力控页先停位姿跟踪（互斥），并把面板上的参数作为当前配置
         // 下发——面板是力控参数的唯一编辑入口，页面切入即生效。
         if (m_worker) {
@@ -498,6 +507,11 @@ void MainWindow::buildMenus()
                 m_worker, "applyForceConfig", Qt::QueuedConnection,
                 Q_ARG(ForceControlConfig, m_forcePanel->config()));
         }
+        // 切到力控页前先记住哪些面板当前可见，切回位姿页时还原
+        for (QDockWidget *d : kPositionOnlyDocks)
+            d->setProperty("posPageVis", d->isVisible());
+        for (QDockWidget *d : kPositionOnlyDocks)
+            d->setVisible(false);
         m_pageStack->setCurrentIndex(1);
         m_forcePageActive = true;
     });
