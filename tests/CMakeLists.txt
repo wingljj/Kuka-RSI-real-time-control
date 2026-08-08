@@ -90,3 +90,9 @@ add_test(NAME test_rsi_worker COMMAND test_rsi_worker)
 add_executable(test_sri_protocol test_sri_protocol.cpp)
 target_link_libraries(test_sri_protocol PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_sri_protocol COMMAND test_sri_protocol)
+
+# SriDriver 协议集成单测：不碰 TCP，白盒驱动 processFrames/drainAccumulator
+# 验证通道符号、窗口均值与 stale 语义。
+add_executable(test_sri_driver test_sri_driver.cpp)
+target_link_libraries(test_sri_driver PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_sri_driver COMMAND test_sri_driver)
