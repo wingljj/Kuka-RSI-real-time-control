@@ -218,6 +218,8 @@ void ForcePanel::setConfig(const ForceControlConfig &cfg)
     m_enA->setChecked(cfg.axes.enA);
     m_enB->setChecked(cfg.axes.enB);
     m_enC->setChecked(cfg.axes.enC);
+    // 安装参数面板上不可编辑，但必须留存原值供 config() 带回
+    m_mounting = cfg.mounting;
 }
 
 ForceControlConfig ForcePanel::config() const
@@ -238,7 +240,8 @@ ForceControlConfig ForcePanel::config() const
     c.axes.enA = m_enA->isChecked();
     c.axes.enB = m_enB->isChecked();
     c.axes.enC = m_enC->isChecked();
-    // 安装配置（mounting）不在面板编辑范围内，保留默认值。
+    // 安装参数不在面板编辑范围内：带回 setConfig 留存的原值，不回退默认。
+    c.mounting = m_mounting;
     return c;
 }
 

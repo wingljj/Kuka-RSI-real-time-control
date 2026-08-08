@@ -231,18 +231,26 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 
     // ── 力控页：ForcePanel → RsiWorker ──
     // 槽改写 m_forceMode / m_cfg.forceControl，且 SriDriver 与其 socket 归属
-    // 通信线程——全部以 m_worker 为接收者上下文，跨线程自动排队（契约见
-    // RsiWorker.h 头部的连接方式注释）。lambda 体在通信线程执行，这里的
-    // setForceMode/applyForceConfig 是同线程直连调用。
+    // 通信线程——除 enableForceRequested 外全部以 m_worker 为接收者上下文，
+    // 跨线程自动排队（契约见 RsiWorker.h 头部的连接方式注释）。
+    // enableForceRequested 必须以 this（GUI 线程）为上下文：它要先读
+    // ForcePanel 控件取配置快照，配置取好后才排到通信线程（见下方注释）。
     connect(m_forcePanel, &ForcePanel::connectRequested,
             m_worker, &RsiWorker::startSri);
     connect(m_forcePanel, &ForcePanel::disconnectRequested,
             m_worker, &RsiWorker::stopSri);
     connect(m_forcePanel, &ForcePanel::zeroForceRequested,
             m_worker, &RsiWorker::zeroForceSensor);
-    connect(m_forcePanel, &ForcePanel::enableForceRequested, m_worker, [this]() {
-        m_worker->setForceMode(true);
-        m_worker->applyForceConfig(m_forcePanel->config());
+    // 接收者上下文必须是 this（GUI 线程）而不是 m_worker：lambda 要先在
+    // GUI 线程读 ForcePanel 控件取配置快照——以 m_worker 为上下文会让它
+    // 在通信线程执行，跨线程触碰 GUI 对象，违反 RsiWorker.h 的线程契约。
+    // 配置取好后经 invokeMethod 排到通信线程执行两个槽。
+    connect(m_forcePanel, &ForcePanel::enableForceRequested, this, [this]() {
+        const ForceControlConfig cfg = m_forcePanel->config();
+        QMetaObject::invokeMethod(m_worker, [this, cfg]() {
+            m_worker->setForceMode(true);
+            m_worker->applyForceConfig(cfg);
+        });
     });
     connect(m_forcePanel, &ForcePanel::stopForceRequested, m_worker, [this]() {
         m_worker->setForceMode(false);

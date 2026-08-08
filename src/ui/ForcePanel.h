@@ -71,6 +71,11 @@ private:
     QPushButton *m_enableBtn = nullptr;
     QPushButton *m_stopBtn = nullptr;
 
+    // 安装参数不在面板上编辑，但 config() 必须原样带回：面板是配置的唯一
+    // 编辑入口，若 config() 返回全新默认值，config.json 里的非默认 mounting
+    //（法兰到传感器/工具的偏移）会在「使能力控」与切入力控页时被静默丢弃。
+    MountingConfig m_mounting;
+
     // ── 实现细节（brief 未列，setConnected 幂等与陈旧提示所需）──
     QLabel *m_staleLabel = nullptr;   // setStaleWarning 的目标
     // 上次施加的连接状态，避免每帧重复 setPalette。初值取 true：让构造期
