@@ -28,11 +28,13 @@ public:
     //    那是堆损坏而不仅是脏读。
     //  - 直连的 bindFailed/listening/firstFrameReceived 槽若调用 stop()，会在
     //    onDatagram() 的循环体中途把 m_sock/m_watchdog 置空。
-    //  - 力控五个槽（setForceMode/applyForceConfig/zeroForceSensor/startSri/
-    //    stopSri）同样必须排队：它们改写 m_forceMode / m_cfg.forceControl，
-    //    且 SriDriver 与其 QTcpSocket 都归属通信线程——直连会让槽在 GUI 线程
-    //    执行，跨线程触碰 socket 与窗口均值累加器（通信线程每周期在
-    //    drainAccumulator() 里与它互取）。
+    //  - 力控七个槽（setForceMode/applyForceConfig/zeroForceSensor/startSri/
+    //    stopSri/enableForceControl/disableForceControl）同样必须排队：它们
+    //    改写 m_forceMode / m_cfg.forceControl，且 SriDriver 与其 QTcpSocket
+    //    都归属通信线程——直连会让槽在 GUI 线程执行，跨线程触碰 socket 与
+    //    窗口均值累加器（通信线程每周期在 drainAccumulator() 里与它互取）。
+    //    enableForceControl 还会读 m_sriDriver 与 m_lastActual，只能在通信
+    //    线程执行。
 public slots:
     void start();
     void stop();
@@ -46,6 +48,12 @@ public slots:
     void zeroForceSensor();
     void startSri();
     void stopSri();
+    // 使能/停止力控。enable 取一帧新鲜 SRI 窗口均值作偏置、变换到 BASE 系
+    // 后交给 ForceController::enable（记录台账起点 + 预填充滤波器）；取不到
+    // 新鲜数据或力控已活跃时静默返回。两者都必须在通信线程执行（读
+    // m_sriDriver / m_lastActual / m_forceCtl），经队列连接到达。
+    void enableForceControl();
+    void disableForceControl();
 
 signals:
     void bindFailed(QString reason);
@@ -73,6 +81,7 @@ private:
     ForceController  m_forceCtl;
     bool m_forceMode = false;   // true = 力控页活跃（setForceMode 槽置位）
     WrenchFrame m_sriLatest;    // 最近一次从 SRI 取走的窗口均值（zeroForceSensor 回退）
+    int m_forceSpeedClampCount = 0;  // 连续 vmax 饱和帧计数（力控超速检测）
 
     IpocTracker m_ipocTracker;
 

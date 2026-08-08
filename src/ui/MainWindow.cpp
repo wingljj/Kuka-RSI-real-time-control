@@ -244,12 +244,15 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
     // 接收者上下文必须是 this（GUI 线程）而不是 m_worker：lambda 要先在
     // GUI 线程读 ForcePanel 控件取配置快照——以 m_worker 为上下文会让它
     // 在通信线程执行，跨线程触碰 GUI 对象，违反 RsiWorker.h 的线程契约。
-    // 配置取好后经 invokeMethod 排到通信线程执行两个槽。
+    // 配置取好后经 invokeMethod 排到通信线程依次执行三个槽：setForceMode
+    // 置位 → applyForceConfig 下发面板参数 → enableForceControl 使能（取
+    // 新鲜 SRI 均值作偏置；取不到新鲜数据时静默返回，重按一次即可）。
     connect(m_forcePanel, &ForcePanel::enableForceRequested, this, [this]() {
         const ForceControlConfig cfg = m_forcePanel->config();
         QMetaObject::invokeMethod(m_worker, [this, cfg]() {
             m_worker->setForceMode(true);
             m_worker->applyForceConfig(cfg);
+            m_worker->enableForceControl();
         });
     });
     connect(m_forcePanel, &ForcePanel::stopForceRequested, m_worker, [this]() {

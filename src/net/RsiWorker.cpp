@@ -189,6 +189,41 @@ void RsiWorker::zeroForceSensor()
     m_forceCtl.disable();
 }
 
+void RsiWorker::enableForceControl()
+{
+    if (!m_forceMode || m_forceCtl.isActive())
+        return;
+
+    // 使能必须拿到一帧新鲜 SRI 窗口均值作偏置：bias 是净力的零点基准，
+    // 用陈旧数据会使使能后的净力从一开始就带未知偏差。
+    WrenchFrame bias;
+    if (m_sriDriver)
+        m_sriDriver->drainAccumulator(bias);
+    if (!bias.fresh)
+        return;
+
+    // 传感器系 → 工具系 → BASE 系变换。WrenchFrame 是 double，必须显式
+    // 转成 float[6] 再传入——reinterpret_cast 成 float(&)[6] 是类型别名
+    // UB（同一块内存按两种宽度解释），与 onDatagram 里的同式。
+    float biasFloats[6] = {
+        static_cast<float>(bias.fx), static_cast<float>(bias.fy),
+        static_cast<float>(bias.fz), static_cast<float>(bias.mx),
+        static_cast<float>(bias.my), static_cast<float>(bias.mz),
+    };
+    const WrenchFrame biasBase = m_forceCtl.transformToBase(
+        biasFloats, m_lastActual.a, m_lastActual.b, m_lastActual.c);
+
+    // enable 记录偏置、以最近一帧实际位姿作命令台账起点、预填充滤波器。
+    // 超速计数一并清零：新会话的饱和历史不跨使能保留。
+    m_forceCtl.enable(m_lastActual, biasBase);
+    m_forceSpeedClampCount = 0;
+}
+
+void RsiWorker::disableForceControl()
+{
+    m_forceCtl.disable();
+}
+
 void RsiWorker::startSri()
 {
     if (m_sriDriver)
@@ -492,7 +527,34 @@ void RsiWorker::onDatagram()
                         delta = Pose{};
                     }
 
-                    // 4. SRI 陈旧检查：连续 staleTimeoutMs 无数据 → 可见 Fault
+                    // 4. 力控超速检测：连续 vmax 饱和帧 → 可见 Fault。step()
+                    // 内部按 dtClamped ≤ cycleMs 硬钳位，正常收敛时步长应
+                    // 明显低于单周期预算；连续 10 帧贴着 vmax 说明传感器/
+                    // 滤波链路已无法收敛或参数失控，继续发修正只会让机械臂
+                    // 以满速持续运动。放在超量程检查之前：两种故障同时成立
+                    // 时（力超容量必然使导纳饱和），量程信息更有诊断价值，
+                    // 让后执行的它覆盖本 Fault 的文案。基准取 99% 而不是
+                    // 100%：量化死区（1e-4）与方向分解会吃掉极少量步长。
+                    // vmax=0（配置退化）时无预算可言，检测跳过。
+                    const double maxStepMm =
+                        m_cfg.forceControl.params.vmaxPosMmS
+                        * m_cfg.cycleMs / 1000.0;
+                    const double stepNorm = std::sqrt(
+                        delta.x * delta.x + delta.y * delta.y
+                        + delta.z * delta.z);
+                    if (maxStepMm > 0.0 && stepNorm >= maxStepMm * 0.99) {
+                        ++m_forceSpeedClampCount;
+                        if (m_forceSpeedClampCount >= 10) {
+                            m_ctl.forceFault(QStringLiteral(
+                                "force control saturated at vmax for "
+                                "10 consecutive frames"));
+                            m_forceCtl.disable();
+                        }
+                    } else {
+                        m_forceSpeedClampCount = 0;
+                    }
+
+                    // 5. SRI 陈旧检查：连续 staleTimeoutMs 无数据 → 可见 Fault
                     //（staleCount 由 drainAccumulator 维护：有数据清零，无数据
                     //  +1，所以阈值 = 超时 / 周期）。只在力控活跃时检查——未
                     // 使能时没有修正输出，陈旧与否不构成风险。
@@ -509,7 +571,7 @@ void RsiWorker::onDatagram()
                         }
                     }
 
-                    // 5. 力超量程检查：矢量模超最大轴容量的 95% 即停
+                    // 6. 力超量程检查：矢量模超最大轴容量的 95% 即停
                     const double fMag = m_forceCtl.forceVectorNorm();
                     const double fCap = std::max(
                         m_cfg.forceControl.sensor.forceCapacityN[0],
