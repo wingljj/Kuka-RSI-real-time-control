@@ -108,17 +108,19 @@ void ForceController::computeSensorToToolRotation()
 
 void ForceController::applyChannelSigns(float raw[6]) const
 {
+    // 力矩缩放只在 SriDriver::processFrames 施加（累加窗口均值之前，对
+    // transformToBase 的输入已完成缩放）；这里再乘一次就是双应用：
+    // torqueScale ≠ 1 时力矩被平方（0.98 → 0.9604）。通道符号 ±1 双乘为
+    // 恒等、无碍，保留——transformToBase 也会被直连调用方（零力/测试）使用，
+    // 不经 SriDriver 的输入仍需要符号修正。
     for (int i = 0; i < 6; ++i)
         raw[i] *= float(m_cfg.sensor.channelSigns[i]);
-    raw[3] *= float(m_cfg.sensor.torqueScale);
-    raw[4] *= float(m_cfg.sensor.torqueScale);
-    raw[5] *= float(m_cfg.sensor.torqueScale);
 }
 
 WrenchFrame ForceController::transformToBase(const float sensorValues[6],
                                               double aDeg, double bDeg, double cDeg) const
 {
-    // 1. Apply channel signs + torque scale
+    // 1. Apply channel signs（torqueScale 已由 SriDriver::processFrames 施加）
     float sv[6];
     for (int i = 0; i < 6; ++i) sv[i] = sensorValues[i];
     applyChannelSigns(sv);

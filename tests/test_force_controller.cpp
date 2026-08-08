@@ -130,6 +130,22 @@ private slots:
         QVERIFY(std::abs(m90.my - 1.0) < 1e-9);
     }
 
+    void torqueScaleNotAppliedByController()
+    {
+        // SriDriver::processFrames 已在累加前对力矩通道施加 torqueScale；
+        // 控制器侧再乘一次会把力矩平方（0.98 → 0.9604）。identity 安装 +
+        // 零姿态下 mx 应原样通过（1.0，而非 2.0）——回归断言双应用已删。
+        ForceController fc;
+        ForceControlConfig cfg = testCfg();
+        cfg.sensor.torqueScale = 2.0;
+        fc.configure(cfg);
+        const float sv[6] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+        const WrenchFrame w = fc.transformToBase(sv, 0.0, 0.0, 0.0);
+        QVERIFY(std::abs(w.mx - 1.0) < 1e-9);
+        QVERIFY(std::abs(w.my) < 1e-9);
+        QVERIFY(std::abs(w.mz) < 1e-9);
+    }
+
     void commandedSumAccumulatesDeltas()
     {
         ForceController fc;
