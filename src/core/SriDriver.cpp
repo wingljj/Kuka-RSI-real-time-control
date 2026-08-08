@@ -72,6 +72,10 @@ void SriDriver::connectToSensor()
     connect(m_sock, &QTcpSocket::connected, this, &SriDriver::onConnected);
     connect(m_sock, &QTcpSocket::disconnected, this, &SriDriver::onDisconnected);
     connect(m_sock, &QTcpSocket::readyRead, this, &SriDriver::onReadyRead);
+    // connectToHost 失败（传感器关机/不可达）只发 errorOccurred、不发
+    // disconnected（Qt 仅在曾处于 Connected 时才发 disconnected）——
+    // 必须接上 errorOccurred 才能进入重连循环。
+    connect(m_sock, &QAbstractSocket::errorOccurred, this, &SriDriver::onSocketError);
 
     // 复位解析器、握手状态与累加器，防止上次会话的残留数据污染新会话
     m_parser.reset();
@@ -98,8 +102,18 @@ void SriDriver::closeSocket()
 
 void SriDriver::scheduleReconnect()
 {
+    // 同一次故障 errorOccurred 与 disconnected 可能双发（如运行中断连）——
+    // 定时器已武装就跳过，指数退避只翻倍一次。
+    if (m_reconnectTimer->isActive())
+        return;
     m_reconnectDelayS = std::min(m_reconnectDelayS * 2.0, 5.0);
     m_reconnectTimer->start(int(m_reconnectDelayS * 1000));
+}
+
+void SriDriver::onSocketError()
+{
+    if (!m_running) return;
+    scheduleReconnect();
 }
 
 void SriDriver::onConnected()
@@ -152,6 +166,7 @@ void SriDriver::onReadyRead()
 
 bool SriDriver::handleAtResponse(const uint8_t *data, size_t len)
 {
+    bool any = false;
     for (size_t i = 0; i < len; ++i) {
         const char c = char(data[i]);
         if (c == '\n' || m_hsLen >= int(sizeof(m_hsBuf)) - 1) {
@@ -160,6 +175,7 @@ bool SriDriver::handleAtResponse(const uint8_t *data, size_t len)
                 ? (std::strstr(m_hsBuf, kFormatMarker) != nullptr)
                 : (std::strstr(m_hsBuf, "ERROR") == nullptr);
             m_hsLen = 0;
+            any = true;
 
             if (!ok) {
                 emit fault(QStringLiteral("SRI handshake rejected: %1")
@@ -173,25 +189,33 @@ bool SriDriver::handleAtResponse(const uint8_t *data, size_t len)
             if (m_hsState == HsSentFormat) {
                 m_sock->write(kQueryRate);
                 m_hsState = HsSentRate;
-            } else {
-                m_sock->write(kStartStream);
-                m_hsState = HsStreaming;
-                {
-                    QMutexLocker lock(&m_mutex);
-                    m_connected = true;
-                }
-                m_reconnectDelayS = 0.5;
-                emit connected();
+                continue;  // 本缓冲可能还带着 SMPF 响应行，继续处理
             }
+
+            m_sock->write(kStartStream);
+            m_hsState = HsStreaming;
+            {
+                QMutexLocker lock(&m_mutex);
+                m_connected = true;
+            }
+            m_reconnectDelayS = 0.5;
+            emit connected();
+            // 已进入流式：剩余字节可能是流帧（GSD 响应与首帧同段到达），
+            // 交给 parser，不能按 AT 行丢弃。
+            if (i + 1 < len)
+                processFrames(m_parser.feed(data + i + 1, len - (i + 1)));
             return true;
         }
         m_hsBuf[m_hsLen++] = c;
     }
-    return false;
+    return any;
 }
 
 void SriDriver::processFrames(const std::vector<SriFrame> &frames)
 {
+    // 累加器由 socket 线程写入、drainAccumulator()（通信线程）读+清空，
+    // 锁必须两侧都持有——单侧加锁是数据竞态。
+    QMutexLocker lock(&m_mutex);
     for (const auto &f : frames) {
         // Apply channel signs + torque scale
         double sv[6];

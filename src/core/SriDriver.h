@@ -11,9 +11,10 @@
 // SRI 六维力传感器 TCP 读取驱动。
 //
 // 线程模型：SriDriver 自身持有 QTcpSocket，socket 事件（connected/readyRead/
-// disconnected/重连定时器）在其事件循环线程处理；窗口均值累加器由该线程累加，
-// 由通信线程按 RSI 周期 drainAccumulator() 取走均值。latest()/isConnected()/
-// staleCount() 加锁，可跨线程调用。
+// disconnected/errorOccurred/重连定时器）在其事件循环线程处理；窗口均值累加器
+// 由该线程累加（processFrames 持 m_mutex 写入），由通信线程按 RSI 周期
+// drainAccumulator()（同一把锁读+清空）取走均值——锁必须两侧都持有。
+// latest()/isConnected()/staleCount() 加锁，可跨线程调用。
 //
 // 握手序列（TCP 连接成功后）：
 //   1. 发 "AT+SGDM=?\r\n"，等待响应行含 "(A01,..."（数据通道列表）
@@ -56,6 +57,7 @@ private slots:
     void onDisconnected();
     void onReadyRead();
     void onReconnect();
+    void onSocketError();
 
 private:
     // 白盒单测（tests/test_sri_driver.cpp）：不碰 TCP，直接驱动
@@ -69,7 +71,9 @@ private:
     void scheduleReconnect();
     void processFrames(const std::vector<SriFrame> &frames);
     // AT 握手响应处理：逐字节积累到 m_hsBuf，凑满一行（'\n' 或缓冲满）即校验
-    // 并推进状态机；失败则 fault + 断连 + 排程重连。返回 true 表示已消费一行。
+    // 并推进状态机；本缓冲中的后续行继续处理，进入流式后剩余字节直接喂 parser
+    //（GSD 响应与首帧可能同段到达）。失败则 fault + 断连 + 排程重连。
+    // 返回 true 表示至少处理了一行。
     bool handleAtResponse(const uint8_t *data, size_t len);
 
     ForceSensorConfig m_cfg;
