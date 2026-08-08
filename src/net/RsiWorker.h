@@ -7,7 +7,9 @@
 #include <QUdpSocket>
 #include "core/IpocTracker.h"
 #include "core/AppConfig.h"
+#include "core/ForceController.h"
 #include "core/PoseController.h"
+#include "core/SriDriver.h"
 #include "net/SharedState.h"
 
 // 运行在独立通信线程。绝不触碰 GUI 对象，绝不做文件 IO。
@@ -26,6 +28,11 @@ public:
     //    那是堆损坏而不仅是脏读。
     //  - 直连的 bindFailed/listening/firstFrameReceived 槽若调用 stop()，会在
     //    onDatagram() 的循环体中途把 m_sock/m_watchdog 置空。
+    //  - 力控五个槽（setForceMode/applyForceConfig/zeroForceSensor/startSri/
+    //    stopSri）同样必须排队：它们改写 m_forceMode / m_cfg.forceControl，
+    //    且 SriDriver 与其 QTcpSocket 都归属通信线程——直连会让槽在 GUI 线程
+    //    执行，跨线程触碰 socket 与窗口均值累加器（通信线程每周期在
+    //    drainAccumulator() 里与它互取）。
 public slots:
     void start();
     void stop();
@@ -33,6 +40,12 @@ public slots:
     void setTracking(bool on);
     void resetToActual();
     void applyConfig(AppConfig cfg);
+    // ── 力控（ForceControlConfig 已注册元类型，可经队列连接传参）──
+    void setForceMode(bool on);
+    void applyForceConfig(const ForceControlConfig &cfg);
+    void zeroForceSensor();
+    void startSri();
+    void stopSri();
 
 signals:
     void bindFailed(QString reason);
@@ -53,6 +66,12 @@ private:
     QUdpSocket    *m_sock  = nullptr;
     QTimer        *m_watchdog = nullptr;
     PoseController m_ctl;
+
+    // ── 力控（与位姿跟踪互斥：onDatagram 按 m_forceMode 择一执行）──
+    SriDriver       *m_sriDriver = nullptr;
+    ForceController  m_forceCtl;
+    bool m_forceMode = false;   // true = 力控页活跃（setForceMode 槽置位）
+    WrenchFrame m_sriLatest;    // 最近一次从 SRI 取走的窗口均值（zeroForceSensor 回退）
 
     IpocTracker m_ipocTracker;
 

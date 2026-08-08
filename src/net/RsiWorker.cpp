@@ -68,6 +68,22 @@ void RsiWorker::start()
     // elapsed() 很小，首帧不换锚点、不清账本，保住 KRC 侧已施加的修正。
     // 在这里 invalidate() 会让 isValid() 恒假，判据形同虚设。
 
+    // ── 力控：SRI 传感器驱动。随通信线程创建（start() 在通信线程执行），
+    // 由 startSri() 槽发起 TCP 连接；start() 重复调用有 m_sock 守卫，这里
+    // 用 m_sriDriver 判空保证只建一次。
+    if (!m_sriDriver) {
+        m_sriDriver = new SriDriver(this);
+        connect(m_sriDriver, &SriDriver::fault, this, [this](const QString &reason) {
+            // 传感器硬故障（握手失败/协议错误）且力控正在运行 → 转可见 Fault
+            // 并退出力控。Fault 需操作员归零确认，不会被静默绕回。
+            if (m_forceCtl.isActive()) {
+                m_ctl.forceFault(QStringLiteral("SRI: %1").arg(reason));
+                m_forceCtl.disable();
+            }
+        });
+    }
+    m_sriDriver->configure(m_cfg.forceControl.sensor);
+
     emit listening();
 }
 
@@ -83,6 +99,8 @@ void RsiWorker::stop()
         m_sock->deleteLater();
         m_sock = nullptr;
     }
+    if (m_sriDriver)
+        m_sriDriver->stop();   // 断 TCP、停重连定时器；m_forceCtl 保持配置
     m_ipocTracker.reset();
     m_peerLocked   = false;
     m_peerRejected = 0;
@@ -108,6 +126,78 @@ void RsiWorker::resetToActual()
     // 用通信线程自己缓存的最近一帧实际位姿，避免为了取 6 个 double 而拷贝
     // 整个 StatusSnapshot（内含 QString），也避免在尚无发布时退化成原点。
     m_ctl.resetToActual(m_lastActual);
+}
+
+// ── 力控槽（全部经 QueuedConnection 到达，见头文件契约注释）──────────
+
+void RsiWorker::setForceMode(bool on)
+{
+    if (on == m_forceMode)
+        return;
+    m_forceMode = on;
+    if (on) {
+        m_forceCtl.configure(m_cfg.forceControl);
+        // 刻意不自动 enable：使能必须由操作员在力控页点击，且使能前应当
+        // 先"力清零"（bias）。未使能时 onDatagram 的力控分支只发零增量。
+    } else {
+        m_forceCtl.disable();
+    }
+}
+
+void RsiWorker::applyForceConfig(const ForceControlConfig &cfg)
+{
+    m_cfg.forceControl = cfg;
+    m_forceCtl.configure(cfg);
+    if (m_sriDriver)
+        m_sriDriver->configure(cfg.sensor);
+}
+
+void RsiWorker::zeroForceSensor()
+{
+    // 力控运行中禁止清零——bias 正在被控制器用作净力基准
+    if (m_forceCtl.isActive())
+        return;
+
+    WrenchFrame raw;
+    if (m_sriDriver)
+        m_sriDriver->drainAccumulator(raw);   // 取最新窗口均值
+    if (!raw.fresh)
+        raw = m_sriLatest;   // 通信线程刚取走过均值 → 回退最近一次（至多一周期前）
+    if (!raw.fresh)
+        return;              // 从未收到过任何数据，无可清零
+
+    // 变换到 BASE 系（用最近一帧实际姿态作工具姿态）
+    float sensorVals[6] = {
+        static_cast<float>(raw.fx), static_cast<float>(raw.fy),
+        static_cast<float>(raw.fz), static_cast<float>(raw.mx),
+        static_cast<float>(raw.my), static_cast<float>(raw.mz),
+    };
+    const WrenchFrame wBase = m_forceCtl.transformToBase(
+        sensorVals, m_lastActual.a, m_lastActual.b, m_lastActual.c);
+
+    // 机器人必须静止（最近一帧位置增量 ≤ 0.01mm）才允许清零，否则记下的
+    // 偏置里混有运动产生的力。
+    const double lastMag = std::sqrt(
+        m_lastDelta.x * m_lastDelta.x + m_lastDelta.y * m_lastDelta.y
+        + m_lastDelta.z * m_lastDelta.z);
+    if (lastMag > 0.01)
+        return;
+
+    // 记下 bias 但保持未使能："力清零"只设偏置，不启动跟踪
+    m_forceCtl.enable(m_lastActual, wBase);
+    m_forceCtl.disable();
+}
+
+void RsiWorker::startSri()
+{
+    if (m_sriDriver)
+        m_sriDriver->start();
+}
+
+void RsiWorker::stopSri()
+{
+    if (m_sriDriver)
+        m_sriDriver->stop();
 }
 
 void RsiWorker::onWatchdog()
@@ -358,8 +448,77 @@ void RsiWorker::onDatagram()
                     m_sinceLastStep.isValid()
                         ? m_sinceLastStep.nsecsElapsed() / 1.0e6
                         : 0.0;
-                delta = m_ctl.step(f.rist, sinceStepMs);
-                m_sinceLastStep.start();
+
+                if (m_forceMode && m_forceCtl.isActive()) {
+                    // ── 力控步进（与位姿跟踪互斥：走到这里位姿控制器不发增量）──
+                    // 1. 取走 SRI 窗口均值（2kHz → 250Hz 降采样）
+                    WrenchFrame raw;
+                    if (m_sriDriver)
+                        m_sriDriver->drainAccumulator(raw);
+                    m_sriLatest = raw;   // 供 zeroForceSensor 回退
+
+                    if (raw.fresh) {
+                        // 2. 传感器系 → 工具系 → BASE 系变换。
+                        // SRI 原始值是 float32，窗口均值提升到 double 再转回
+                        // float 是无损的；WrenchFrame 是 double（8 字节），
+                        // 绝不可 reinterpret_cast 成 float(&)[6]——那是类型
+                        // 别名 UB，会让同一块内存被按两种宽度解释。
+                        float sensorVals[6] = {
+                            static_cast<float>(raw.fx),
+                            static_cast<float>(raw.fy),
+                            static_cast<float>(raw.fz),
+                            static_cast<float>(raw.mx),
+                            static_cast<float>(raw.my),
+                            static_cast<float>(raw.mz),
+                        };
+                        const WrenchFrame wBase = m_forceCtl.transformToBase(
+                            sensorVals, f.rist.a, f.rist.b, f.rist.c);
+                        // 3. 滤波 → 减偏置 → 矢量死区 → sigmoid 导纳 → 增量
+                        delta = m_forceCtl.step(wBase, f.rist,
+                                                sinceStepMs / 1000.0);
+                        m_sinceLastStep.start();
+                    } else {
+                        // 本周期无新鲜力数据 → 不发任何修正
+                        delta = Pose{};
+                    }
+
+                    // 4. SRI 陈旧检查：连续 staleTimeoutMs 无数据 → 可见 Fault
+                    //（staleCount 由 drainAccumulator 维护：有数据清零，无数据
+                    //  +1，所以阈值 = 超时 / 周期）。只在力控活跃时检查——未
+                    // 使能时没有修正输出，陈旧与否不构成风险。
+                    if (m_sriDriver) {
+                        const int staleLimit = int(
+                            m_cfg.forceControl.sensor.staleTimeoutMs
+                            / m_cfg.cycleMs);
+                        if (staleLimit > 0
+                            && m_sriDriver->staleCount() >= staleLimit) {
+                            m_ctl.forceFault(QStringLiteral(
+                                "SRI sensor stale (no data for %1 ms)")
+                                .arg(m_cfg.forceControl.sensor.staleTimeoutMs));
+                            m_forceCtl.disable();
+                        }
+                    }
+
+                    // 5. 力超量程检查：矢量模超最大轴容量的 95% 即停
+                    const double fMag = m_forceCtl.forceVectorNorm();
+                    const double fCap = std::max(
+                        m_cfg.forceControl.sensor.forceCapacityN[0],
+                        std::max(m_cfg.forceControl.sensor.forceCapacityN[1],
+                                 m_cfg.forceControl.sensor.forceCapacityN[2]));
+                    if (fCap > 0.0 && fMag > fCap * 0.95) {
+                        m_ctl.forceFault(QStringLiteral(
+                            "Force %.1f N exceeds 95%% of capacity %.1f N")
+                            .arg(fMag).arg(fCap));
+                        m_forceCtl.disable();
+                    }
+                } else if (m_forceMode) {
+                    // 力控页已打开但尚未使能：本周期不发修正
+                    delta = Pose{};
+                } else {
+                    // ── 位姿跟踪步进（原路径）──
+                    delta = m_ctl.step(f.rist, sinceStepMs);
+                    m_sinceLastStep.start();
+                }
             }
         } else {
             ++m_missed;
@@ -486,6 +645,16 @@ void RsiWorker::publishSnapshot(const Pose &actual, const Pose &err,
     s.lifetimeLost = m_lifetimeLost;
     s.trimCount    = m_ctl.trimCount();
     s.lastDelta    = m_lastDelta;
+
+    // ── 力控字段（仅力控页活跃时发布；位姿页保持默认值）──
+    if (m_forceMode) {
+        s.wrenchRaw          = m_forceCtl.rawWrench();
+        s.wrenchFiltered     = m_forceCtl.filteredWrench();
+        s.wrenchBias         = m_forceCtl.bias();
+        s.forceControlActive = m_forceCtl.isActive();
+        s.forceVectorNorm    = m_forceCtl.forceVectorNorm();
+        s.torqueVectorNorm   = m_forceCtl.torqueVectorNorm();
+    }
 
     // ── 跟踪质量：误差与累积修正相对限值的比例 ──
     if (cs == ControlState::Tracking) {

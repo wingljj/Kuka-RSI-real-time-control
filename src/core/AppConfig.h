@@ -54,6 +54,10 @@ struct ForceControlConfig
     ForceControlAxes  axes;
 };
 
+// 必需：ForceControlConfig 会通过 Q_ARG 跨线程排队传递
+//（RsiWorker::applyForceConfig），未注册元类型会导致队列连接在运行时静默失败。
+Q_DECLARE_METATYPE(ForceControlConfig)
+
 struct AppConfig
 {
     QString listenIp          = "192.168.44.1";
