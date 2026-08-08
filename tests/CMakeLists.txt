@@ -6,6 +6,10 @@ add_executable(test_force_filter test_force_filter.cpp)
 target_link_libraries(test_force_filter PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_force_filter COMMAND test_force_filter)
 
+add_executable(test_force_controller test_force_controller.cpp)
+target_link_libraries(test_force_controller PRIVATE rsi_core Qt6::Test)
+add_test(NAME test_force_controller COMMAND test_force_controller)
+
 add_executable(test_app_config test_app_config.cpp)
 target_link_libraries(test_app_config PRIVATE rsi_core Qt6::Test)
 add_test(NAME test_app_config COMMAND test_app_config)
