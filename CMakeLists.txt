@@ -68,6 +68,7 @@ add_library(rsi_ui STATIC
     src/ui/MainWindow.cpp
     src/ui/ErrorChart.cpp
     src/ui/ForceChart.cpp
+    src/ui/ForcePanel.cpp
     src/ui/CommCards.cpp
     src/ui/CumulativeBar.cpp
     src/ui/AlarmLog.cpp

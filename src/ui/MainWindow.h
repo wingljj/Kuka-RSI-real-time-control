@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QMainWindow>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QThread>
 #include <QTimer>
 #include <QTableWidgetItem>
@@ -17,6 +18,8 @@
 #include "core/AppConfig.h"
 #include "net/RsiWorker.h"
 #include "net/SharedState.h"
+#include "ui/ForceChart.h"
+#include "ui/ForcePanel.h"
 #include "ui/UiLogic.h"
 
 class ErrorChart;
@@ -64,6 +67,7 @@ private:
     QWidget *buildCumulPanel();     // 累积修正
     QWidget *buildParamPanel();     // 控制参数
     QWidget *buildCommPanel();      // 通信指标
+    QWidget *buildForcePage();      // 力控页（ForcePanel + 力/力矩图表）
 
     void buildMenus();
     void buildStatusBar();
@@ -95,9 +99,22 @@ private:
     AppConfig    m_cfg;
     SharedState  m_state;
     SampleRing   m_ring;
+    // 力曲线环形缓冲（对象而非指针）：RsiWorker 持有它的地址、通信线程
+    // push、GUI 线程在 onRefresh 里经 copyOut 读走，mutex 保护。
+    ForceRing    m_forceRing;
     QThread     *m_commThread = nullptr;
     RsiWorker   *m_worker     = nullptr;
     QTimer      *m_refresh    = nullptr;
+
+    // ── 中央页面堆栈 ──
+    // 位姿跟踪页（原中央图表）与力控页二选一，工具栏两个动作切换。
+    QStackedWidget *m_pageStack = nullptr;
+    QWidget        *m_positionPage = nullptr;   // 位姿跟踪页（包装原 ErrorChart）
+    QWidget        *m_forcePage    = nullptr;   // 力控页
+    ForcePanel     *m_forcePanel = nullptr;
+    ForceChart     *m_forceChartForce  = nullptr;   // 30s 力曲线
+    ForceChart     *m_forceChartTorque = nullptr;   // 30s 力矩曲线
+    bool            m_forcePageActive = false;  // 当前是否停留在力控页
 
     // ── 部件 ──
     CommCards      *m_commCards = nullptr;
@@ -126,6 +143,11 @@ private:
     QAction *m_stopTrackAct   = nullptr;
     QAction *m_resetFaultAct  = nullptr;
     QAction *m_trimAct        = nullptr;   // 到位精修(可勾选)
+
+    // 页面切换（位姿跟踪 / 力控），QActionGroup 互斥勾选。
+    // 力控活跃时两者都被置灰：必须先停止力控才能离开力控页。
+    QAction *m_positionPageAct = nullptr;
+    QAction *m_forcePageAct    = nullptr;
 
     // 建完默认布局、restoreState 之前存一份，供「恢复默认布局」用。
     // 没有它，一个被拖到屏幕外或全部关掉的布局会被 QSettings 忠实地存下来，

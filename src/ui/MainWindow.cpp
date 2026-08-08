@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include <QActionGroup>
 #include <QApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -153,18 +154,30 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 {
     setWindowTitle("KUKA RSI POSCORR 位姿跟踪");
 
-    // ── 中央部件：误差图表 ──
+    // ── 中央部件：页面堆栈（位姿跟踪页 / 力控页）──
     // 图表是唯一需要大面积且持续观察的东西——趋势要看一段时间才有意义。
     // 其余面板都是「看一眼确认数值」的性质，适合停靠、按需调出。
     // 原先的三栏定宽布局把图表挤在最右侧一条，1400px 以下还会把控件推出屏幕。
-    auto *charts = new QWidget(this);
-    auto *cv = new QVBoxLayout(charts);
+    // 力控页与位姿页互斥（通信层按 m_forceMode 择一执行），用页切换而不是
+    // 同一页内堆叠：两个模式各自需要一整块监控区，混在一页里谁也看不清。
+    m_pageStack = new QStackedWidget(this);
+
+    m_positionPage = new QWidget(this);
+    auto *cv = new QVBoxLayout(m_positionPage);
     cv->setContentsMargins(0, 0, 0, 0);
-    m_chartPos = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Position, charts);
-    m_chartRot = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Rotation, charts);
+    m_chartPos = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Position, m_positionPage);
+    m_chartRot = new ErrorChart(m_cfg.chartWindowS, ErrorChart::Mode::Rotation, m_positionPage);
     cv->addWidget(m_chartPos, 1);
     cv->addWidget(m_chartRot, 1);
-    setCentralWidget(charts);
+    m_pageStack->addWidget(m_positionPage);
+
+    m_forcePage = buildForcePage();   // 内部创建 m_forcePanel / 两张 ForceChart
+    m_pageStack->addWidget(m_forcePage);
+    setCentralWidget(m_pageStack);
+
+    // 面板初始值来自 config.json 的 force_control 块（setConfig 抑制
+    // configChanged，不触发「参数被修改」）。
+    m_forcePanel->setConfig(m_cfg.forceControl);
 
     m_alarmLog = new AlarmLog(this);
 
@@ -194,7 +207,9 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
 
     // ── 通信线程 ──
     m_commThread = new QThread(this);
-    m_worker = new RsiWorker(m_cfg, &m_state, &m_ring);
+    // 第 4 个参数把力曲线环形缓冲交给 RsiWorker：通信线程 push、GUI 线程
+    // 在 onRefresh 里读，mutex 保护（见 SharedState.h 的 ForceRing）。
+    m_worker = new RsiWorker(m_cfg, &m_state, &m_ring, &m_forceRing);
     m_worker->moveToThread(m_commThread);
     connect(m_commThread, &QThread::started, m_worker, &RsiWorker::start);
     connect(m_commThread, &QThread::finished, m_worker, &QObject::deleteLater);
@@ -212,6 +227,31 @@ MainWindow::MainWindow(const AppConfig &cfg, QWidget *parent)
         saveTargetSnapshot();
         refreshDeltaPreview();
         updateApplyButton();
+    });
+
+    // ── 力控页：ForcePanel → RsiWorker ──
+    // 槽改写 m_forceMode / m_cfg.forceControl，且 SriDriver 与其 socket 归属
+    // 通信线程——全部以 m_worker 为接收者上下文，跨线程自动排队（契约见
+    // RsiWorker.h 头部的连接方式注释）。lambda 体在通信线程执行，这里的
+    // setForceMode/applyForceConfig 是同线程直连调用。
+    connect(m_forcePanel, &ForcePanel::connectRequested,
+            m_worker, &RsiWorker::startSri);
+    connect(m_forcePanel, &ForcePanel::disconnectRequested,
+            m_worker, &RsiWorker::stopSri);
+    connect(m_forcePanel, &ForcePanel::zeroForceRequested,
+            m_worker, &RsiWorker::zeroForceSensor);
+    connect(m_forcePanel, &ForcePanel::enableForceRequested, m_worker, [this]() {
+        m_worker->setForceMode(true);
+        m_worker->applyForceConfig(m_forcePanel->config());
+    });
+    connect(m_forcePanel, &ForcePanel::stopForceRequested, m_worker, [this]() {
+        m_worker->setForceMode(false);
+    });
+    // 参数改动只更新本地配置副本；下发到控制器发生在「使能力控」与
+    // 切入力控页时（applyForceConfig）。否则 onStartListening 的
+    // applyConfig(m_cfg) 会把面板里刚改过的力控参数用旧值盖掉。
+    connect(m_forcePanel, &ForcePanel::configChanged, this, [this] {
+        m_cfg.forceControl = m_forcePanel->config();
     });
     m_commThread->start();
 
@@ -409,8 +449,51 @@ void MainWindow::buildMenus()
     tb->addAction(m_enableAct);
     tb->addAction(m_stopTrackAct);
 
+    // ── 页面切换（位姿跟踪 / 力控）──
+    // 力控与位姿跟踪互斥（通信层按 m_forceMode 择一执行），两个页面必须
+    // 二选一。放进独立工具栏而不是控制工具栏：控制动作在力控页上大多
+    // 无意义（使能跟踪/停止跟踪不作用于力控），混排会引导操作员按错。
+    QToolBar *pageTb = addToolBar("页面");
+    pageTb->setObjectName("pageToolBar");
+    pageTb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_positionPageAct = pageTb->addAction("位姿跟踪");
+    m_positionPageAct->setObjectName("positionPageAct");
+    m_positionPageAct->setCheckable(true);
+    m_positionPageAct->setChecked(true);
+    m_forcePageAct = pageTb->addAction("力控制");
+    m_forcePageAct->setObjectName("forcePageAct");
+    m_forcePageAct->setCheckable(true);
+    // 互斥勾选交给 QActionGroup：点「力控制」自动取消「位姿跟踪」，
+    // 免去在每个触发处理器里手写另一边的 setChecked。
+    auto *pageGroup = new QActionGroup(this);
+    pageGroup->addAction(m_positionPageAct);
+    pageGroup->addAction(m_forcePageAct);
+    connect(m_positionPageAct, &QAction::triggered, this, [this] {
+        // 离开力控页先停力控模式：与位姿跟踪互斥（全局约束）。SRI 数据流
+        // 不在这里断——回到力控页时数据立即可见；停数据流由面板「断开」负责。
+        if (m_worker)
+            QMetaObject::invokeMethod(m_worker, "setForceMode",
+                                      Qt::QueuedConnection, Q_ARG(bool, false));
+        m_pageStack->setCurrentIndex(0);
+        m_forcePageActive = false;
+    });
+    connect(m_forcePageAct, &QAction::triggered, this, [this] {
+        // 切入力控页先停位姿跟踪（互斥），并把面板上的参数作为当前配置
+        // 下发——面板是力控参数的唯一编辑入口，页面切入即生效。
+        if (m_worker) {
+            QMetaObject::invokeMethod(m_worker, "setTracking",
+                                      Qt::QueuedConnection, Q_ARG(bool, false));
+            QMetaObject::invokeMethod(
+                m_worker, "applyForceConfig", Qt::QueuedConnection,
+                Q_ARG(ForceControlConfig, m_forcePanel->config()));
+        }
+        m_pageStack->setCurrentIndex(1);
+        m_forcePageActive = true;
+    });
+
     viewMenu->addSeparator();
     viewMenu->addAction(tb->toggleViewAction());
+    viewMenu->addAction(pageTb->toggleViewAction());
     viewMenu->addSeparator();
     QAction *resetLayoutAct = viewMenu->addAction("恢复默认布局");
     connect(resetLayoutAct, &QAction::triggered, this, &MainWindow::onResetLayout);
@@ -937,6 +1020,36 @@ QWidget *MainWindow::buildCommPanel()
 }
 
 // ═══════════════════════════════════════════════
+// 力控页（ForcePanel + 力/力矩曲线）
+// ═══════════════════════════════════════════════
+
+QWidget *MainWindow::buildForcePage()
+{
+    auto *w = new QWidget(this);
+    auto *h = new QHBoxLayout(w);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(0);
+
+    // 左侧：力控配置面板。宽度钉死：参数区是「看一眼确认数值」的性质，
+    // 随窗口拉宽只会把控件间隔拉得不成比例，参数本身并不需要更多空间。
+    m_forcePanel = new ForcePanel(w);
+    m_forcePanel->setFixedWidth(380);
+    h->addWidget(m_forcePanel);
+
+    // 右侧：力 / 力矩曲线垂直堆叠（各占半高，30s 滚动窗）。
+    auto *right = new QWidget(w);
+    auto *rv = new QVBoxLayout(right);
+    rv->setContentsMargins(4, 4, 4, 4);
+    rv->setSpacing(4);
+    m_forceChartForce  = new ForceChart(30, ForceChart::Mode::Force, right);
+    m_forceChartTorque = new ForceChart(30, ForceChart::Mode::Torque, right);
+    rv->addWidget(m_forceChartForce, 1);
+    rv->addWidget(m_forceChartTorque, 1);
+    h->addWidget(right, 1);
+    return w;
+}
+
+// ═══════════════════════════════════════════════
 // 连接控制
 // ═══════════════════════════════════════════════
 
@@ -1355,4 +1468,25 @@ void MainWindow::onRefresh()
     // ── 图表 ──
     m_chartPos->updateFrom(m_ring);
     m_chartRot->updateFrom(m_ring);
+
+    // ── 页面切换护锁 ──
+    // 力控活跃时禁止离开力控页：力控分支正在向机器人发修正，切页不停止它
+    // 就等于「界面走了、力控还在跑」。必须先按面板上的「停止」。
+    const bool pageSwitchAllowed = !s.forceControlActive;
+    if (m_positionPageAct->isEnabled() != pageSwitchAllowed)
+        m_positionPageAct->setEnabled(pageSwitchAllowed);
+    if (m_forcePageAct->isEnabled() != pageSwitchAllowed)
+        m_forcePageAct->setEnabled(pageSwitchAllowed);
+
+    // ── 力控页（仅当前停留时刷新：图表与读数都只在这一页可见）──
+    // updateFrom 直接读 m_forceRing（mutex 保护的定容环形缓冲，GUI 线程
+    // 经 copyOut 取最近样本），不经过中间 vector。
+    if (m_forcePageActive) {
+        m_forceChartForce->updateFrom(m_forceRing);
+        m_forceChartTorque->updateFrom(m_forceRing);
+        // 连接状态取快照的 connected（RSI 会话），力/力矩模是发布侧只在
+        // 力控模式开启时填写的字段（见 RsiWorker::publishSnapshot）。
+        m_forcePanel->setConnected(s.connected);
+        m_forcePanel->setForceNorm(s.forceVectorNorm, s.torqueVectorNorm);
+    }
 }
