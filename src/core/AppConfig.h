@@ -37,7 +37,11 @@ struct ForceControlAxes
 
 struct ForceControlParams
 {
-    double cutoffHz         = 10.0;
+    // RSI 周期（ms）。滤波器设计采样率 = 1000/cycleMs：数据每 RSI 帧到达一次
+    //（drainAccumulator 按帧取走窗口均值），设计采样率必须跟着实际周期走，
+    // 不能硬编码 4ms 假设。默认 12ms 与部署配置 rsi.cycle_ms 一致。
+    double cycleMs            = 12.0;
+    double cutoffHz           = 10.0;
     double deadzoneForceN   = 5.0;
     double deadzoneTorqueNm = 1.0;
     double gainForce        = 0.05;

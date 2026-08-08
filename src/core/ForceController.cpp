@@ -36,7 +36,11 @@ static double vecLen3(const double v[3])
 void ForceController::configure(const ForceControlConfig &cfg)
 {
     m_cfg = cfg;
-    const double fs = 250.0;  // RSI cycle rate
+    // 滤波器设计采样率 = 数据实际到达速率 = 1000/cycleMs（drainAccumulator 每
+    // RSI 帧取走一次窗口均值）。硬编码 250Hz（4ms 假设）会让部署在 12ms 周期
+    // 下的默认 10Hz 截止实际变成 ≈3.3Hz——面板标注与真实行为差 3 倍。cycleMs
+    // ≤ 0 时 Butterworth::configure 内部回退直通，不产出非法系数。
+    const double fs = 1000.0 / cfg.params.cycleMs;
     for (int i = 0; i < 6; ++i)
         m_lpf[i].configure(cfg.params.cutoffHz, fs);
     computeSensorToToolRotation();

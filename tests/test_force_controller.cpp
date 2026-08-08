@@ -6,6 +6,7 @@
 static ForceControlConfig testCfg()
 {
     ForceControlConfig c;
+    c.params.cycleMs = 4.0;      // 设计采样率 250Hz，与用例的 4ms 步长一致
     c.params.cutoffHz = 10.0;
     c.params.deadzoneForceN = 5.0;
     c.params.deadzoneTorqueNm = 1.0;

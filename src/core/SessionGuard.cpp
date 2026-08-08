@@ -120,6 +120,10 @@ QStringList SessionGuard::staticChecks(const AppConfig &cfg)
         }
         if (fc.params.cutoffHz <= 0.0 || fc.params.cutoffHz > 60.0)
             out << QStringLiteral("force_control.filter.cutoff_hz must be in (0, 60]");
+        // cycle_ms 是 Butterworth 设计采样率的分母（fs = 1000/cycleMs），
+        // 非正则除零得 inf，滤波器回退直通——静默不滤波，必须拦。
+        if (!(fc.params.cycleMs > 0.0))
+            out << QStringLiteral("force_control.params.cycle_ms must be > 0");
         if (fc.params.deadzoneForceN < 0.0)
             out << QStringLiteral("force_control.deadzone.force_n must be >= 0");
         if (fc.params.deadzoneTorqueNm < 0.0)

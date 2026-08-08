@@ -241,6 +241,17 @@ private slots:
         QVERIFY(!r.isEmpty());
         QVERIFY(r.join('\n').contains("force_control"));
     }
+
+    void forceCycleMsZero_fails()
+    {
+        // cycle_ms 是滤波器设计采样率的分母：0 会让 fs=1000/0=inf，
+        // Butterworth 静默回退直通（不滤波），必须拦截。
+        AppConfig c = good();
+        c.forceControl.params.cycleMs = 0.0;
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("force_control.params.cycle_ms"));
+    }
 };
 QTEST_MAIN(TestSessionGuard)
 #include "test_session_guard.moc"

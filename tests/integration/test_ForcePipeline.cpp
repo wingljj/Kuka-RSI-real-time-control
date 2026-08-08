@@ -62,9 +62,12 @@ class TestForcePipeline : public QObject
 
     // 基线配置：只启用 Z 平移轴，5N 死区，20Hz 截止（比生产 10Hz 收敛更快）。
     // 传感器与工具坐标系重合（identity 旋转），力方向不做旋转变换。
+    // cycleMs = 4ms：滤波器设计采样率 = 1000/4 = 250Hz，与本测试 4ms 步长
+    // 模拟的输入速率一致（保持历史行为；生产默认 12ms → 83.3Hz）。
     static ForceControlConfig baseConfig()
     {
         ForceControlConfig cfg;
+        cfg.params.cycleMs = 4.0;
         cfg.axes.enZ = true;
         cfg.params.deadzoneForceN = 5.0;
         cfg.params.gainForce = 0.05;
