@@ -571,16 +571,43 @@ void RsiWorker::onDatagram()
                         }
                     }
 
-                    // 6. 力超量程检查：矢量模超最大轴容量的 95% 即停
-                    const double fMag = m_forceCtl.forceVectorNorm();
-                    const double fCap = std::max(
-                        m_cfg.forceControl.sensor.forceCapacityN[0],
-                        std::max(m_cfg.forceControl.sensor.forceCapacityN[1],
-                                 m_cfg.forceControl.sensor.forceCapacityN[2]));
-                    if (fCap > 0.0 && fMag > fCap * 0.95) {
-                        m_ctl.forceFault(QStringLiteral(
-                            "Force %.1f N exceeds 95%% of capacity %.1f N")
-                            .arg(fMag).arg(fCap));
+                    // 6. 力超量程检查：逐分量超本轴容量 95% 即停。对矢量模按
+                    // max(各轴容量) 判会把低容量轴的过载藏进高容量轴——默认
+                    // 容量 [7200, 7200, 18000]，纯 Fx 到 17000N（236% 过载）
+                    // 也不触发，专用保护对 Fx/Fy 失效。判据对象与 spec §7.2
+                    // 一致：SRI 窗口均值（rawWrench，含通道符号/力矩缩放与
+                    // 坐标变换）；容量 ≤ 0 的轴跳过（配置退化防御）。力矩轴
+                    // 同样逐分量判，低容量力矩轴不能藏在矢量模里。
+                    const WrenchFrame &wRaw = m_forceCtl.rawWrench();
+                    const auto &fCap = m_cfg.forceControl.sensor.forceCapacityN;
+                    const auto &tCap = m_cfg.forceControl.sensor.torqueCapacityNm;
+                    static const char *const kFName[3] = {"Fx", "Fy", "Fz"};
+                    static const char *const kTName[3] = {"Mx", "My", "Mz"};
+                    const double fVals[3] = {wRaw.fx, wRaw.fy, wRaw.fz};
+                    const double tVals[3] = {wRaw.mx, wRaw.my, wRaw.mz};
+                    QString fault;
+                    for (int i = 0; i < 3 && fault.isEmpty(); ++i) {
+                        if (fCap[i] > 0.0
+                            && std::fabs(fVals[i]) > fCap[i] * 0.95) {
+                            fault = QStringLiteral(
+                                "Force %1 %2 N exceeds 95%% capacity %3 N")
+                                .arg(QLatin1String(kFName[i]))
+                                .arg(fVals[i], 0, 'f', 1)
+                                .arg(fCap[i], 0, 'f', 0);
+                        }
+                    }
+                    for (int i = 0; i < 3 && fault.isEmpty(); ++i) {
+                        if (tCap[i] > 0.0
+                            && std::fabs(tVals[i]) > tCap[i] * 0.95) {
+                            fault = QStringLiteral(
+                                "Torque %1 %2 Nm exceeds 95%% capacity %3 Nm")
+                                .arg(QLatin1String(kTName[i]))
+                                .arg(tVals[i], 0, 'f', 1)
+                                .arg(tCap[i], 0, 'f', 0);
+                        }
+                    }
+                    if (!fault.isEmpty()) {
+                        m_ctl.forceFault(fault);
                         m_forceCtl.disable();
                     }
                 } else if (m_forceMode) {
