@@ -455,7 +455,10 @@ void RsiWorker::onDatagram()
                     WrenchFrame raw;
                     if (m_sriDriver)
                         m_sriDriver->drainAccumulator(raw);
-                    m_sriLatest = raw;   // 供 zeroForceSensor 回退
+                    // 只在有新数据时更新——空窗口的 raw 是全零 fresh=false，
+                    // 无条件覆盖会把上次的好均值冲掉，zeroForceSensor 回退失效。
+                    if (raw.fresh)
+                        m_sriLatest = raw;
 
                     if (raw.fresh) {
                         // 2. 传感器系 → 工具系 → BASE 系变换。
@@ -474,8 +477,14 @@ void RsiWorker::onDatagram()
                         const WrenchFrame wBase = m_forceCtl.transformToBase(
                             sensorVals, f.rist.a, f.rist.b, f.rist.c);
                         // 3. 滤波 → 减偏置 → 矢量死区 → sigmoid 导纳 → 增量
-                        delta = m_forceCtl.step(wBase, f.rist,
-                                                sinceStepMs / 1000.0);
+                        // 预算夹到单周期：ForceController::step 内部不夹 dtS，
+                        // 使能前 idle 期积累的 sinceStepMs 若不夹，首帧预算可达
+                        // vmax × 整段空闲（默认 5mm/s × 10s = 50mm），超 KRC
+                        // 35mm 单帧限值。与 PoseController::step 的
+                        // min(ΔT, T) 同式。
+                        const double dtClamped =
+                            std::min(sinceStepMs, m_cfg.cycleMs) / 1000.0;
+                        delta = m_forceCtl.step(wBase, f.rist, dtClamped);
                         m_sinceLastStep.start();
                     } else {
                         // 本周期无新鲜力数据 → 不发任何修正
