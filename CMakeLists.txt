@@ -15,6 +15,8 @@ find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets Charts Test)
 
 add_library(rsi_core STATIC
     src/core/AppConfig.cpp
+    src/core/ForceFilter.cpp
+    src/core/ForceFilter.h
     src/core/Wrench.h
     src/core/IpocTracker.cpp
     src/core/PoseOps.cpp
