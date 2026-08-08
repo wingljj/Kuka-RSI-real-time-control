@@ -120,6 +120,13 @@ void RsiWorker::applyConfig(AppConfig cfg)
 {
     m_cfg = cfg;
     m_ctl.configure(cfg);
+    // 力控参数同步（审查 ledger #2）：applyConfig 在 trim 切换/重听/PID 对话框
+    // 等场景被调用。只重配位姿控制器的话，力控超速阈值（读 m_cfg）与控制器
+    // 内部 vmax 会失配；SriDriver 的通道符号/力矩缩放同理。力控活跃期间
+    // 被调用时参数即同步生效。
+    m_forceCtl.configure(cfg.forceControl);
+    if (m_sriDriver)
+        m_sriDriver->configure(cfg.forceControl.sensor);
 }
 
 void RsiWorker::resetToActual()
