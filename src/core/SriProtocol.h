@@ -1,5 +1,4 @@
 #pragma once
-#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -25,7 +24,8 @@ public:
     // Number of frames discarded due to NaN/Inf since construction or last reset().
     size_t discardedCount() const { return m_discarded; }
 
-    // Number of bytes dropped due to buffer overflow since construction or last reset().
+    // Number of overflow events (excess buffered bytes dropped) since
+    // construction or last reset().
     size_t overflowCount() const { return m_overflow; }
 
 private:

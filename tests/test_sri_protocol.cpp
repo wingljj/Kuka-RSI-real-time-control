@@ -95,6 +95,41 @@ private slots:
         auto frames = parser.feed(rest, 21);
         QCOMPARE(frames.size(), size_t(0));  // old partial was discarded
     }
+
+    void overflowTrimsExcessBytes()
+    {
+        // A single feed larger than maxBuffer must not grow the buffer
+        // unboundedly; the overflow path is reachable and counts events.
+        SriFrameParser parser(64);
+        QCOMPARE(parser.overflowCount(), size_t(0));
+
+        // Feed that fits: no overflow event.
+        uint8_t small[50];
+        std::memset(small, 0xAB, sizeof(small));  // no header magic
+        parser.feed(small, sizeof(small));
+        QCOMPARE(parser.overflowCount(), size_t(0));
+
+        // Feed exceeding maxBuffer: oldest bytes dropped, one event counted.
+        uint8_t data[100];
+        std::memset(data, 0xAB, sizeof(data));
+        const auto frames = parser.feed(data, sizeof(data));
+        QCOMPARE(frames.size(), size_t(0));
+        QCOMPARE(parser.overflowCount(), size_t(1));
+
+        // Second oversized feed: counts per event, buffer stays bounded.
+        const auto frames2 = parser.feed(data, sizeof(data));
+        QCOMPARE(frames2.size(), size_t(0));
+        QCOMPARE(parser.overflowCount(), size_t(2));
+
+        // A valid frame fed afterwards still parses (no state corruption).
+        uint8_t frame[31] = {};
+        frame[0] = 0xAA; frame[1] = 0x55; frame[2] = 0x00; frame[3] = 0x1B;
+        const float v = 1.0f;
+        for (int i = 0; i < 6; ++i) std::memcpy(frame + 6 + i * 4, &v, 4);
+        const auto frames3 = parser.feed(frame, sizeof(frame));
+        QCOMPARE(frames3.size(), size_t(1));
+        QCOMPARE(frames3[0].values[0], 1.0f);
+    }
 };
 QTEST_MAIN(TestSriProtocol)
 #include "test_sri_protocol.moc"
