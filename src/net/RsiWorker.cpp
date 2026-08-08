@@ -9,8 +9,9 @@
 #include "core/RsiCodec.h"
 
 RsiWorker::RsiWorker(const AppConfig &cfg, SharedState *state,
-                     SampleRing *ring, QObject *parent)
-    : QObject(parent), m_cfg(cfg), m_state(state), m_ring(ring)
+                     SampleRing *ring, ForceRing *forceRing, QObject *parent)
+    : QObject(parent), m_cfg(cfg), m_state(state), m_ring(ring),
+      m_forceRing(forceRing)
 {
     m_ctl.configure(cfg);
 }
@@ -588,6 +589,21 @@ void RsiWorker::onDatagram()
             // 姿态误差现在是旋转向量（世界坐标，度），范数 = 总旋转角
             cs.rotErrNorm = std::sqrt(err.a * err.a + err.b * err.b + err.c * err.c);
             m_ring->push(cs);
+
+            // 力曲线环形缓冲：力控活跃时与 ChartSample 同周期 push，供力控页
+            // 图表消费。rawWrench/filteredWrench 是本帧刚算出的窗口均值与
+            // Butterworth 输出，拷贝 13 个 double 不碰堆。
+            if (m_forceMode && m_forceCtl.isActive() && m_forceRing) {
+                ForceChartSample fcs;
+                fcs.tSec = m_sessionTimer.nsecsElapsed() / 1.0e9;
+                const auto &raw  = m_forceCtl.rawWrench();
+                const auto &filt = m_forceCtl.filteredWrench();
+                fcs.fx = raw.fx;  fcs.fy = raw.fy;  fcs.fz = raw.fz;
+                fcs.mx = raw.mx;  fcs.my = raw.my;  fcs.mz = raw.mz;
+                fcs.ffx = filt.fx; fcs.ffy = filt.fy; fcs.ffz = filt.fz;
+                fcs.fmx = filt.mx; fcs.fmy = filt.my; fcs.fmz = filt.mz;
+                m_forceRing->push(fcs);
+            }
 
             // 必须在 publishSnapshot 之后才发这个信号：GUI 的处理器会读
             // snapshot() 来同步目标位姿，若先发信号它读到的还是本帧之前的

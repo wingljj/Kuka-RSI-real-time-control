@@ -157,3 +157,60 @@ private:
     int m_head = 0;
     int m_size = 0;
 };
+
+// 力控曲线样本：原始六维力/力矩 + Butterworth 滤波后六维，供 ForceChart 绘制。
+struct ForceChartSample
+{
+    double tSec = 0.0;
+    double fx, fy, fz, mx, my, mz;       // raw
+    double ffx, ffy, ffz, fmx, fmy, fmz; // filtered
+};
+
+// 力控曲线的定容环形缓冲，结构与 SampleRing 一致：push 无分配，
+// 可在实时路径调用；copyOut 两段连续 memcpy 缩短持锁窗口（理由同 SampleRing）。
+class ForceRing
+{
+public:
+    static constexpr int kCapacity = 8192;  // 30s × 250Hz = 7500, round up
+
+    void push(const ForceChartSample &s)
+    {
+        QMutexLocker lock(&m_mutex);
+        m_buf[m_head] = s;
+        m_head = (m_head + 1) % kCapacity;
+        if (m_size < kCapacity)
+            ++m_size;
+    }
+
+    // 按时间先后写入 dst，返回实际写入数量。
+    int copyOut(ForceChartSample *dst, int maxCount) const
+    {
+        if (!dst || maxCount <= 0)
+            return 0;                   // 负数会让下面的 % 触发有符号溢出
+        QMutexLocker lock(&m_mutex);
+        const int n = std::min(m_size, maxCount);
+        const int start = (m_head - n + kCapacity) % kCapacity;
+        // 两段连续 memcpy，与 SampleRing::copyOut 同构。ForceChartSample 是
+        // 13 个 double 的 trivially copyable 结构，memcpy 安全。
+        const int first = std::min(n, kCapacity - start);
+        std::memcpy(dst, &m_buf[start],
+                    size_t(first) * sizeof(ForceChartSample));
+        if (n > first)
+            std::memcpy(dst + first, &m_buf[0],
+                        size_t(n - first) * sizeof(ForceChartSample));
+        return n;
+    }
+
+    void clear()
+    {
+        QMutexLocker lock(&m_mutex);
+        m_head = 0;
+        m_size = 0;
+    }
+
+private:
+    mutable QMutex m_mutex;
+    std::array<ForceChartSample, kCapacity> m_buf{};
+    int m_head = 0;
+    int m_size = 0;
+};

@@ -18,7 +18,7 @@ class RsiWorker : public QObject
     Q_OBJECT
 public:
     RsiWorker(const AppConfig &cfg, SharedState *state, SampleRing *ring,
-              QObject *parent = nullptr);
+              ForceRing *forceRing = nullptr, QObject *parent = nullptr);
 
     // 【连接方式契约】以下所有槽与信号都必须以 Qt::QueuedConnection 连接。
     // 不支持直连：
@@ -63,6 +63,7 @@ private:
     AppConfig      m_cfg;
     SharedState   *m_state = nullptr;
     SampleRing    *m_ring  = nullptr;
+    ForceRing     *m_forceRing = nullptr;  // 力曲线环形缓冲（可选，nullptr=不记录）
     QUdpSocket    *m_sock  = nullptr;
     QTimer        *m_watchdog = nullptr;
     PoseController m_ctl;

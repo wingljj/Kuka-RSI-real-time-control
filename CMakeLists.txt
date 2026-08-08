@@ -67,6 +67,7 @@ target_link_libraries(rsi_net PUBLIC rsi_core Qt6::Network)
 add_library(rsi_ui STATIC
     src/ui/MainWindow.cpp
     src/ui/ErrorChart.cpp
+    src/ui/ForceChart.cpp
     src/ui/CommCards.cpp
     src/ui/CumulativeBar.cpp
     src/ui/AlarmLog.cpp
