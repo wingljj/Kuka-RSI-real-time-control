@@ -7,6 +7,7 @@
 #include <cstring>
 #include "core/PoseController.h"
 #include "core/Pose.h"
+#include "core/Wrench.h"
 
 // 7 态会话/控制状态（UI 显示 + 行为语义）。由 RsiWorker 在 publishSnapshot 中
 // 组合：Fault > StaleFrame > Syncing(首帧瞬间) > Tracking > Ready >
@@ -62,6 +63,14 @@ struct StatusSnapshot
     double    errorPosPct     = 0.0;  // 位置误差 / 位置限值（0–∞）
     double    errorRotPct     = 0.0;  // 姿态误差 / 姿态限值（0–∞）
     bool      accumOverLimit  = false; // 累计修正超限（accumPosPct>=1 或 accumRotPct>=1）
+
+    // ── 力控字段 (force control mode) ──
+    WrenchFrame wrenchRaw;         // 原始力 (降采样 + 坐标变换后)
+    WrenchFrame wrenchFiltered;    // Butterworth 滤波后
+    WrenchFrame wrenchBias;        // 清零偏置
+    bool   forceControlActive = false;
+    double forceVectorNorm    = 0.0;
+    double torqueVectorNorm   = 0.0;
 };
 
 // 通信线程 publish，GUI 线程 snapshot。锁持有时间仅够一次结构体拷贝。

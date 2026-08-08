@@ -203,6 +203,44 @@ private slots:
         c.targetCruiseMmS = 0.0;    // 0 = 固定时长,旧行为
         QVERIFY(SessionGuard::staticChecks(c).isEmpty());
     }
+
+    // ── 力控参数校验(2026-08-08):默认值安全,始终校验 ──
+    void forceSensorHostEmpty_fails()
+    {
+        AppConfig c = good();
+        c.forceControl.sensor.host = "";
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("force_control.sensor.host"));
+    }
+
+    void forceSensorPortZero_fails()
+    {
+        AppConfig c = good();
+        c.forceControl.sensor.port = 0;
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("force_control.sensor.port"));
+    }
+
+    void forceCutoffHzOutOfRange_fails()
+    {
+        AppConfig c = good();
+        c.forceControl.params.cutoffHz = 0.0;   // 下限:不滤波=直通高频噪声
+        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
+        c = good();
+        c.forceControl.params.cutoffHz = 100.0; // 上限 60Hz:超过则 Butterworth 参数无意义
+        QVERIFY(!SessionGuard::staticChecks(c).isEmpty());
+    }
+
+    void forceVmaxExceedsKrcLimit_fails()
+    {
+        AppConfig c = good();
+        c.forceControl.params.vmaxPosMmS = 4000.0;  // 4000×12/1000 = 48mm/帧 > KRC ±35mm
+        const QStringList r = SessionGuard::staticChecks(c);
+        QVERIFY(!r.isEmpty());
+        QVERIFY(r.join('\n').contains("force_control"));
+    }
 };
 QTEST_MAIN(TestSessionGuard)
 #include "test_session_guard.moc"

@@ -106,6 +106,45 @@ QStringList SessionGuard::staticChecks(const AppConfig &cfg)
             "target_cruise_deg_s(%1) must be in [0, vmax_rot_deg_s=%2]")
                 .arg(cfg.targetCruiseDegS).arg(cfg.vmaxRotDegS);
 
+    // ── 力控参数校验(2026-08-08):默认值安全,始终校验(与 trim 的"仅启用时
+    // 校验"不同——力控参数即使当前未启用也必须在配置加载时就是合法的)────
+    {
+        const auto &fc = cfg.forceControl;
+        if (fc.sensor.host.trimmed().isEmpty())
+            out << QStringLiteral("force_control.sensor.host is empty");
+        if (fc.sensor.port < 1 || fc.sensor.port > 65535)
+            out << QStringLiteral("force_control.sensor.port out of range");
+        for (int i = 0; i < 6; ++i) {
+            if (fc.sensor.channelSigns[i] != -1 && fc.sensor.channelSigns[i] != 1)
+                out << QStringLiteral("force_control.sensor.channel_signs[%1] must be -1 or 1").arg(i);
+        }
+        if (fc.params.cutoffHz <= 0.0 || fc.params.cutoffHz > 60.0)
+            out << QStringLiteral("force_control.filter.cutoff_hz must be in (0, 60]");
+        if (fc.params.deadzoneForceN < 0.0)
+            out << QStringLiteral("force_control.deadzone.force_n must be >= 0");
+        if (fc.params.deadzoneTorqueNm < 0.0)
+            out << QStringLiteral("force_control.deadzone.torque_nm must be >= 0");
+        if (fc.params.gainForce <= 0.0)
+            out << QStringLiteral("force_control.admittance.gain_force must be > 0");
+        if (fc.params.gainTorque <= 0.0)
+            out << QStringLiteral("force_control.admittance.gain_torque must be > 0");
+        if (fc.params.vmaxPosMmS <= 0.0)
+            out << QStringLiteral("force_control.admittance.vmax_pos_mm_s must be > 0");
+        if (fc.params.vmaxRotDegS <= 0.0)
+            out << QStringLiteral("force_control.admittance.vmax_rot_deg_s must be > 0");
+        if (fc.sensor.staleTimeoutMs <= 0.0)
+            out << QStringLiteral("force_control.sensor.stale_timeout_ms must be > 0");
+
+        // vmax × cycle_ms ≤ 35mm constraint（每帧步长,与上方位姿 vmax 校验
+        // 同式: mm/s × ms / 1000 = mm/帧;KRC Limit 对象超限后静默削波）
+        const double maxStepPos = fc.params.vmaxPosMmS * cfg.cycleMs / 1000.0;
+        if (maxStepPos > 35.0)
+            out << QStringLiteral("force_control vmax_pos × cycle_ms = %1 mm exceeds KRC 35mm limit").arg(maxStepPos);
+        const double maxStepRot = fc.params.vmaxRotDegS * cfg.cycleMs / 1000.0;
+        if (maxStepRot > 35.0)
+            out << QStringLiteral("force_control vmax_rot × cycle_ms = %1 deg exceeds KRC 35deg limit").arg(maxStepRot);
+    }
+
     return out;
 }
 

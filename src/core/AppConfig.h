@@ -119,6 +119,7 @@ struct AppConfig
     double  trackingQualityCriticalPct = 0.8;   // 跟踪质量严重阈值
 
     ForceControlConfig forceControl;  // 力控配置；默认值由 ForceControlConfig{} 提供
+    bool forceControlEnabled = false;  // runtime flag, not persisted（UI 切换力控页面时置位）
 
     static AppConfig defaults() { return AppConfig{}; }
 
